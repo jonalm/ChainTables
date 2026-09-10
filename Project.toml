@@ -1,0 +1,10 @@
+name = "S3SQLite"
+uuid = "9916ecaa-2162-471d-8083-d1d45c3def62"
+version = "0.1.0"
+authors = ["Jon Alm Eriksen <jon.alm.eriksen@protonmail.com>"]
+
+[deps]
+SQLite = "0aa819cd-b072-5ff4-a722-6bc24af294d9"
+
+[compat]
+SQLite = "1.8.2"

@@ -1,0 +1,32 @@
+# Julia
+Manifest.toml
+*.jl.cov
+*.jl.*.cov
+*.jl.mem
+/docs/build/
+/docs/site/
+deps/deps.jl
+deps/build.log
+deps/downloads/
+deps/usr/
+deps/src/
+*.so
+*.dylib
+*.dll
+LocalPreferences.toml
+
+# Typst output
+*.pdf
+*.typ.bak
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+tmp/
+
+scratch*
+
+examples/tmpdata/*
