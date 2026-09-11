@@ -48,10 +48,18 @@ _Avoid_: tip, latest, current, HEAD
 
 **State fingerprint**:
 A canonical hash of the whole logical content of the database after a transaction
-record has been applied. It is carried in the record, and every client recomputes
-it. Distinct from the transaction hash: that one hashes stored bytes, this one
-hashes content a client derived for itself.
+record has been applied — the rows and the shape of every table the chain created,
+and nothing a client keeps for itself. It is carried in the record, and every
+client recomputes it. Distinct from the transaction hash: that one hashes stored
+bytes, this one hashes content a client derived for itself.
 _Avoid_: checksum, digest, merkle root, state hash
+
+**Divergence**:
+Two clients deriving different content from the same transaction records. A state
+fingerprint mismatch that survives a fresh replay is divergence; one that a fresh
+replay clears was a damaged local copy instead. A diverged client may still read,
+but never commits.
+_Avoid_: drift, corruption, conflict (that is two clients racing for a slot)
 
 ### Clients
 
