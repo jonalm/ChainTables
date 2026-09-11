@@ -167,7 +167,9 @@ _Avoid_: snapshot, frozen copy, historical database
 
 **Write builder**:
 The only way to create a transaction record. Reads go straight to SQLite; only
-writes pass through the builder.
+writes pass through the builder. A builder is a value, and it is used once: it
+collects the ops of one transaction record, and committing it consumes it. It is
+never re-run, because a commit that loses its slot is raised rather than retried.
 _Avoid_: DSL, query builder, ORM, writer
 
 **Row set**:
