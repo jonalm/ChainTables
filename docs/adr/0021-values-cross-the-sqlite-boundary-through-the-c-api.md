@@ -121,6 +121,9 @@ describes.
   around SQLite.jl to `SQLite_jll` directly buys nothing: it is the same
   library, and it adds a direct dependency for bindings we already have.
 - **Upstream is worth telling, and is not a plan.** A BLOB written as bytes
-  that comes back as an object, or raises, is a reportable bug in SQLite.jl.
+  that comes back as an object, or raises, is a reportable bug in SQLite.jl,
+  written up in
+  [`docs/upstream/sqlite-jl-blob-marshalling.md`](../upstream/sqlite-jl-blob-marshalling.md).
   Nothing here waits on it: the same reader is needed for ADR-0017 and for the
-  10× regardless of what upstream does.
+  10× regardless of what upstream does, and a fix would land in a version the
+  compat range does not require.
