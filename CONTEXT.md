@@ -98,6 +98,20 @@ never named by a transaction record, so two clients may hold different ones and
 still agree on the content.
 _Avoid_: index (bare), secondary index, chain index
 
+**Record cache**:
+The machine-wide directory of transaction records a client has fetched. Keyed by
+bucket and key, disposable, and never re-validated — correct because at most one
+record ever occupies a slot, so a key's bytes are immutable by protocol. Distinct
+from the local copy, which is derived from the records rather than a copy of them.
+_Avoid_: blob cache, object cache, store, mirror
+
+**Object store**:
+The four operations S3SQLite needs of a bucket — fetch one object, put one object
+only if its key is absent, stat one key, list a prefix. It is S3SQLite's own seam,
+so the real client and the in-process double are interchangeable, and it carries
+no delete.
+_Avoid_: backend, adapter, driver, blob store, client (that is the process)
+
 **Commit**:
 To add a transaction record to the chain, which succeeds only if no other client
 claimed the same position first.
