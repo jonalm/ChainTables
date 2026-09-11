@@ -30,3 +30,5 @@ tmp/
 scratch*
 
 examples/tmpdata/*
+
+.claude/*
