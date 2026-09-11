@@ -136,6 +136,9 @@ The four operations S3SQLite needs of a bucket — fetch one object, put one obj
 only if its key is absent, stat one key, list a prefix. It is S3SQLite's own seam,
 so the real client and the in-process double are interchangeable, and it carries
 no delete.
+Put-if-absent is the load-bearing one: a store that overwrites instead of
+failing does not raise, it splits the chain. Only AWS S3 is supported for that
+reason.
 _Avoid_: backend, adapter, driver, blob store, client (that is the process)
 
 **Commit**:
