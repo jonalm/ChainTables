@@ -74,6 +74,12 @@ replay clears was a damaged local copy instead. A diverged client may still read
 but never commits.
 _Avoid_: drift, corruption, conflict (that is two clients racing for a slot)
 
+**Rewritten chain**:
+A chain whose bucket contradicts what a client has already applied — a slot whose
+record changed, or a slot that vanished. The protocol cannot produce one, so it is
+evidence of an actor outside it, and no client ever heals one.
+_Avoid_: corrupted chain, rollback, history rewrite
+
 ### Clients
 
 **Client**:
@@ -90,7 +96,14 @@ _Avoid_: materialized database, cache, mirror, replica
 To apply the ops of a sequence of transaction records, in chain order, to a local
 copy. Schema is derived this way too, so a replay to an earlier point yields the
 schema of that point.
-_Avoid_: sync, materialize, rehydrate, project
+_Avoid_: materialize, rehydrate, project. Distinct from a *sync*, which is the
+whole round trip that ends in a replay.
+
+**Sync**:
+Bringing a local copy up to the chain's head: finding the head, fetching the
+records after the copy's own, and replaying them. It is always asked for, never
+implicit, and true only as of the moment it finished.
+_Avoid_: pull, update, refresh, catch up
 
 **Reserved table**:
 A table inside a local copy that holds what a client keeps for itself — which
@@ -134,6 +147,11 @@ _Avoid_: push, upload, write, publish
 A replay that stops at a chosen transaction record, producing the local copy as
 it stood at that point.
 _Avoid_: time travel, snapshot, checkout
+
+**Pinned copy**:
+A local copy deliberately held at a chosen transaction record rather than kept
+current. It never advances and never commits until it is explicitly unpinned.
+_Avoid_: snapshot, frozen copy, historical database
 
 ### Writing
 
