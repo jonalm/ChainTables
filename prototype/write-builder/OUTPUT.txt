@@ -1,0 +1,195 @@
+
+==============================================================================
+THE QUESTION (issue #7)
+==============================================================================
+
+The builder is the determinism guarantee. Three spellings of the same two
+records are in shape_a.jl (plain functions + NamedTuples), shape_b.jl
+(do-blocks) and shape_c.jl (a macro DSL). Read those three files side by
+side — that is the actual artifact. This output is the evidence that they
+are the same thing underneath, and the record of where the guard holds and
+where it does not.
+
+==============================================================================
+1. DO THE THREE SHAPES AGREE?
+==============================================================================
+
+  record 1   A == B: true   A == C: true
+  record 2   A == B: true   A == C: true
+So the shape is purely a front-end question: the same bytes come out
+either way, and the choice can be made on how the source reads.
+
+==============================================================================
+2. THE OPS AS DATA  (record 1 — what would go to the CBOR encoder)
+==============================================================================
+
+transactions:
+  - #1
+    label: "create the sample schema"
+    ops:
+      - #1
+        op: "create_table"
+        table: "sample"
+        columns:
+          - #1
+            name: "id"
+            type: "INTEGER"
+            notnull: true
+            default: null
+          - #2
+            name: "label"
+            type: "TEXT"
+            notnull: true
+            default: null
+          - #3
+            name: "collected_on"
+            type: "TEXT"
+            notnull: false
+            default: null
+          - #4
+            name: "note"
+            type: "TEXT"
+            notnull: false
+            default: null
+        primary_key: ["id"]
+      - #2
+        op: "create_table"
+        table: "measurement"
+        columns:
+          - #1
+            name: "sample_id"
+            type: "INTEGER"
+            notnull: true
+            default: null
+          - #2
+            name: "metric"
+            type: "TEXT"
+            notnull: true
+            default: null
+          - #3
+            name: "value"
+            type: "REAL"
+            notnull: false
+            default: null
+          - #4
+            name: "raw"
+            type: "BLOB"
+            notnull: false
+            default: null
+        primary_key: ["sample_id", "metric"]
+  - #2
+    label: "load the january batch"
+    ops:
+      - #1
+        op: "insert"
+        table: "sample"
+        columns: ["id", "label", "collected_on", "note"]
+        rows:
+          - [1, "AX-1", "2026-01-04", "duplicate run"]
+          - [2, "AX-2", "2026-01-04", null]
+          - [3, "BX-7", "2026-01-11", null]
+      - #2
+        op: "insert"
+        table: "measurement"
+        columns: ["sample_id", "metric", "value", "raw"]
+        rows:
+          - [1, "ph", 7.21, null]
+          - [1, "od600", 145.0, blob[4] deadbeef]
+          - [2, "od600", 220.5, null]
+          - [2, "ph", 6.98, null]
+          - [3, "ph", null, null]
+
+==============================================================================
+3. THE OPS AS DATA  (record 2 — predicate evaluated locally, row set materialized)
+==============================================================================
+
+transactions:
+  - #1
+    label: "add the provenance column"
+    ops:
+      - #1
+        op: "add_column"
+        table: "sample"
+        column:
+          name: "instrument"
+          type: "TEXT"
+          notnull: false
+          default: null
+  - #2
+    label: "retire the out-of-range readings"
+    ops:
+      - #1
+        op: "delete"
+        table: "measurement"
+        key_columns: ["sample_id", "metric"]
+        keys:
+          - [1, "od600"]
+          - [2, "od600"]
+      - #2
+        op: "update"
+        table: "sample"
+        key_columns: ["id"]
+        set_columns: ["note"]
+        rows:
+          - [1, "reading retired 2026-01-20"]
+          - [2, "reading retired 2026-01-20"]
+Note what is NOT in there: `value > 100`. The record carries the two rows
+that matched on this client at this head, not the question that found
+them.
+
+==============================================================================
+4. WHAT EACH OP RENDERS TO LOCALLY
+==============================================================================
+
+  CREATE TABLE sample (id INTEGER NOT NULL, label TEXT NOT NULL, collected_on TEXT, note TEXT, PRIMARY KEY (id)) STRICT, WITHOUT ROWID
+  CREATE TABLE measurement (sample_id INTEGER NOT NULL, metric TEXT NOT NULL, value REAL, raw BLOB, PRIMARY KEY (sample_id, metric)) STRICT, WITHOUT ROWID
+  INSERT INTO sample (id, label, collected_on, note) VALUES (?, ?, ?, ?)
+  INSERT INTO measurement (sample_id, metric, value, raw) VALUES (?, ?, ?, ?)
+  ALTER TABLE sample ADD COLUMN instrument TEXT
+  DELETE FROM measurement WHERE sample_id = ? AND metric = ?
+  UPDATE sample SET note = ? WHERE id = ?
+Values are always bound parameters, never interpolated, and identifiers
+are never quoted — with SQLITE_DQS=3 compiled in (#18) a quoted identifier
+that fails to resolve silently becomes a string literal.
+
+==============================================================================
+5. WHERE THE VALUE GUARD BITES
+==============================================================================
+
+  a Bool                                         → DeterminismError: Bool has no SQLite storage class; write 0 or 1 so the record says which (got true)
+  a DateTime                                     → DeterminismError: DateTime has no canonical SQLite encoding. Convert it yourself, so the record records the decision (a DateTime → an Int64 epoch or an ISO-8601 String, a Symbol → a String, a Rational → whichever of the two you meant)
+  NaN                                            → DeterminismError: REAL must be finite — NaN and Inf have no canonical encoding and no stable text form (got NaN)
+  TEXT containing U+0000                         → DeterminismError: TEXT may not contain U+0000 — SQLite truncates the value there and the record would no longer describe the row
+  a column named "order"                         → DeterminismError: identifier "order" is an SQL keyword; quoting it is exactly what this builder refuses to do
+  a column named "drop table"                    → DeterminismError: identifier "drop table" must match [A-Za-z_][A-Za-z0-9_]* — the builder never quotes identifiers, because with SQLITE_DQS=3 compiled in (#18) a quoted identifier that does not resolve becomes a string literal instead of an error
+  a table with no PRIMARY KEY                    → DeterminismError: table x needs an explicit PRIMARY KEY. The implicit rowid is not replayable (#3: max+1 goes random at 2^63-1 and is reused after DELETE), and a materialized UPDATE or DELETE has nothing to name a row by without one
+  ADD COLUMN NOT NULL, no default                → DeterminismError: ADD COLUMN site NOT NULL needs a literal DEFAULT — existing rows have to get a value, and it has to be in the record rather than computed at replay time
+  rows naming different columns                  → DeterminismError: every row of one INSERT must name the same columns in the same order — column order is part of the canonical bytes (got (:label, :id) after (:id, :label))
+  rand() — plain function shape                  → ACCEPTED
+  rand() — macro shape                           → LoadError: @record refuses rand(...): its value differs between clients or between runs, so the record would not describe a reproducible write in expression starting at /Users/jonalmeriksen/biome/S3SQLite/prototype/write-builder/run.jl:57
+  noise() = rand() — macro shape                 → ACCEPTED
+The last three are the finding. Value-level validation cannot see a
+non-deterministic *source*, because rand() returns a perfectly canonical
+Float64. Only the macro can — and only until someone wraps it in a
+function, which is one keystroke away and is also what any real caller
+does, since the row sets come from a query in the first place.
+
+==============================================================================
+6. WHEN THE RECORD DISAGREES WITH LOCAL STATE
+==============================================================================
+
+  DELETE of a row not present                    → RecordRejected: transaction 1 ("delete a row that isn't there"), op 1 (delete): RecordRejected: DELETE row 1 matched 0 rows, expected exactly 1 — the caller's materialized row set disagrees with local state, so the record would not replay the same way here
+Matching zero rows is an error, not a no-op: the caller materialized a row
+set that this database does not have, so the two clients do not agree about
+what the record means.
+
+==============================================================================
+7. ONE BAD TRANSACTION IN A RECORD OF SEVERAL
+==============================================================================
+
+  record with a losing second transaction        → RecordRejected: transaction 2 ("this one duplicates a key"), op 1 (insert): SQLiteException("UNIQUE constraint failed: sample.id")
+  sample rows before: 3   after: 3
+The record is the atom: transaction 1 is discarded with transaction 2, and
+nothing is uploaded. Which raises the open question — if a record is
+atomic anyway, what is a transaction inside it FOR? Right now it is a
+label and nothing else.
