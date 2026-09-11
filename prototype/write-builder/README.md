@@ -82,13 +82,29 @@ is purely about how the source reads.
 5. **A `DELETE`/`UPDATE` matching ≠ 1 row is an error, not a no-op.** The caller
    materialized a row set this database does not have.
 
-## Open questions this raised (for #9 / #10)
+## Verdict (2026-09-11, settled with the dev)
 
-- If a record is atomic anyway, **what is a transaction inside it for?** Here it
-  is a label and nothing else.
+- **Shape C is rejected.** `shape_c.jl` stays here as the evidence for why.
+- **Shape A is the builder**, with a do-block for `create_table!` only.
+- **Transactions stay.** A record is the atom, but a transaction is a unit of
+  intent and a future carrier for metadata.
+- **`missing` is accepted as NULL.** The fail-fast rule does not ask for a
+  refusal here: `missing` is what SQLite.jl returns for a NULL column, so
+  refusing it breaks the read-change-write round trip for no gain, and the
+  accidental-NULL case it admits is caught by `NOT NULL` in the schema, which
+  fails locally before a commit.
+- **`Inf` stays excluded** with `NaN`, deliberately. Measurement says `±Inf`
+  round-trips through SQLite exactly and has one CBOR encoding, so the ban is
+  not forced — but it is cheaper to explain one rule than two, and nothing needs
+  it yet. See the resolution comment on #7 for the numbers.
+
+Written up as ADR-0001 on `main`.
+
+## Still open (for #9 / #10)
+
 - **Column order is part of the canonical bytes.** Should the encoder sort
   column names so that the same logical write always hashes the same, or is
   caller order part of the record?
-- `missing` is accepted as `NULL`. Fail-fast would say refuse it.
 - Float `DEFAULT` literals are rendered with Julia's shortest round-trip `repr`
-  and parsed back by SQLite — the one place a value is not a bound parameter.
+  and parsed back by SQLite — the one place a value is not a bound parameter,
+  and SQLite's text-to-real parser is not documented as correctly rounded.
