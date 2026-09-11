@@ -21,8 +21,11 @@ sorted by table name. Both domain separators are part of the format.
 column names, declared storage class, nullability, primary-key position. Shape is
 read from SQLite's own catalog (`PRAGMA table_list` / `table_info`), never from
 our replayed schema model and never from `sqlite_schema`'s SQL text, which SQLite
-rewrites and which is version-sensitive. **Outside**: reserved tables (issue #12)
-and local indexes (ADR-0003), both of which are per-client by definition.
+rewrites and which is version-sensitive. **Outside**: reserved tables and local
+indexes (ADR-0003), both of which are per-client by definition. ADR-0008 sharpens
+this: reserved tables are excluded **by an explicit list of names**, never by
+their `s3sqlite_` prefix, so that a hand-created table cannot hide behind the
+prefix and escape the fingerprint.
 
 **What is hashed.** Typed values only — `INTEGER`→int, `REAL`→preferred float,
 `TEXT`→tstr, `BLOB`→bstr, NULL→CBOR null. **No number is ever rendered to text.**
@@ -147,9 +150,9 @@ known-good:
 - **Issue #13's bucket-cached local copy is verifiable by construction.** The
   fingerprint depends on nothing per-client, so any client can check a cached copy
   against the `state_fingerprint` of the record it claims to represent.
-- **Issue #12 is free to put anything per-client in reserved tables** — local
-  timestamps, the head hash, cached `table_hash` values — because they are outside
-  the fingerprint.
+- **Reserved tables are free to hold anything per-client** — local timestamps, the
+  head hash, cached `table_hash` values — because they are outside the
+  fingerprint. ADR-0008 settles which ones exist.
 - **A foreign table is caught.** The fingerprint covers every non-reserved table,
   so a table a user created by hand in the local copy diverges immediately.
 - Named tests: a BLOB whose bytes are a valid Julia serialization fingerprints as

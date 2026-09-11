@@ -79,6 +79,19 @@ copy. Schema is derived this way too, so a replay to an earlier point yields the
 schema of that point.
 _Avoid_: sync, materialize, rehydrate, project
 
+**Reserved table**:
+A table inside a local copy that holds what a client keeps for itself — which
+chain the copy belongs to, where its head is, what it has applied. No transaction
+record may name one, and the state fingerprint covers none of them.
+_Avoid_: metadata table, system table, internal table
+
+**Layout version**:
+Which set of reserved tables a local copy carries. Purely local, and never a
+property of the chain — distinct from the record format version, which the chain
+does carry. A client that meets a layout version other than its own rebuilds the
+local copy or refuses it; it never migrates one.
+_Avoid_: schema version, db version, format version (that is the chain's)
+
 **Local index**:
 An index a client builds on its own local copy to serve its own reads. It is
 never named by a transaction record, so two clients may hold different ones and
