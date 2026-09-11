@@ -189,7 +189,10 @@ _Avoid_: determinism, reproducibility, idempotency
 A value as SQLite holds it — an integer, a float, text or a blob — rather than
 any text rendering of it. Ops and the state fingerprint carry typed values only,
 because rendering a number to text, and parsing text into a number, are where
-clients on different SQLite versions or different processors stop agreeing.
+clients on different SQLite versions or different processors stop agreeing. A
+typed value is what `sqlite3_column_*` returns: the Julia driver's row API
+decodes some blobs into objects and renders some numbers into text, so it is
+not a source of one.
 _Avoid_: literal, raw value, stored value, cell
 
 **Shape**:

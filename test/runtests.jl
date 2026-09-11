@@ -94,6 +94,10 @@ end
         # Everything the design decides — record encoding, the op set, replay,
         # the state fingerprint, conflict resolution against a fake S3 — lands
         # here. None of it is implemented yet; the design is still deciding it.
+        #
+        # What is here already pins the dependency's behaviour rather than
+        # ours, because the design rests on it (see #21).
+        include("sqlite_jl_marshalling.jl")
     end
 
     if isnothing(CFG)
