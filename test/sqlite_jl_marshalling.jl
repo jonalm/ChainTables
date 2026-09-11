@@ -25,9 +25,12 @@
 # ---------------------------------------------------------------------------
 
 using SQLite
-using Serialization
 const DBI = SQLite.DBInterface
 const C = SQLite.C
+# Reached through SQLite.jl rather than declared, so that the suite needs no
+# dependency the package does not already have. `getfield` because the binding
+# is not marked public.
+const SER = getfield(SQLite, :Serialization)
 
 "Read column `col` (0-based) of every row of `sql`, byte-faithfully."
 function raw_column(db::SQLite.DB, sql::AbstractString, col::Int = 0)
@@ -80,7 +83,7 @@ row_api_column(db, sql, name::Symbol) = [r[name] for r in DBI.execute(db, sql)]
         # Bytes an ordinary `Serialization.serialize` writes: these do *not*
         # match, because SQLite.jl's marker includes its own wrapper type.
         plain = let io = IOBuffer()
-            serialize(io, [1, 2, 3])
+            SER.serialize(io, [1, 2, 3])
             take!(io)
         end
 
