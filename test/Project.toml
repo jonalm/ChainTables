@@ -1,0 +1,6 @@
+[deps]
+LazyFiles = "169830f2-f8ed-426a-92bf-62bee49d67e9"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[compat]
+LazyFiles = "0.4"

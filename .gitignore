@@ -32,3 +32,5 @@ scratch*
 examples/tmpdata/*
 
 .claude/*
+# Local-only S3 test credentials (never committed)
+/env
