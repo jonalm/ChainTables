@@ -14,10 +14,23 @@ The totally ordered, append-only sequence of transaction records under one S3
 key prefix. One bucket holds many chains.
 _Avoid_: log, stream, history, ledger
 
+**Chain id**:
+What a chain is called, minted when the chain is created and carried in every one
+of its transaction records. Distinct from where the chain currently lives: a chain
+copied to another bucket or prefix is still the same chain.
+_Avoid_: prefix, path, location, name, uuid
+
 **Slot**:
 One position in the chain. At most one transaction record ever occupies a slot,
-and a record's slot never changes.
+and a record's slot never changes. The chain has no gaps — a slot is only ever
+filled once the one before it is.
 _Avoid_: index, offset, position, sequence
+
+**Reserved name**:
+Anything under a chain's prefix that is not a slot. Clients ignore reserved names,
+so whatever a later version of S3SQLite keeps there cannot break an earlier one.
+_Avoid_: metadata object, sidecar, extra key. Distinct from a *reserved table*,
+which lives inside a local copy rather than in the bucket.
 
 **Transaction record**:
 One immutable object in the chain. It holds the ops of one commit, and the
