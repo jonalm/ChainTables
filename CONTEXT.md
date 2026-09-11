@@ -14,6 +14,11 @@ The totally ordered, append-only sequence of transaction records under one S3
 key prefix. One bucket holds many chains.
 _Avoid_: log, stream, history, ledger
 
+**Slot**:
+One position in the chain. At most one transaction record ever occupies a slot,
+and a record's slot never changes.
+_Avoid_: index, offset, position, sequence
+
 **Transaction record**:
 One immutable object in the chain. It holds the ops of one commit, and the
 hashes that place it in the chain.
@@ -86,3 +91,8 @@ _Avoid_: materialized rows, predicate, filter, where clause
 The property that every client applying the same transaction record to the same
 local copy obtains the same content. This is what the chain guarantees.
 _Avoid_: determinism, reproducibility, idempotency
+
+**Delete rows**:
+An op that removes a named row set from the content. Distinct from destroying a
+transaction record, which never happens — the chain only ever grows longer.
+_Avoid_: bare "delete", drop, remove, purge
