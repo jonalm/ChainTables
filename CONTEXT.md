@@ -22,13 +22,19 @@ _Avoid_: index, offset, position, sequence
 **Transaction record**:
 One immutable object in the chain. It holds the ops of one commit, and the
 hashes that place it in the chain.
-_Avoid_: commit object, changeset, delta, event, patch
+_Avoid_: commit object, changeset, delta, event, patch. Also avoid bare
+*transaction* for a group of ops inside a record — no such group exists; the
+record is the only grouping and the only atom.
 
-**Transaction**:
-One named group of ops inside a transaction record. A record may hold several.
-It is a unit of intent and a carrier for metadata, not a unit of atomicity — the
-record is the atom.
-_Avoid_: batch, group, statement block
+**Transaction hash**:
+The hash of a transaction record's stored bytes. It is what the next record
+names as its parent, and it is never carried inside the record it identifies.
+_Avoid_: record hash, content hash, digest, id
+
+**Comment**:
+Free text a client may attach to a transaction record. It is hashed with
+everything else, and the software never reads it.
+_Avoid_: label, message, tag, description
 
 **Op**:
 One structured change inside a transaction, such as the creation of a table or
@@ -43,7 +49,8 @@ _Avoid_: tip, latest, current, HEAD
 **State fingerprint**:
 A canonical hash of the whole logical content of the database after a transaction
 record has been applied. It is carried in the record, and every client recomputes
-it.
+it. Distinct from the transaction hash: that one hashes stored bytes, this one
+hashes content a client derived for itself.
 _Avoid_: checksum, digest, merkle root, state hash
 
 ### Clients

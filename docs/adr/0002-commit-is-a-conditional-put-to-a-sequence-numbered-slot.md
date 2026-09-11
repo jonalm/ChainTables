@@ -38,6 +38,8 @@ address. The integrity that hash keys would have provided is retained by carryin
   by rule. (Deleting rows from the content is unaffected — that is an ordinary op,
   and it makes the chain longer, not shorter.)
 - **`seq` and `prev_hash` live inside the hashed envelope**, not only in the key.
+  (**The envelope field is named `slot` per ADR-0006**, following the glossary;
+  the 12-digit key and everything else here stands.)
   Compaction dissolves individual keys as addresses, so a record whose position lived
   only in its key would lose it; and a `seq` outside the hash would let a record be
   relocated to another slot undetected.
