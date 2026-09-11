@@ -1,0 +1,88 @@
+# S3SQLite
+
+Several independent clients agree on the content of a SQLite database without a
+database server. The agreed content is an append-only, hash-chained sequence of
+immutable records in an S3 bucket; each client keeps its own local copy of the
+database, built by replaying that sequence.
+
+## Language
+
+### The chain
+
+**Chain**:
+The totally ordered, append-only sequence of transaction records under one S3
+key prefix. One bucket holds many chains.
+_Avoid_: log, stream, history, ledger
+
+**Transaction record**:
+One immutable object in the chain. It holds the ops of one commit, and the
+hashes that place it in the chain.
+_Avoid_: commit object, changeset, delta, event, patch
+
+**Transaction**:
+One named group of ops inside a transaction record. A record may hold several.
+It is a unit of intent and a carrier for metadata, not a unit of atomicity — the
+record is the atom.
+_Avoid_: batch, group, statement block
+
+**Op**:
+One structured change inside a transaction, such as the creation of a table or
+the insertion of a set of rows. An op holds literal values only; it is never SQL
+text and never a SQLite changeset.
+_Avoid_: statement, command, mutation, operation
+
+**Head**:
+The last transaction record of the chain that a given client has applied.
+_Avoid_: tip, latest, current, HEAD
+
+**State fingerprint**:
+A canonical hash of the whole logical content of the database after a transaction
+record has been applied. It is carried in the record, and every client recomputes
+it.
+_Avoid_: checksum, digest, merkle root, state hash
+
+### Clients
+
+**Client**:
+One process with its own local copy and its own cache of transaction records.
+Clients never talk to each other; they agree only through the chain.
+_Avoid_: user, node, peer, replica
+
+**Local copy**:
+The SQLite database file a client builds by replay. It is derived state, always
+rebuildable from the chain.
+_Avoid_: materialized database, cache, mirror, replica
+
+**Replay**:
+To apply the ops of a sequence of transaction records, in chain order, to a local
+copy. Schema is derived this way too, so a replay to an earlier point yields the
+schema of that point.
+_Avoid_: sync, materialize, rehydrate, project
+
+**Commit**:
+To add a transaction record to the chain, which succeeds only if no other client
+claimed the same position first.
+_Avoid_: push, upload, write, publish
+
+**Point-in-time rebuild**:
+A replay that stops at a chosen transaction record, producing the local copy as
+it stood at that point.
+_Avoid_: time travel, snapshot, checkout
+
+### Writing
+
+**Write builder**:
+The only way to create a transaction record. Reads go straight to SQLite; only
+writes pass through the builder.
+_Avoid_: DSL, query builder, ORM, writer
+
+**Row set**:
+The explicit rows an op names, computed by the client against its local copy
+before the record exists. A record carries the rows that were found, never the
+condition that found them.
+_Avoid_: materialized rows, predicate, filter, where clause
+
+**Replay determinism**:
+The property that every client applying the same transaction record to the same
+local copy obtains the same content. This is what the chain guarantees.
+_Avoid_: determinism, reproducibility, idempotency
