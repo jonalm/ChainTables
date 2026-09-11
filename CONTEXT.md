@@ -141,6 +141,13 @@ failing does not raise, it splits the chain. Only AWS S3 is supported for that
 reason.
 _Avoid_: backend, adapter, driver, blob store, client (that is the process)
 
+**Assumed guarantee**:
+A promise about the environment that S3SQLite cannot check, which a user makes on
+its behalf by setting a named field. It lets a client commit where the software
+would otherwise refuse, and it is named for the promise rather than for the rule
+it lifts.
+_Avoid_: override, flag, unsafe mode, escape hatch
+
 **Commit**:
 To add a transaction record to the chain, which succeeds only if no other client
 claimed the same position first.
@@ -171,8 +178,17 @@ _Avoid_: materialized rows, predicate, filter, where clause
 
 **Replay determinism**:
 The property that every client applying the same transaction record to the same
-local copy obtains the same content. This is what the chain guarantees.
+local copy obtains the same content. This is what the chain guarantees. It is
+claimed on every machine the package runs on, but only for the SQLite library
+the package itself ships.
 _Avoid_: determinism, reproducibility, idempotency
+
+**Typed value**:
+A value as SQLite holds it — an integer, a float, text or a blob — rather than
+any text rendering of it. Ops and the state fingerprint carry typed values only,
+because rendering a number to text, and parsing text into a number, are where
+clients on different SQLite versions or different processors stop agreeing.
+_Avoid_: literal, raw value, stored value, cell
 
 **Shape**:
 What a table declaration is allowed to state: the columns, their storage class,
