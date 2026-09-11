@@ -64,6 +64,12 @@ copy. Schema is derived this way too, so a replay to an earlier point yields the
 schema of that point.
 _Avoid_: sync, materialize, rehydrate, project
 
+**Local index**:
+An index a client builds on its own local copy to serve its own reads. It is
+never named by a transaction record, so two clients may hold different ones and
+still agree on the content.
+_Avoid_: index (bare), secondary index, chain index
+
 **Commit**:
 To add a transaction record to the chain, which succeeds only if no other client
 claimed the same position first.
@@ -91,6 +97,13 @@ _Avoid_: materialized rows, predicate, filter, where clause
 The property that every client applying the same transaction record to the same
 local copy obtains the same content. This is what the chain guarantees.
 _Avoid_: determinism, reproducibility, idempotency
+
+**Shape**:
+What a table declaration is allowed to state: the columns, their storage class,
+their nullability, and the primary key. Anything that constrains which content is
+*permitted* rather than how it is structured is policy, and the chain carries
+none of it.
+_Avoid_: schema (for this sense), structure, layout
 
 **Delete rows**:
 An op that removes a named row set from the content. Distinct from destroying a

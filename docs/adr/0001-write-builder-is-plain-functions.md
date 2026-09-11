@@ -37,7 +37,9 @@ data, so the choice was purely about how the calling code reads (issue #7, branc
   `Inf`, no U+0000 in TEXT), bare-safe identifiers with no quoting anywhere (a
   quoted identifier that fails to resolve becomes a string literal under
   `SQLITE_DQS=3`, issue #18), an explicit `PRIMARY KEY` on every table, uniform
-  column order within an op, and literal-only defaults.
+  column order within an op, and literal-only defaults. **The identifier rule here
+  is superseded by ADR-0004**: the `SQLITE_DQS=3` hazard is specific to double
+  quotes, and every identifier is now bracketed instead. The rest stands.
 - Every record is applied to the local copy before it may be committed. An op
   that matches a number of rows other than the one it names is an error, not a
   no-op: the row set disagrees with local state, so the two clients do not agree
