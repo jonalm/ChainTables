@@ -1,6 +1,5 @@
 using Test
 import S3SQLite
-import LazyFiles
 
 # ---------------------------------------------------------------------------
 # Test setup
@@ -16,12 +15,11 @@ import LazyFiles
 # Credentials come from the environment. Locally that is aws-vault, so the
 # keys never touch disk:
 #
-#     aws-vault exec s3sqlite-test --no-session -- \
+#     aws-vault exec s3sqlite-test -- \
 #         julia --project -e 'using Pkg; Pkg.test()'
 #
-# `--no-session` is required: the S3 backend authenticates with a static
-# access key and never reads AWS_SESSION_TOKEN, so aws-vault's default STS
-# session, AWS SSO and MFA-gated sessions all fail.
+# ADR-0010's signer signs `x-amz-security-token`, so an STS session works and
+# issue #6's `--no-session` is retired: SSO and MFA-gated sessions are fine.
 #
 # A repo-root `env` file, if present, is loaded first and wins — a fresh
 # checkout can then run the live tests without fighting unrelated AWS_* vars
@@ -53,34 +51,21 @@ const BUCKET = get(
 const RID = string(getpid(), "-", time_ns())
 
 """
-    live_config()
+    have_credentials()
 
-The S3 config for the live tests, or `nothing` when the environment cannot
-supply one. Returning `nothing` rather than throwing is what lets the offline
-half run on a machine with no AWS access at all.
+Whether the environment can reach the test bucket. Returning `false` rather
+than throwing is what lets the offline half run on a machine with no AWS
+access at all. There is nothing to build a client *from* yet: ADR-0010 makes
+the S3 client ours, and it is not written.
 """
-function live_config()
-    haskey(ENV, "AWS_ACCESS_KEY_ID") || return nothing
-    haskey(ENV, "AWS_SECRET_ACCESS_KEY") || return nothing
+function have_credentials()
+    haskey(ENV, "AWS_ACCESS_KEY_ID") || return false
+    haskey(ENV, "AWS_SECRET_ACCESS_KEY") || return false
     get!(ENV, "AWS_REGION", "eu-north-1")
-    return LazyFiles.config_from_env()
+    return true
 end
 
-const CFG = live_config()
-
-"""
-    delete_remote(b, cfg)
-
-Remove a remote object. LazyFiles exposes no public delete, so this reaches
-through the same private path LazyFiles' own tests use. That gap is part of
-the LazyFiles API additions this design needs; when a public delete lands,
-this is the single place to change.
-"""
-function delete_remote(b, cfg)
-    return LazyFiles._with_rclone(cfg) do mk
-        LazyFiles._run(mk(`deletefile $(LazyFiles.RCLONE_REMOTE):$(b.bucket)/$(b.name)`))
-    end
-end
+const LIVE = have_credentials()
 
 # ---------------------------------------------------------------------------
 
@@ -100,40 +85,19 @@ end
         include("sqlite_jl_marshalling.jl")
     end
 
-    if isnothing(CFG)
+    if LIVE
+        # The live half — a smoke test that credentials, transport and bucket
+        # work together, then whatever only S3 can answer about the commit
+        # protocol — lands when ADR-0010's object-store port exists. It had
+        # been written against LazyFiles, which issue #15 dropped.
+        @info "AWS credentials present; live S3 tests land with the object-store port ($BUCKET, run id $RID)"
+    else
         @info """
         Skipping live S3 tests: no AWS credentials in the environment.
         Run them with:
-            aws-vault exec s3sqlite-test --no-session -- \\
+            aws-vault exec s3sqlite-test -- \\
                 julia --project -e 'using Pkg; Pkg.test()'
         """
-    else
-        @testset "live S3" begin
-            @info "Live S3 tests against $BUCKET (run id $RID)"
-
-            # Smoke test: prove the credentials, the transport and the bucket
-            # work together, so that a later failure in a real test is a
-            # failure of our logic rather than of the plumbing.
-            @testset "round-trip through the object store" begin
-                key = "_selftest/$RID.bin"
-                payload = "S3SQLite smoke test $RID\n"
-                path, io = mktemp()
-                write(io, payload)
-                close(io)
-
-                blob = LazyFiles.s3_upload(path, BUCKET, key; config = CFG)
-                @test blob.bucket == BUCKET
-                @test blob.name == key
-
-                @test read(blob(; config = CFG), String) == payload
-
-                listed = LazyFiles.s3_list(BUCKET; prefix = "_selftest", config = CFG)
-                @test key in [b.name for b in listed]
-
-                delete_remote(blob, CFG)
-                LazyFiles.clear_from_cache(blob)
-            end
-        end
     end
 
 end
