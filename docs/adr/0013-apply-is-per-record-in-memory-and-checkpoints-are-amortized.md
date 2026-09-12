@@ -2,32 +2,34 @@
 status: accepted
 ---
 
-# Apply is one local transaction per record, and sync is explicit
+# Apply is per record in memory, checkpoints are amortized, and sync is explicit
 
 `sync!(db)` probes slot `N` — the local head — gallops for the chain head from
 `N+1` (ADR-0012), fetches the tail with a bounded read-ahead window into the
-record cache, and applies the records **in slot order, one SQLite transaction per
-record**, with `s3sqlite_head` and `s3sqlite_applied` advancing inside that same
-transaction (ADR-0008).
+record cache, and applies the records **in slot order to the model**, writing
+the local copy's table files and a new head file at each **checkpoint**
+(ADR-0023).
 
-## Why per record rather than per batch
+## Checkpoints, and why they are amortized
 
-ADR-0009 wraps a *commit* in one transaction, so the obvious reading is that a
-batch replay is one transaction too. It is not, and the difference only shows at
-cold start: 10⁴ records is one rollback journal holding every intermediate state
-of a database ADR-0003 lets a single record rewrite wholesale, and a crash 9,000
-records in loses all 9,000.
+Amended by ADR-0023. This ADR first made every record one SQLite transaction,
+so that a crash left a consistent copy at some slot `k` and cold start was
+restartable rather than all-or-nothing. That property is kept; the mechanism is
+not, because writing every touched table file after every record is
+O(records × table bytes) and dead at 10⁴ records.
 
-Per record makes the record the atom on disk as well as in the chain. A crash
-always leaves a consistent local copy at some slot `k`, and the next `sync!`
-resumes from it — cold start becomes restartable rather than all-or-nothing.
+`sync!` checkpoints **always at the end, and mid-replay whenever the apply time
+since the last checkpoint exceeds the duration of the last checkpoint**. That
+bounds checkpoint overhead to half the replay wall time, bounds a restart to
+about two checkpoints of lost work, needs no knob, and adapts to table size. A
+crash leaves the copy at its last checkpoint's head, and the next `sync!`
+resumes from it.
 
-What per batch would have bought is a whole-sync rollback when the head
-fingerprint mismatches. That is worth little: a mismatch sends the client to
-ADR-0014's repair path whatever the local copy is holding, and ADR-0007 verifies
-the head only, so every intermediate slot in a batch was unverified regardless. A
-failed sync leaves the copy at `n-1` — consistent, and unverified in exactly the
-way slot `n-1` was a moment earlier.
+**Every checkpoint is verified.** Its table hashes are computed to name the
+files, so the fingerprint is free and is compared with that record's
+`state_fingerprint`; ADR-0007's "head only" becomes "every checkpoint and the
+head". A failed sync leaves the copy at the last checkpoint — consistent, and
+verified.
 
 ## Sync is explicit
 
@@ -60,11 +62,13 @@ slot lands; `s3sqlite_applied` covers everything already applied.
 ## Consequences
 
 - **ADR-0009's crash window closes itself.** A crash after the conditional PUT
-  succeeded but before `COMMIT` leaves our own record in the chain at slot `n`
-  and the local copy at `n-1`. The next `sync!` applies it as an ordinary record.
-  There is no authorship special case, and there cannot be one — ADR-0006 made
-  client metadata advisory.
-- **No recovery journal of our own.** SQLite's atomicity covers every crash
-  window, and ADR-0008's open checks cover what is left.
+  succeeded but before the head file is written leaves our own record in the
+  chain at slot `n` and the local copy at `n-1`. The next `sync!` applies it as
+  an ordinary record and finds its table files already present. There is no
+  authorship special case, and there cannot be one — ADR-0006 made client
+  metadata advisory.
+- **No recovery journal of our own.** Write-once files with the head written
+  last cover every crash window, and ADR-0023's open checks and sweep cover what
+  is left.
 - **The read-ahead window is v1's only performance knob**, and the place the
   unmeasured cold-start question will first be felt.

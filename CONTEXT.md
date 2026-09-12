@@ -29,7 +29,7 @@ _Avoid_: index, offset, position, sequence
 **Reserved name**:
 Anything under a chain's prefix that is not a slot. Clients ignore reserved names,
 so whatever a later version of S3SQLite keeps there cannot break an earlier one.
-_Avoid_: metadata object, sidecar, extra key. Distinct from a *reserved table*,
+_Avoid_: metadata object, sidecar, extra key. Distinct from a *head file*,
 which lives inside a local copy rather than in the bucket.
 
 **Transaction record**:
@@ -69,9 +69,9 @@ _Avoid_: checksum, digest, merkle root, state hash
 
 **Divergence**:
 Two clients deriving different content from the same transaction records. A state
-fingerprint mismatch that survives a fresh replay is divergence; one that a fresh
-replay clears was a damaged local copy instead. A diverged client may still read,
-but never commits.
+fingerprint mismatch is divergence, because a damaged copy is caught by hash
+before any content is used and so can never produce one. A diverged client may
+still read, but never commits.
 _Avoid_: drift, corruption, conflict (that is two clients racing for a slot)
 
 **Rewritten chain**:
@@ -88,9 +88,37 @@ Clients never talk to each other; they agree only through the chain.
 _Avoid_: user, node, peer, replica
 
 **Local copy**:
-The SQLite database file a client builds by replay. It is derived state, always
-rebuildable from the chain.
+The directory a client builds by replay: one table file per table and one head
+file. It is derived state, always rebuildable from the chain, and everything in it
+may be deleted.
 _Avoid_: materialized database, cache, mirror, replica
+
+**Table file**:
+The file that holds one table's content in a local copy — exactly the bytes the
+state fingerprint hashes for that table, so the file is named by its own hash. A
+table file is written once and never changed; a table that changes gets a new
+file. Two tables with the same content share one.
+_Avoid_: data file, snapshot, page, segment
+
+**Head file**:
+The one file in a local copy that says which transaction record the content is
+the result of, and which table file holds each table. Named by slot, written once,
+and written after every table file it names, so that a head that exists names
+files that are complete. Everything a client keeps for itself lives here.
+_Avoid_: manifest, index, metadata file, catalog
+
+**Checkpoint**:
+Writing the table files and a head file for the record a replay has reached. A
+replay checkpoints at its end and, when long, at amortized points in between; a
+checkpoint's state fingerprint is checked against its record.
+_Avoid_: flush, save, snapshot, commit (that is adding a record to the chain)
+
+**Damaged copy**:
+A local copy holding a table file whose bytes do not hash to its name, or a head
+file that does not agree with itself. It is found by hashing, never by replay, and
+no content from it is ever used. Distinct from divergence, which is about content
+two clients disagree on.
+_Avoid_: corrupted database, bad copy, inconsistent state
 
 **Replay**:
 To apply the ops of a sequence of transaction records, in chain order, to a local
@@ -105,17 +133,11 @@ records after the copy's own, and replaying them. It is always asked for, never
 implicit, and true only as of the moment it finished.
 _Avoid_: pull, update, refresh, catch up
 
-**Reserved table**:
-A table inside a local copy that holds what a client keeps for itself — which
-chain the copy belongs to, where its head is, what it has applied. No transaction
-record may name one, and the state fingerprint covers none of them.
-_Avoid_: metadata table, system table, internal table
-
 **Layout version**:
-Which set of reserved tables a local copy carries. Purely local, and never a
-property of the chain — distinct from the record format version, which the chain
-does carry. A client that meets a layout version other than its own rebuilds the
-local copy or refuses it; it never migrates one.
+Which arrangement of head file and table files a local copy uses. Purely local,
+and never a property of the chain — distinct from the record format version,
+which the chain does carry. A client that meets a layout version other than its
+own rebuilds the local copy or refuses it; it never migrates one.
 _Avoid_: schema version, db version, format version (that is the chain's)
 
 **Local index**:

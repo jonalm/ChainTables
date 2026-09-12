@@ -17,15 +17,18 @@ where `cbor` is ADR-0006's frozen §4.2.1 encoder, `shape` is the table's column
 as SQLite reports them, `rows` is every row of the table, and the outer array is
 sorted by table name. Both domain separators are part of the format.
 
+**A table file holds exactly the `table_hash` byte stream, separator included**
+(ADR-0023), so `table_hash == sha256(file)`: a table's verification is hashing a
+file, and the outer hash is over the head file's `tables` list.
+
 **What is inside.** Every table the chain created, and its shape: table name,
 column names, declared storage class, nullability, primary-key position. Shape is
 read from SQLite's own catalog (`PRAGMA table_list` / `table_info`), never from
 our replayed schema model and never from `sqlite_schema`'s SQL text, which SQLite
 rewrites and which is version-sensitive. **Outside**: reserved tables and local
-indexes (ADR-0003), both of which are per-client by definition. ADR-0008 sharpens
-this: reserved tables are excluded **by an explicit list of names**, never by
-their `s3sqlite_` prefix, so that a hand-created table cannot hide behind the
-prefix and escape the fingerprint.
+indexes (ADR-0003), both of which are per-client by definition. Since ADR-0023
+there is nothing to exclude: the local copy holds table files and a head file
+and nothing else, and every table file is inside the fingerprint.
 
 **What is hashed.** Typed values only — `INTEGER`→int, `REAL`→preferred float,
 `TEXT`→tstr, `BLOB`→bstr, NULL→CBOR null. **No number is ever rendered to text.**
@@ -79,40 +82,42 @@ may call a hardware-accelerated SHA-256.
 
 - **Applying one new record onto the current head verifies that record.** This is
   the steady-state case.
-- **A batch replay verifies the head only.** 10⁴ records at cold start × a full
-  pass each is O(n·R) and the design dies there. Verifying the head is sufficient
-  for detection — a wrong intermediate fingerprint propagates — and loses only
-  *localization*, which `verify(chain; full=true)` recovers on demand by
-  bisecting to the first mismatching slot. A point-in-time rebuild verifies the
-  record it stops at.
+- **A batch replay verifies every checkpoint and the head** (amended by
+  ADR-0023; this ADR first said *the head only*, a cost decision). 10⁴ records at
+  cold start × a full pass each is O(n·R) and the design dies there, but a
+  checkpoint computes every table hash to name its files, so its fingerprint is
+  free and is compared with that record's. Between checkpoints a wrong
+  intermediate fingerprint propagates, so detection is never lost, and
+  `verify(chain; full=true)` recovers localization on demand by bisecting to the
+  first mismatching slot. A point-in-time rebuild verifies the record it stops at.
 - **The committer runs no extra pass.** It needs the post-apply fingerprint anyway
   to build the record, and it has no independent value to check it against — it is
-  the author. What it does check first is that its local head matches the parent
-  record's fingerprint, which catches "my local copy drifted since the last apply"
-  *before* a bad fingerprint becomes permanent.
+  the author. The touched tables are hashed as their files are written; untouched
+  tables keep the head's `table_hash`, which is safe because the head is
+  content-addressed (ADR-0023). What it does check first is that its local head
+  matches the parent record's fingerprint, which catches "my local copy drifted
+  since the last apply" *before* a bad fingerprint becomes permanent.
 - **There is no opt-out.** A check that configuration can disable is not a
   guarantee.
 
 ## On mismatch
 
-The fingerprint is computed **inside** ADR-0001's transaction, before `COMMIT`, so
-a mismatch **rolls back**: the local copy stays exactly at the previous head and
-the chain is never partially applied. The error names the chain, the slot, the
-expected and computed fingerprints, and the record's `sqlite_version` and
-`build_profile` against the local ones — this is the forensic job ADR-0006 gave
-those two advisory fields.
+Amended by ADR-0023. A mismatch is found before any head is written, so the
+local copy stays at its last checkpoint and the chain is never partially
+applied. The error names the chain, the slot, the expected and computed
+fingerprints, and the record's `client.lib` and `client.julia` against the local
+ones — the forensic job ADR-0006 and ADR-0022 gave those advisory fields.
 
-Recovery must distinguish two failures that look identical, because a rebuild from
-records reproduces the mismatch if the divergence is in the records. The
-diagnostic is a **fresh rebuild into a temporary file** from the cached records,
-whose bytes are already verified against their `transaction_hash` and so are
-known-good:
-
-- **Fresh rebuild matches** → the old local copy was damaged or hand-edited. Adopt
-  the rebuild. No chain problem.
-- **Fresh rebuild mismatches too** → **divergence**: this machine cannot reproduce
-  this chain. It is not self-healable, and the client must **refuse to commit**
-  onto that chain rather than write a record no one else can reproduce.
+This ADR first made the mismatch a fork between *damaged copy* and *divergence*,
+resolved by a fresh rebuild. **Damage and divergence are now caught in different
+places.** A table file is hashed at load and a head is content-addressed, so a
+damaged copy is decided without replay and can never reach the model
+(ADR-0023). A fingerprint mismatch at apply is therefore **divergence**: this
+machine cannot reproduce this chain. It is not self-healable, and the client
+must **refuse to commit** onto that chain rather than write a record no one else
+can reproduce. `repair!` remains the confirming step — a fresh replay from the
+cached records, whose bytes are verified against their `transaction_hash`, that
+also mismatches proves it.
 
 ## Considered options
 
@@ -122,8 +127,9 @@ known-good:
   two-level shape costs one domain separator today while permanently preserving
   one optimization: a client caching `table_hash` per table can skip untouched
   tables, which at 10 GB with one small table touched is milliseconds rather than
-  seconds. That skip trusts per-client state, so it is an apply-time optimization
-  only — `verify(… full=true)` always recomputes every table from the file.
+  seconds. Under ADR-0023 the cached value is the head file's, which is
+  content-addressed, so the skip is sanctioned at commit; `verify` always
+  recomputes every table from its file.
 - **A multiset or Merkle structure** (per-row hashes combined commutatively, or a
   tree over sorted keys) giving O(changed rows) updates. Rejected on the
   measurements: it buys ~5 s → ~50 ms on an operation that runs tens of times a
@@ -150,11 +156,11 @@ known-good:
 - **Issue #13's bucket-cached local copy is verifiable by construction.** The
   fingerprint depends on nothing per-client, so any client can check a cached copy
   against the `state_fingerprint` of the record it claims to represent.
-- **Reserved tables are free to hold anything per-client** — local timestamps, the
-  head hash, cached `table_hash` values — because they are outside the
-  fingerprint. ADR-0008 settles which ones exist.
-- **A foreign table is caught.** The fingerprint covers every non-reserved table,
-  so a table a user created by hand in the local copy diverges immediately.
+- **A client's own state lives in the head file** (ADR-0023), outside the
+  fingerprint by construction: the fingerprint is over the head's `tables` list,
+  not over the head.
+- **A foreign table cannot exist.** The head names every table file, and a file
+  the head does not name is swept.
 - Named tests: a BLOB whose bytes are a valid Julia serialization fingerprints as
   its raw bytes; an empty table contributes its shape and no rows; `-0.0` (already
   required by ADR-0006). Note also that `0.0` and `-0.0` compare *equal* in SQL, so
