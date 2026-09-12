@@ -1,5 +1,5 @@
 using Test
-import S3SQLite
+import ChainTables
 
 # ---------------------------------------------------------------------------
 # The suite is offline-only. The live half — a smoke test of credentials,
@@ -7,17 +7,17 @@ import S3SQLite
 # the commit protocol — returns with ADR-0010's object-store port. Issue #6
 # holds the bucket, the IAM user and the invocation it needs:
 #
-#     aws-vault exec s3sqlite-test -- \
+#     aws-vault exec chaintables-test -- \
 #         julia --project -e 'using Pkg; Pkg.test()'
 #
 # The suite resolves against the package's own environment; it declares no
 # dependency of its own.
 # ---------------------------------------------------------------------------
 
-@testset "S3SQLite" begin
+@testset "ChainTables" begin
 
     @testset "package loads" begin
-        @test S3SQLite isa Module
+        @test ChainTables isa Module
     end
 
     # Everything the design decides — record encoding, the op set, replay, the

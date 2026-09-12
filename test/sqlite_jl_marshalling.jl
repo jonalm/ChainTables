@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
 # Characterization tests for SQLite.jl's value marshalling.
 #
-# These pin behaviour of the *dependency*, not of S3SQLite — there is nothing
+# These pin behaviour of the *dependency*, not of ChainTables — there is nothing
 # of ours to test yet. They exist because the design depends on two facts that
 # are nowhere in SQLite.jl's documentation and would change silently:
 #
@@ -131,7 +131,7 @@ row_api_column(db, sql, name::Symbol) = [r[name] for r in DBI.execute(db, sql)]
             row_api_column(db, "SELECT typeof(v) AS t FROM w WHERE k = $k", :t)[1]
         end
 
-        # The four storage classes S3SQLite admits, reached by exactly four
+        # The four storage classes ChainTables admits, reached by exactly four
         # Julia types.
         @test stored(1, Int64(7)) == "integer"
         @test stored(2, Float64(1.5)) == "real"

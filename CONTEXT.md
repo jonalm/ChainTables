@@ -1,4 +1,4 @@
-# S3SQLite
+# ChainTables
 
 Several independent clients agree on the content of a SQLite database without a
 database server. The agreed content is an append-only, hash-chained sequence of
@@ -28,7 +28,7 @@ _Avoid_: index, offset, position, sequence
 
 **Reserved name**:
 Anything under a chain's prefix that is not a slot. Clients ignore reserved names,
-so whatever a later version of S3SQLite keeps there cannot break an earlier one.
+so whatever a later version of ChainTables keeps there cannot break an earlier one.
 _Avoid_: metadata object, sidecar, extra key. Distinct from a *head file*,
 which lives inside a local copy rather than in the bucket.
 
@@ -169,8 +169,8 @@ from the local copy, which is derived from the records rather than a copy of the
 _Avoid_: blob cache, object cache, store, mirror
 
 **Object store**:
-The four operations S3SQLite needs of a bucket — fetch one object, put one object
-only if its key is absent, stat one key, list a prefix. It is S3SQLite's own seam,
+The four operations ChainTables needs of a bucket — fetch one object, put one object
+only if its key is absent, stat one key, list a prefix. It is ChainTables's own seam,
 so the real client and the in-process double are interchangeable, and it carries
 no delete.
 Put-if-absent is the load-bearing one: a store that overwrites instead of
@@ -179,7 +179,7 @@ reason.
 _Avoid_: backend, adapter, driver, blob store, client (that is the process)
 
 **Assumed guarantee**:
-A promise about the environment that S3SQLite cannot check, which a user makes on
+A promise about the environment that ChainTables cannot check, which a user makes on
 its behalf by setting a named field. It lets a client commit where the software
 would otherwise refuse, and it is named for the promise rather than for the rule
 it lifts.
