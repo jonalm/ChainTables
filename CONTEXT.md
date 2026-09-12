@@ -179,20 +179,17 @@ condition that found them.
 _Avoid_: materialized rows, predicate, filter, where clause
 
 **Replay determinism**:
-The property that every client applying the same transaction record to the same
-local copy obtains the same content. This is what the chain guarantees. It is
-claimed on every machine the package runs on, but only for the SQLite library
-the package itself ships.
+The property that every client applying the same transaction records obtains the
+same content and the same state fingerprint. It is a property of the record
+format and the frozen encoder alone, and of nothing on the machine, so it is
+claimed wherever the package runs.
 _Avoid_: determinism, reproducibility, idempotency
 
 **Typed value**:
-A value as SQLite holds it — an integer, a float, text or a blob — rather than
-any text rendering of it. Ops and the state fingerprint carry typed values only,
-because rendering a number to text, and parsing text into a number, are where
-clients on different SQLite versions or different processors stop agreeing. A
-typed value is what `sqlite3_column_*` returns: the Julia driver's row API
-decodes some blobs into objects and renders some numbers into text, so it is
-not a source of one.
+One of the four kinds of value a cell may hold — an integer, a float, text or
+bytes — or null where the shape allows it. Ops, the local copy and the state
+fingerprint carry typed values only, and a typed value is never converted,
+rendered or parsed on its way from a transaction record to the fingerprint.
 _Avoid_: literal, raw value, stored value, cell
 
 **Shape**:

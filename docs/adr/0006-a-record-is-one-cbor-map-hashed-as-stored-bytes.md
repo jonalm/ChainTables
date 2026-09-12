@@ -17,9 +17,7 @@ payload blob.
   "slot":              0,                 ; uint
   "prev_hash":         h'<32>',           ; ABSENT at slot 0, per ADR-0002
   "state_fingerprint": h'<32>',           ; content after this record is applied
-  "sqlite_version":    "3.53.2",          ; tstr, advisory
-  "build_profile":     h'<32>',           ; curated compile-options hash, advisory
-  "client": { "host": tstr?, "user": tstr?, "lib": tstr, "time_ms": int },
+  "client": { "host": tstr?, "user": tstr?, "lib": tstr, "julia": tstr, "time_ms": int },
   "comment":           "…",               ; optional free text, no semantics
   "ops":               [ … ]              ; at least one op, per issue #9
 }
@@ -134,18 +132,12 @@ Pinning what §4.2.2 leaves open, per issue #4:
   because a v1 client could do nothing with a server assertion it cannot check.
   The map's forward-compatibility constraint is met by intent recorded here, not
   by a mechanism.
-- **`sqlite_version` and `build_profile` are advisory** and gate nothing. Issue
-  #3 showed clients legitimately diverge across the patch releases SQLite.jl's
-  compat range admits (3.53.0 moved float→text from 15 to 17 significant digits),
-  so gating on equality would forbid ordinary mixed-version operation while
-  catching nothing `state_fingerprint` misses. Their job is forensic: when a
-  fingerprint mismatch fires, the record names the suspect. The floor of ≥ 3.51.3
-  (issue #19) is checked when a local copy is opened, independently of this.
-- **`build_profile`'s allowlist must be pinned by `format_version`.** Issue #18
-  established the shape — strip `COMPILER=` and `MUTEX_*`, hash the filtered
-  sorted subset — but the curated list is ours to write, and a list that drifted
-  would make records written by different library versions incomparable. The list
-  itself is not decided here.
+- **`client.lib` and `client.julia` are advisory** and gate nothing. Their
+  job is forensic: when a fingerprint mismatch fires, the record names the
+  suspect — the package name and version, and the Julia version. *Amended by
+  ADR-0022*: this slot originally held `sqlite_version` and `build_profile`,
+  which left the envelope when SQLite left the replay path; no chain had been
+  written, so `format_version` stays 1.
 - **`comment` is free text with no semantics**, hashed like everything else,
   validated only as well-formed UTF-8 without U+0000. It is the one cheap piece
   of observability available on day one, and under the strict decoder it could
