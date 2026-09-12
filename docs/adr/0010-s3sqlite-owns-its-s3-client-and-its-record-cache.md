@@ -2,7 +2,7 @@
 status: accepted
 ---
 
-# S3SQLite owns its S3 client and its record cache
+# ChainTables owns its S3 client and its record cache
 
 S3SQLite talks to S3 through four operations of its own, over an HTTP client of
 its own, and caches transaction records in a directory of its own. It does not

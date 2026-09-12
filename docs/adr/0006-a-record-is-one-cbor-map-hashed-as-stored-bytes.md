@@ -6,7 +6,7 @@ status: accepted
 
 A transaction record is a single deterministic-CBOR map, encoded under the core
 deterministic requirements of RFC 8949 §4.2.1 with the profile below. Every byte
-of the object is inside the hash: `transaction_hash = SHA-256("s3sqlite/v1/txn" ‖
+of the object is inside the hash: `transaction_hash = SHA-256("chaintables/v1/txn" ‖
 the object's bytes exactly as stored)`. There is no unhashed region and no nested
 payload blob.
 

@@ -8,9 +8,9 @@ After the ops of a transaction record are applied, a client derives that record'
 `state_fingerprint` by reading its **local copy** back and hashing what it finds:
 
 ```
-table_hash  = SHA-256("s3sqlite/v1/fp-table" ‖ cbor([shape, rows]))
+table_hash  = SHA-256("chaintables/v1/fp-table" ‖ cbor([shape, rows]))
 state_fingerprint
-            = SHA-256("s3sqlite/v1/fp" ‖ cbor([[name, table_hash], …]))
+            = SHA-256("chaintables/v1/fp" ‖ cbor([[name, table_hash], …]))
 ```
 
 where `cbor` is ADR-0006's frozen §4.2.1 encoder, `shape` is the table's shape
