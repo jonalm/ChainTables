@@ -2,10 +2,10 @@ using Test
 import ChainTables
 
 # ---------------------------------------------------------------------------
-# The suite is offline-only. The live half — a smoke test of credentials,
-# transport and bucket, then whatever only a real S3 bucket can answer about
-# the commit protocol — returns with ADR-0010's object-store port. Issue #6
-# holds the bucket, the IAM user and the invocation it needs:
+# One test file per src file, in the build order of #34 §3. Everything before
+# step 7 runs against the double with no credentials. The live half — one
+# test against the real bucket (#34 §2 "Live S3", issue #6) — lives in
+# test/s3.jl and needs:
 #
 #     aws-vault exec chaintables-test -- \
 #         julia --project -e 'using Pkg; Pkg.test()'
@@ -15,13 +15,17 @@ import ChainTables
 # ---------------------------------------------------------------------------
 
 @testset "ChainTables" begin
-
     @testset "package loads" begin
         @test ChainTables isa Module
     end
 
-    # Everything the design decides — record encoding, the op set, replay, the
-    # state fingerprint, conflict resolution against a fake S3 — lands here.
-    # None of it is implemented yet; the design is still deciding it.
-
+    include("errors.jl")
+    include("cbor.jl")
+    include("model.jl")
+    include("ops.jl")
+    include("builder.jl")
+    include("localcopy.jl")
+    include("store.jl")
+    include("s3.jl")
+    include("Testing.jl")
 end
