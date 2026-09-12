@@ -13,9 +13,10 @@ state_fingerprint
             = SHA-256("s3sqlite/v1/fp" ‖ cbor([[name, table_hash], …]))
 ```
 
-where `cbor` is ADR-0006's frozen §4.2.1 encoder, `shape` is the table's columns
-as SQLite reports them, `rows` is every row of the table, and the outer array is
-sorted by table name. Both domain separators are part of the format.
+where `cbor` is ADR-0006's frozen §4.2.1 encoder, `shape` is the table's shape
+in ADR-0025's wire form, `rows` is every row of the table as ADR-0025's arrays,
+and the outer array is sorted by table name. Both domain separators are part of
+the format.
 
 **A table file holds exactly the `table_hash` byte stream, separator included**
 (ADR-0023), so `table_hash == sha256(file)`: a table's verification is hashing a
@@ -38,13 +39,11 @@ significant digits), so a fingerprint that never takes that path cannot fire for
 legitimate version difference. Every mismatch is a real divergence.
 
 **In what order.** Tables by the UTF-8 bytes of their name; columns in declaration
-order; rows in primary-key order. `ORDER BY` on the primary key under `BINARY`
-collation is a total order here — memcmp for TEXT and BLOB, numeric for INTEGER
-and REAL — because ADR-0003 admits only the four storage classes, so a primary-key
-column is single-typed and `NOT NULL`. **This ordering rule depends on the absence
-of `ANY`**; admitting `ANY` later would require sorting on encoded key bytes
-instead. A `WITHOUT ROWID` table is already stored in that order, so the pass
-streams with no in-memory sort.
+order; rows in primary-key order. *Amended by ADR-0025*: the order is the typed
+key order defined there — numeric for `int64`, IEEE value for `float64` with
+`-0.0 < 0.0` and NaN last, bytes for `text` and `bytes`, lexicographic over a
+composite key — which is what `ORDER BY … BINARY` gave in the SQLite era. A key
+column is single-typed and non-nullable, so no cross-type case arises.
 
 **Values are read through `sqlite3_step` + `sqlite3_column_*`, not SQLite.jl's row
 API.** This is a correctness requirement, not a performance one: `SQLite.jl` runs
@@ -166,4 +165,5 @@ also mismatches proves it.
   required by ADR-0006). Note also that `0.0` and `-0.0` compare *equal* in SQL, so
   a `REAL` primary key can never hold both — primary-key uniqueness, not the
   fingerprint, but it is the kind of thing that should be a test rather than a
-  surprise.
+  surprise. *Inverted by ADR-0025*: under the typed key order `-0.0 ≠ 0.0`, so
+  a `float64` key may hold both, and NaN is one key; both are named tests there.

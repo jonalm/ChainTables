@@ -19,7 +19,7 @@ payload blob.
   "state_fingerprint": h'<32>',           ; content after this record is applied
   "client": { "host": tstr?, "user": tstr?, "lib": tstr, "julia": tstr, "time_ms": int },
   "comment":           "…",               ; optional free text, no semantics
-  "ops":               [ … ]              ; at least one op, per issue #9
+  "ops":               [ … ]              ; at least one op, per issue #9; op encoding in ADR-0025
 }
 ```
 
@@ -69,8 +69,9 @@ Pinning what §4.2.2 leaves open, per issue #4:
 - REAL always uses preferred float representation (§4.2.2 Rule 2), never reduced
   to an integer. Decoders widen to `Float64`. **Do not adopt dCBOR** — its
   mandatory numeric reduction collapses `REAL 2.0` into `INTEGER 2`.
-- `NaN` refused at encode time (issue #9 excludes it anyway); `-0.0` preserved;
-  ±Inf permitted.
+- `NaN` is encoded as `f97e00`, the builder having canonicalised every NaN to
+  that pattern; sign bit and payload are not preserved (*amended by ADR-0025*,
+  which first had it refused). `-0.0` preserved; ±Inf permitted.
 - TEXT is well-formed UTF-8 with **no Unicode normalization**, so NFC and NFD
   spellings are different values. Normalizing would make the hash depend on an
   ICU version.

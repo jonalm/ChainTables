@@ -33,17 +33,17 @@ moment would have filled in.
 - The builder is **schema-aware**: it resolves each op's table against the schema
   as of the current head before applying. "Every column" cannot be checked without
   knowing the columns, and the value guard needs the declared column type — issue
-  #9 measured that `STRICT` does *not* reject an `Int64` too large for a `REAL`
-  column. `9007199254740993` into a `REAL` column stores `9.007199254740992e15`
-  silently, both as a SQL literal and as a bound parameter, contradicting
-  `stricttables.html`. Only a schema-aware builder can fail fast on that.
+  #9 measured, in the SQLite era, that `STRICT` did *not* reject an `Int64` too
+  large for a `REAL` column. With ADR-0022's model there is no coercion anywhere,
+  but the lesson stands: the builder, not the store, is where a value meets its
+  declared type, and ADR-0025 makes apply repeat that check.
   The price is that an op can no longer be validated in isolation from the chain
   state it applies to.
 - A record is canonical in three ways that were previously the caller's: column
   order is the table's declaration order, key-column order is the primary key's
-  declaration order, and rows are sorted by primary key within an op. A duplicate
-  primary key inside one op is rejected by the builder rather than by SQLite at
-  apply time. The caller's own row ordering is discarded; in exchange the bytes of
+  declaration order, and rows are sorted by primary key within an op under
+  ADR-0025's typed key order. A duplicate primary key inside one op is rejected
+  by the builder, and again by apply on every other client (ADR-0025). The caller's own row ordering is discarded; in exchange the bytes of
   a record depend only on the logical change, which the idempotent-commit check of
   ADR-0002 and any future diff both want.
 - The asymmetry between `insert` and `update` is deliberate: an insert declares

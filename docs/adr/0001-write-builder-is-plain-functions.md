@@ -33,13 +33,13 @@ data, so the choice was purely about how the calling code reads (issue #7, branc
 ## Consequences
 
 - The guard the builder *does* enforce is structural, and is where the fail-fast
-  behaviour lives: SQLite storage class (no `Bool`, no `DateTime`, no `NaN`, no
-  `Inf`, no U+0000 in TEXT), bare-safe identifiers with no quoting anywhere (a
-  quoted identifier that fails to resolve becomes a string literal under
-  `SQLITE_DQS=3`, issue #18), an explicit `PRIMARY KEY` on every table, uniform
-  column order within an op, and literal-only defaults. **The identifier rule here
-  is superseded by ADR-0004**: the `SQLITE_DQS=3` hazard is specific to double
-  quotes, and every identifier is now bracketed instead. The rest stands.
+  behaviour lives: value type (no `Bool`, no `DateTime`, no U+0000 in text —
+  *amended by ADR-0025*: `NaN` and `±Inf` are `float64` values and are admitted,
+  NaN canonicalised by the builder), identifiers restricted to
+  `[a-z_][a-z0-9_]*` (first for SQLite's sake; ADR-0025 keeps the charset on
+  three reasons of its own), an explicit primary key on every table, uniform
+  column order within an op, and a fill value on `add_column` rather than any
+  default (ADR-0025).
 - Every record is applied to the local copy before it may be committed. An op
   that matches a number of rows other than the one it names is an error, not a
   no-op: the row set disagrees with local state, so the two clients do not agree

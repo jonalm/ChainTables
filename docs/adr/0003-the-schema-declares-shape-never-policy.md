@@ -5,12 +5,17 @@ status: accepted
 # The schema declares shape, never policy
 
 A table declaration carried in the chain may state only what a row *is* — its
-columns, their storage class, their nullability, and its primary key. It may not
+columns, their value type, their nullability, and its primary key. It may not
 state `CHECK`, `COLLATE`, `GENERATED ALWAYS AS`, `UNIQUE` or `FOREIGN KEY`, and
-indexes are not chain ops at all. The op set is therefore six ops:
-`create_table`, `add_column`, `drop_table`, `insert`, `update`, `delete`. Every
-table is `STRICT, WITHOUT ROWID` with an explicit, mandatory, `NOT NULL` primary
-key.
+indexes are not chain ops at all. The op set is seven ops: `create_table`,
+`add_column`, `drop_column`, `drop_table`, `insert`, `update`, `delete`. Every
+table has an explicit, mandatory, non-nullable primary key.
+
+*Amended by ADR-0025 after ADR-0022 removed SQLite*: "storage class" is now
+value type; `STRICT` and `WITHOUT ROWID` were rendering instructions whose jobs
+the builder's type check and the key-keyed map already did; `drop_column` is
+admitted; the shape carries no DEFAULT; and there is no reserved table-name
+prefix. The dividing line below stands unchanged.
 
 The dividing line is what clients must agree on. S3SQLite's guarantee is that
 every client obtains the same content; it is not that the content is correct.
@@ -55,13 +60,10 @@ more thing the canonical encoding must carry for the life of the format.
   uniqueness beyond the key are the caller's problem, enforced by caller code,
   and orphaned rows can be committed and are then permanent.
 - `PRAGMA foreign_keys` needs no pinning, because no declaration can use it.
-- A table's shape is changed by `drop_table` + `create_table` + `insert` of the
-  whole table inside one transaction record. ADR-0001's record-is-the-atom rule
-  makes that safe; issue #9 refused `rename_table`, `rename_column` and
-  `drop_column` precisely so that this is the only path.
-- A column `DEFAULT` is literal-only and may never be `REAL`. It is exercised only
-  by `add_column` backfill, because an `insert` names every column (ADR-0005). A
-  `REAL` default is the one place a float would be rendered into schema text, and
-  SQLite 3.51 and 3.53 parse the same decimal text to different bits at extreme
-  magnitudes — so a `NOT NULL REAL` column cannot be added, and the whole-table
-  rewrite above is the way to get one.
+- A table's shape is changed by `add_column`, `drop_column`, or `drop_table` +
+  `create_table` + `insert` of the whole table inside one transaction record.
+  ADR-0001's record-is-the-atom rule makes the rewrite safe; `rename_table` and
+  `rename_column` stay refused (ADR-0025).
+- The shape carries no DEFAULT. `add_column` carries a fill value in the op,
+  required when the column is non-nullable, and any value type is allowed —
+  the `REAL` prohibition was the float→text path, gone with SQLite (ADR-0025).

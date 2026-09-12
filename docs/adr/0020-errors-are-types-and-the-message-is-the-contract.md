@@ -25,6 +25,7 @@ function to call, where there is one.
 | `LayoutVersionError` | open | a newer client wrote it; rebuild, or upgrade |
 | `WrongChainError` | open | this copy belongs to another chain |
 | `LocalCopyInconsistentError` | open | the head and the applied log disagree |
+| `MalformedRecordError` | apply | none under this format version: the committer had a bug, the chain is dead beyond that slot (ADR-0025) |
 
 ADR-0008 and ADR-0014 both closed by saying each failure must be
 *distinguishable* and that the names were issue #16's. This is that list.

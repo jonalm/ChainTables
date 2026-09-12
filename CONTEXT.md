@@ -80,6 +80,14 @@ record changed, or a slot that vanished. The protocol cannot produce one, so it 
 evidence of an actor outside it, and no client ever heals one.
 _Avoid_: corrupted chain, rollback, history rewrite
 
+**Malformed record**:
+A transaction record whose bytes hash correctly but whose ops break a rule of the
+format or contradict the content they apply to, so that no client can apply it.
+It is the committer's bug, and the chain is dead beyond it. Distinct from a
+damaged copy (a local file), divergence (clients disagreeing about content) and a
+rewritten chain (the bucket changed).
+_Avoid_: invalid record, bad record, corrupt record
+
 ### Clients
 
 **Client**:
@@ -214,18 +222,26 @@ format and the frozen encoder alone, and of nothing on the machine, so it is
 claimed wherever the package runs.
 _Avoid_: determinism, reproducibility, idempotency
 
+**Value type**:
+One of the four kinds a column is declared to hold: `int64`, `float64`, `text`
+or `bytes`. Each admits the whole of its domain — `float64` includes NaN and
+±Inf — and null is not a member of any of them.
+_Avoid_: storage class, type (bare), column type, type tag (that is the Julia
+type the write builder accepts for a value type)
+
 **Typed value**:
-One of the four kinds of value a cell may hold — an integer, a float, text or
-bytes — or null where the shape allows it. Ops, the local copy and the state
-fingerprint carry typed values only, and a typed value is never converted,
-rendered or parsed on its way from a transaction record to the fingerprint.
+A value of one of the four value types, as a cell holds it. Ops, the local copy
+and the state fingerprint carry typed values only, and a typed value is never
+converted, rendered or parsed on its way from a transaction record to the
+fingerprint. Null is not a typed value: it is the absence a nullable column
+allows, read as `missing`.
 _Avoid_: literal, raw value, stored value, cell
 
 **Shape**:
-What a table declaration is allowed to state: the columns, their storage class,
-their nullability, and the primary key. Anything that constrains which content is
-*permitted* rather than how it is structured is policy, and the chain carries
-none of it.
+What a table declaration is allowed to state: the columns, their value type,
+their nullability, and the primary key. It carries no default. Anything that
+constrains which content is *permitted* rather than how it is structured is
+policy, and the chain carries none of it.
 _Avoid_: schema (for this sense), structure, layout
 
 **Delete rows**:
