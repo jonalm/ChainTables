@@ -50,7 +50,7 @@ grant. ADR-0012 removes the mutability that rule was actually guarding against, 
 reserved names inside the prefix are safe, and a chain stays one addressable place.
 
 **`chain_id` as the prefix string itself** was the cheaper option and is wrong for
-the same reason ADR-0008 gave for the local copy: bucket and prefix are location,
+the same reason ADR-0023 gives for the local copy: bucket and prefix are location,
 not identity. A chain that is copied elsewhere is still the same chain, and a
 record dropped into a foreign chain at a matching slot must still be convicted.
 

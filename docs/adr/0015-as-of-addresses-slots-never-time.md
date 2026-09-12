@@ -31,23 +31,23 @@ cannot be assumed: the highest slot whose `client.time_ms` is at or below `t`. A
 time before the genesis record is an error, not slot 0 — there is no state before
 slot 0 to return.
 
-## The file
+## The directory
 
-`path = nothing` materializes a temporary file, deleted on close; this is the
+`path = nothing` builds a temporary local copy, deleted on close; this is the
 common case, a historical read. A given path is kept, and is **opened rather than
 rebuilt** when it already exists bound to the same chain at the same slot and
-pinned — ADR-0008's open checks are what make that safe. `as_of` never touches the
-live local copy, and verifies the fingerprint of the record it stops at
+pinned — ADR-0023's open checks are what make that safe. `as_of` never touches
+the live local copy, and verifies the fingerprint of the record it stops at
 (ADR-0007).
 
 ## Pinned, and `unpin!`
 
-A pinned copy carries `PRAGMA query_only = 1` permanently; `sync!` on it errors
-and commit on it errors. ADR-0008 added the flag precisely so that a copy
-deliberately held at slot 40 is not silently advanced by the next open.
+A pinned copy is marked by the empty `pin` file (ADR-0023); `sync!` on it errors
+and commit on it errors. The pin exists precisely so that a copy deliberately
+held at slot 40 is not silently advanced by the next open.
 
-**`unpin!(db)` exists.** Replaying 40 → 100 is deterministic and yields exactly
+**`unpin!(copy)` exists.** Replaying 40 → 100 is deterministic and yields exactly
 what a full replay from slot 0 would, so a pinned copy going live is legitimate;
-it just must never happen by accident. The alternative — delete the file and
-rebuild — would charge a full replay to reach a state the copy is forty records
-away from.
+it just must never happen by accident. The alternative — delete the directory
+and rebuild — would charge a full replay to reach a state the copy is forty
+records away from.

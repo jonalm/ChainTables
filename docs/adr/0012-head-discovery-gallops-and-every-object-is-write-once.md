@@ -2,12 +2,12 @@
 status: accepted
 ---
 
-# Head discovery gallops, and every object S3SQLite writes is write-once
+# Head discovery gallops, and every object ChainTables writes is write-once
 
 A client finds the chain head by probing `stat_object` at slot `N+1`, `N+2`, `N+4`,
 `N+8`… from its own head — slot `0` when it has none — until a probe misses, then
 bisecting the last gap. It is the only head-discovery mechanism: no listing, no
-pointer object, no manifest. And every object S3SQLite writes, of every kind, is
+pointer object, no manifest. And every object ChainTables writes, of every kind, is
 written once and never replaced.
 
 ## Galloping rests on the chain having no gaps
@@ -31,7 +31,7 @@ needs two probes and a separate fetch plan to do. It loses on three counts: a LI
 is roughly ten times the price of a HEAD; cold start costs `Δ/1000` requests rather
 than `log Δ`; and it depends on `ListObjectsV2` returning keys in lexicographic
 order. Standard S3 documents that ordering, but S3 Express One Zone does not, and
-issue #17 has not yet settled which stores S3SQLite claims to support — so relying
+issue #17 has not yet settled which stores ChainTables claims to support — so relying
 on it would decide that question by accident. `list_objects` stays in the port;
 **nothing in the protocol depends on listing, or on its order**, which is also what
 keeps ADR-0010's deliberately shuffled in-process fake honest.
@@ -50,7 +50,7 @@ was designed to have none. Twenty probes once at cold start is not worth that.
   merely forbidden — including for the reserved names ADR-0011 admits.
 - **The record cache is safe for every object type**, not only transaction records.
   Its correctness rests on a key's bytes being immutable by protocol, and that now
-  holds for everything S3SQLite writes.
+  holds for everything ChainTables writes.
 - **A miss is never memoized.** A client polling a slot that is still empty must see
   the record the moment it lands, so a failed probe is never cached — in contrast
   to a hit, which is cacheable forever.

@@ -36,9 +36,9 @@ chain". That reason is wrong, and getting it right changes what is fragile.
 
 Two properties were conflated. **Fidelity** — a reader recovers the values the
 writer put in — is what replay determinism needs, and it is what disqualifies
-JSON: int64 above 2⁵³ loses precision, `INTEGER 1` and `REAL 1.0` collapse into
-one, BLOB needs an out-of-band base64 convention, `-0.0` becomes `0`, and ±Inf
-has no spelling. **Byte-identity** is a separate property, and it is load-bearing
+JSON: an `int64` above 2⁵³ loses precision, `int64 1` and `float64 1.0` collapse
+into one, `bytes` needs an out-of-band base64 convention, `-0.0` becomes `0`, and
+±Inf has no spelling. **Byte-identity** is a separate property, and it is load-bearing
 only where a hash is taken over a *re-encoding* of decoded values.
 
 Hashing the stored bytes means no client ever reproduces another's bytes: fetch
@@ -66,9 +66,9 @@ The practical difference this makes: changing the *wire* encoding is a
 
 Pinning what §4.2.2 leaves open, per issue #4:
 
-- REAL always uses preferred float representation (§4.2.2 Rule 2), never reduced
-  to an integer. Decoders widen to `Float64`. **Do not adopt dCBOR** — its
-  mandatory numeric reduction collapses `REAL 2.0` into `INTEGER 2`.
+- `float64` always uses preferred float representation (§4.2.2 Rule 2), never
+  reduced to an integer. Decoders widen to `Float64`. **Do not adopt dCBOR** —
+  its mandatory numeric reduction collapses `float64 2.0` into `int64 2`.
 - `NaN` is encoded as `f97e00`, the builder having canonicalised every NaN to
   that pattern; sign bit and payload are not preserved (*amended by ADR-0025*,
   which first had it refused). `-0.0` preserved; ±Inf permitted.
@@ -95,12 +95,14 @@ Pinning what §4.2.2 leaves open, per issue #4:
   chain hash. Rejected in favour of the simpler shape: a server changes who
   *authors* a record, not who annotates one. The client sends ops, the server
   builds and hashes the record, the client receives what was committed.
-- **MessagePack, BSON, Avro.** All three carry SQLite's value domain exactly, and
+- **MessagePack, BSON, Avro.** All three carry the four value types exactly, and
   once byte-identity stopped being required of the wire they became admissible on
   fidelity. Avro is the interesting one — positional fields mean the key-ordering
   question does not arise. All rejected by the one-encoder argument above.
-- **A SQLite file as the record.** Exact fidelity by construction, and it drags
-  issue #3's entire version-hazard list into the record format.
+- **A database file as the record** (a SQLite file, when the local copy was
+  one). Exact fidelity by construction, and it dragged issue #3's entire
+  version-hazard list into the record format; with no engine on the replay path
+  (ADR-0022) there is no such file to consider.
 - **`ops` wrapped in a nested CBOR byte string** with a separate `payload_hash`,
   as issue #4 proposed. Rejected: with the whole object hashed, the remaining
   gain is refusing a large record without decoding it, and records are capped at

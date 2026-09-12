@@ -1,6 +1,6 @@
 # S3 conditional writes and `LastModified` semantics
 
-Research note for [issue #2](https://github.com/jonalm/S3SQLite/issues/2) (map: #1).
+Research note for [issue #2](https://github.com/jonalm/ChainTables/issues/2) (map: #1).
 Date: 2026-09-10. Sources are primary: the AWS S3 User Guide, the S3 API Reference,
 AWS launch announcements, and MinIO's own docs and source.
 

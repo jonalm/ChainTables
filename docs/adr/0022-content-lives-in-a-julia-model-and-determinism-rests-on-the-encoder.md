@@ -146,7 +146,7 @@ renamed by issue #29 with the package.
   profile, the library-override check, the SQLite version axis of the matrix,
   the byte-faithful reader, `PRAGMA query_only`, **local index**, the SQLite
   half of the test substrate, and `test/sqlite_jl_marshalling.jl` (deleted by
-  issue #32). **Reserved table**'s successor is the head file (issue #26).
+  issue #31, with the dependency). **Reserved table**'s successor is the head file (issue #26).
 - **Assumed guarantee** keeps only its AWS instance (ADR-0016).
 - **Dependencies**: no non-stdlib dependency, hard or weak — issue #27 put the
   DuckDB.jl extension out of scope (ADR-0024). The `Project.toml` edit is issue

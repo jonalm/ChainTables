@@ -4,7 +4,7 @@ status: accepted
 
 # v1 claims AWS S3 only, and the gate is on commit
 
-S3SQLite v1 supports **AWS S3 general purpose buckets** and nothing else. A
+ChainTables v1 supports **AWS S3 general purpose buckets** and nothing else. A
 client configured against any other object store warns at `open`, syncs and reads
 normally, and **raises on commit** — unless the user has set
 `assume_first_writer_wins = true`.
@@ -38,7 +38,7 @@ So the default is refusal. A store we cannot name is not a store we warn about.
 
 ## What counts as AWS
 
-Supported when S3SQLite builds the URL itself — ADR-0010's virtual-hosted form,
+Supported when ChainTables builds the URL itself — ADR-0010's virtual-hosted form,
 no endpoint configured — or when the configured endpoint's host ends in
 `.amazonaws.com` or `.amazonaws.com.cn`. That admits the FIPS, dual-stack,
 GovCloud and China endpoints, which are AWS and would otherwise be refused merely
@@ -52,8 +52,8 @@ that only reads is untouched by this question, and gating at open would force a
 read-only mode into existence solely to escape a check that never applied to it —
 a decision that belongs to the public API surface, not here. The refusal
 therefore lands on the one operation that needs the guarantee, and lands **before
-the local transaction opens**: nothing is applied, no slot is attempted, and
-ADR-0009's window never starts.
+anything is applied**: no table file is written, no slot is attempted, and
+ADR-0009's sequence never starts.
 
 The accepted cost is stated plainly: a reader against a broken store that
 overwrote a slot it had not yet applied has no way to know. Verifying the chain
@@ -64,7 +64,7 @@ overwrite is exactly that.
 
 `assume_first_writer_wins = true` is a config field, set once, named for the
 promise the user makes rather than for the rule it lifts. The commit-time message
-names four things: the endpoint, the promise S3SQLite requires, the consequence
+names four things: the endpoint, the promise ChainTables requires, the consequence
 if the store breaks it (a second record in a written slot — a rewritten chain for
 clients that applied the first, silent data loss for those that did not), and the
 field that permits it.

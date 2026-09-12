@@ -5,7 +5,7 @@ status: accepted
 # The state fingerprint is a two-level hash of logical content, recomputed in full
 
 After the ops of a transaction record are applied, a client derives that record's
-`state_fingerprint` by reading its **local copy** back and hashing what it finds:
+`state_fingerprint` by encoding its **model** (ADR-0022) and hashing the result:
 
 ```
 table_hash  = SHA-256("chaintables/v1/fp-table" ‖ cbor([shape, rows]))
@@ -23,59 +23,47 @@ the format.
 file, and the outer hash is over the head file's `tables` list.
 
 **What is inside.** Every table the chain created, and its shape: table name,
-column names, declared storage class, nullability, primary-key position. Shape is
-read from SQLite's own catalog (`PRAGMA table_list` / `table_info`), never from
-our replayed schema model and never from `sqlite_schema`'s SQL text, which SQLite
-rewrites and which is version-sensitive. **Outside**: reserved tables and local
-indexes (ADR-0003), both of which are per-client by definition. Since ADR-0023
-there is nothing to exclude: the local copy holds table files and a head file
-and nothing else, and every table file is inside the fingerprint.
+column names, value types, nullability, primary-key position — the shape as the
+model holds it, in ADR-0025's wire form. **Nothing is outside.** The local copy
+holds table files and a head file and nothing else (ADR-0023), a client's own
+state lives in the head and not in a table, and every table file is inside the
+fingerprint. (This ADR first read the shape from a database catalog and excluded
+per-client tables by name; both left with ADR-0022.)
 
-**What is hashed.** Typed values only — `INTEGER`→int, `REAL`→preferred float,
-`TEXT`→tstr, `BLOB`→bstr, NULL→CBOR null. **No number is ever rendered to text.**
-This is what makes the check trustworthy rather than noisy: issue #3's
-cross-version divergences live in the float→text path (3.53.0 moved from 15 to 17
-significant digits), so a fingerprint that never takes that path cannot fire for a
-legitimate version difference. Every mismatch is a real divergence.
+**What is hashed.** Typed values only — `int64`→int, `float64`→preferred float,
+`text`→tstr, `bytes`→bstr, null→CBOR null. **A typed value reaches the encoder
+untransformed**: never converted, rendered, parsed or arithmetically touched
+(ADR-0022, *apply never computes*). This is what makes the check trustworthy
+rather than noisy: no rendering or conversion sits between the model and the
+hash, so a mismatch can never come from two clients formatting the same value
+differently. Every mismatch is a real divergence.
 
 **In what order.** Tables by the UTF-8 bytes of their name; columns in declaration
 order; rows in primary-key order. *Amended by ADR-0025*: the order is the typed
 key order defined there — numeric for `int64`, IEEE value for `float64` with
 `-0.0 < 0.0` and NaN last, bytes for `text` and `bytes`, lexicographic over a
-composite key — which is what `ORDER BY … BINARY` gave in the SQLite era. A key
-column is single-typed and non-nullable, so no cross-type case arises.
+composite key. A key column is single-typed and non-nullable, so no cross-type
+case arises.
 
-**Values are read through `sqlite3_step` + `sqlite3_column_*`, not SQLite.jl's row
-API.** This is a correctness requirement, not a performance one: `SQLite.jl` runs
-every BLOB it returns through `SQLite.sqldeserialize`, i.e. Julia's
-`Serialization`, so a BLOB whose bytes happen to be a valid Julia serialization
-comes back as a decoded *object*. The fingerprint would hash something the chain
-never stored, and two clients holding identical bytes could disagree. The 6.6×
-speedup is a side benefit. See the ticket opened from this one for the rest of the
-read path.
+**Values come from the model and from nowhere else.** The model *is* the content
+(ADR-0022): there is no read-back through a driver, no catalog, and no path on
+which a stored value could come back as something other than its bytes. The
+fingerprint is the frozen encoder applied to what the model holds.
 
 ## Cost, and why there is no incremental structure
 
-Measured on an M2 Pro, warm, Julia 1.12.7 / SQLite 3.53.2, over five `STRICT,
-WITHOUT ROWID` tables of mixed storage classes:
-
-| rows | file | full pass, SQLite.jl row API | full pass, C API | SHA-256 of the raw file (floor) |
-|---|---|---|---|---|
-| 100 k | 11.3 MiB | 0.34 s | 0.048 s | 0.033 s |
-| 1 M | 113 MiB | 3.51 s | 0.48 s | 0.34 s |
-
-Linear, and bit-identical digests by both paths. At the stated ceiling of 10⁷ rows
-a full pass is **~5 s**, against tens of commits a day. A canonical logical
-re-encode therefore lands within 1.4× of the cheapest conceivable whole-database
-pass, and buys version-independence that hashing the file cannot.
-
-Two facts about where that time goes. Through `DBInterface.execute` the pass is
-**88 % marshalling** — 723 B allocated per row, a fresh `String` per TEXT cell and
-a fresh `Vector` per BLOB, to read their bytes back out; the C-API loop allocates
-zero. Past that, 57 % of what remains is `SHA.jl`, which is pure Julia at ~360
-MB/s where `openssl` on the same bytes runs 5.3× faster using the CPU's SHA-256
-instructions. Both are implementation freedoms: the digest is fixed, so a client
-may call a hardware-accelerated SHA-256.
+Measured in the SQLite era (M2 Pro, warm, Julia 1.12.7), a full pass over five
+tables of mixed value types read straight from storage ran at **0.48 s per
+million rows** (1 M rows, 113 MiB) against 0.34 s for a raw SHA-256 of the same
+bytes, linear in row count. At the stated ceiling of 10⁷ rows a full pass is
+**~5 s**, against tens of commits a day. A canonical logical re-encode therefore
+lands within 1.4× of the cheapest conceivable whole-content pass. Under the
+model there is no storage boundary to cross at all — the pass is the encoder
+over resident values — so that figure is an upper bound, to be re-measured by
+the build. One fact about where the time went survives: 57 % of the pass was
+`SHA.jl`, pure Julia at ~360 MB/s where `openssl` on the same bytes runs 5.3×
+faster using the CPU's SHA-256 instructions. That is an implementation freedom:
+the digest is fixed, so a client may call a hardware-accelerated SHA-256.
 
 ## When it is checked
 
@@ -134,16 +122,17 @@ also mismatches proves it.
   measurements: it buys ~5 s → ~50 ms on an operation that runs tens of times a
   day, and charges persisted per-client structure, a second code path, and a
   definition frozen for the life of the format.
-- **Hashing the `.sqlite` file's bytes.** Rejected. It is only 1.4× cheaper than
-  the logical pass, and it hashes page layout, freelist state, vacuum history and
-  local indexes — none of which clients agree on, and all of which ADR-0003
-  deliberately left per-client. It would also import issue #3's entire
-  version-hazard list into the check.
-- **Computing the fingerprint from the ops** instead of reading the local copy
-  back. Rejected as tautological: it would verify our own arithmetic, while the
-  thing actually under test is whether *SQLite* did the same thing on both
-  machines. ADR-0005's silent `Int64`→`REAL` truncation is exactly that class of
-  bug, and only a read-back sees it.
+- **Hashing the local copy's files as stored, with no logical definition.**
+  Rejected while the local copy was a database file: page layout, freelist
+  state and per-client indexes are not things clients agree on. Under ADR-0023
+  the two coincide by construction — a table file holds exactly the
+  fingerprint's byte stream — but the logical definition is what makes that so,
+  and it is the definition that is frozen.
+- **Computing the fingerprint from the ops** instead of from the content. This
+  ADR first rejected it as tautological, because a database engine was the thing
+  under test. ADR-0022 inverts that: the model is the content, the fingerprint
+  is a hash over the model, and what it tests is that two clients hold the same
+  model — an apply bug, an encoder bug, or a Julia difference no one predicted.
 - **Verifying every record during a batch replay.** Rejected; see above.
 - **A separate algorithm or a `fingerprint_alg` field.** Rejected: SHA-256
   throughout, and ADR-0006 already refused a second negotiation point.
@@ -160,10 +149,7 @@ also mismatches proves it.
   not over the head.
 - **A foreign table cannot exist.** The head names every table file, and a file
   the head does not name is swept.
-- Named tests: a BLOB whose bytes are a valid Julia serialization fingerprints as
-  its raw bytes; an empty table contributes its shape and no rows; `-0.0` (already
-  required by ADR-0006). Note also that `0.0` and `-0.0` compare *equal* in SQL, so
-  a `REAL` primary key can never hold both — primary-key uniqueness, not the
-  fingerprint, but it is the kind of thing that should be a test rather than a
-  surprise. *Inverted by ADR-0025*: under the typed key order `-0.0 ≠ 0.0`, so
-  a `float64` key may hold both, and NaN is one key; both are named tests there.
+- Named tests: an empty table contributes its shape and no rows; `-0.0` (already
+  required by ADR-0006); a `float64` key holding both `-0.0` and `0.0`, and NaN
+  as one key, under ADR-0025's typed key order (this ADR first noted the
+  opposite, when SQL equality decided key uniqueness).

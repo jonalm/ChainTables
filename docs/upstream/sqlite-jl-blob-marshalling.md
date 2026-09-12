@@ -1,5 +1,10 @@
 # Upstream: SQLite.jl returns some BLOBs as decoded Julia objects
 
+> **Historical.** Written when the package was S3SQLite and depended on
+> SQLite.jl. The dependency is gone ([ADR-0022](../adr/0022-content-lives-in-a-julia-model-and-determinism-rests-on-the-encoder.md)) and no value crosses a SQLite
+> boundary, so this affects nothing here; it is kept in case the report is ever
+> filed upstream.
+
 **Status**: not filed. Written to be filed against
 [JuliaDatabases/SQLite.jl](https://github.com/JuliaDatabases/SQLite.jl) if and
 when we choose to; S3SQLite depends on no fix (see the last section).

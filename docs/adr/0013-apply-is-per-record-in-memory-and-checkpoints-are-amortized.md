@@ -4,7 +4,7 @@ status: accepted
 
 # Apply is per record in memory, checkpoints are amortized, and sync is explicit
 
-`sync!(db)` probes slot `N` — the local head — gallops for the chain head from
+`sync!(copy)` probes slot `N` — the local head — gallops for the chain head from
 `N+1` (ADR-0012), fetches the tail with a bounded read-ahead window into the
 record cache, and applies the records **in slot order to the model**, writing
 the local copy's table files and a new head file at each **checkpoint**
@@ -12,8 +12,8 @@ the local copy's table files and a new head file at each **checkpoint**
 
 ## Checkpoints, and why they are amortized
 
-Amended by ADR-0023. This ADR first made every record one SQLite transaction,
-so that a crash left a consistent copy at some slot `k` and cold start was
+Amended by ADR-0023. This ADR first made every record one local write
+transaction, so that a crash left a consistent copy at some slot `k` and cold start was
 restartable rather than all-or-nothing. That property is kept; the mechanism is
 not, because writing every touched table file after every record is
 O(records × table bytes) and dead at 10⁴ records.
@@ -57,7 +57,8 @@ Cache writes go to a temp name and are `rename`d into place, and every cached
 record is rehashed on read (ADR-0006). One asymmetry survives that: a record's
 hash is vouched for by its child's `prev_hash`, so the newest record has nothing
 vouching for it on first fetch. Trust on first fetch, pinned forever once the next
-slot lands; `s3sqlite_applied` covers everything already applied.
+slot lands; the head's `transaction_hash` covers everything already applied
+(ADR-0014).
 
 ## Consequences
 

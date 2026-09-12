@@ -17,7 +17,7 @@ the builder's type check and the key-keyed map already did; `drop_column` is
 admitted; the shape carries no DEFAULT; and there is no reserved table-name
 prefix. The dividing line below stands unchanged.
 
-The dividing line is what clients must agree on. S3SQLite's guarantee is that
+The dividing line is what clients must agree on. ChainTables's guarantee is that
 every client obtains the same content; it is not that the content is correct.
 Every refused clause is a data-quality feature, and every admitted clause is one
 more thing the canonical encoding must carry for the life of the format.
@@ -39,10 +39,11 @@ more thing the canonical encoding must carry for the life of the format.
   clients agree, and the cheapest thing to add to a locked format later is a
   feature left out of it.
 - **`CHECK`.** Rejected outright, and it could not have been admitted safely.
-  Issue #18 established that SQLite accepts `CHECK(x < random())` and always
-  will — `deterministic.html` §2.1 documents the non-enforcement as deliberate
-  policy — so validating a `CHECK` would require S3SQLite to own an expression
-  grammar, which is the thing v1 exists to avoid.
+  A `CHECK` is an expression, so validating one would require ChainTables to own
+  an expression grammar, which is the thing v1 exists to avoid. (Issue #18 found
+  that even SQLite accepted `CHECK(x < random())` and always would —
+  `deterministic.html` §2.1 documents the non-enforcement as deliberate policy —
+  so no engine would have done the job either.)
 - **`COLLATE`.** Rejected. The built-in collations are safe (issue #3, hazard 4),
   but the clause is the door a user-defined collation enters through, and with no
   clause every comparison is `BINARY`, which is `memcmp`.

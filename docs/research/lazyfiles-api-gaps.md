@@ -1,7 +1,12 @@
 # LazyFiles.jl API gap analysis
 
-Research for [#5](https://github.com/jonalm/S3SQLite/issues/5), part of the
-[#1](https://github.com/jonalm/S3SQLite/issues/1) design map.
+> **Historical.** Written when the package was S3SQLite. LazyFiles was dropped
+> entirely ([ADR-0010](../adr/0010-s3sqlite-owns-its-s3-client-and-its-record-cache.md));
+> the two properties the chain depended on are now ChainTables's own rules
+> there, and the rest of this analysis constrains nothing.
+
+Research for [#5](https://github.com/jonalm/ChainTables/issues/5), part of the
+[#1](https://github.com/jonalm/ChainTables/issues/1) design map.
 
 **Question**: what does LazyFiles.jl already give an S3-backed hash-chain design,
 and what is missing?
@@ -105,7 +110,7 @@ back reliably**. Any conditional-write commit protocol needs the failure mode to
 be a typed, first-class value.
 
 > Whether S3 conditional writes give exact first-writer-wins at all is
-> [#4 / `research/s3-conditional-writes`](https://github.com/jonalm/S3SQLite/issues/4)'s
+> [#4 / `research/s3-conditional-writes`](https://github.com/jonalm/ChainTables/issues/4)'s
 > question, not this one. This ticket answers only: *LazyFiles cannot express it
 > or observe its outcome today.*
 
@@ -624,7 +629,7 @@ for PUT/HEAD/conditional-PUT) while keeping rclone for bulk transfer, behind the
 S3SQLite owning its own thin S3 client and using LazyFiles only for cached
 immutable record reads, which it does *very* well — is the decision, and it
 depends on what
-[#4 / `research/s3-conditional-writes`](https://github.com/jonalm/S3SQLite/issues/4)
+[#4 / `research/s3-conditional-writes`](https://github.com/jonalm/ChainTables/issues/4)
 concludes about S3's conditional-write guarantees.
 
 ---

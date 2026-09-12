@@ -4,7 +4,7 @@ status: accepted
 
 # ChainTables owns its S3 client and its record cache
 
-S3SQLite talks to S3 through four operations of its own, over an HTTP client of
+ChainTables talks to S3 through four operations of its own, over an HTTP client of
 its own, and caches transaction records in a directory of its own. It does not
 depend on LazyFiles.jl.
 
@@ -80,9 +80,10 @@ configured. Vendoring matches ADR-0006's call on the CBOR encoder.
 
 ## The record cache
 
-Keyed by bucket and key under `S3SQLITE_CACHE_DIR`, else
-`$XDG_CACHE_HOME/s3sqlite`, else `~/.s3sqlite/cache`, with a per-call override so
-tests point at a `mktempdir()`. Fetch to a unique temp file in the destination
+Keyed by bucket and key under `first(DEPOT_PATH)/chaintables/records`,
+overridable per chain and by `CHAINTABLES_CACHE_DIR` (ADR-0019 fixed the
+default: depot-based is machine-wide and needs no dependency), so tests point at
+a `mktempdir()`. Fetch to a unique temp file in the destination
 directory, then `mv` it in, so an interrupted run never caches a truncated record
 and concurrent fetches of one record do not clobber each other.
 
@@ -99,7 +100,7 @@ Two properties are load-bearing and are recorded as such:
 
 - **LazyFiles grows an `AbstractBlobStore` seam and an HTTP write path** — the
   ticket's option (a). Rejected once the seam moved: issue #5 argued for it mainly
-  to make an in-process fake possible, and a port in S3SQLite does that without a
+  to make an in-process fake possible, and a port in ChainTables does that without a
   breaking change to a working package.
 - **LazyFiles keeps the read path, we own only the writes** — two transports, two
   credential paths, two failure taxonomies, and the rclone version floor retained
@@ -109,7 +110,7 @@ Two properties are load-bearing and are recorded as such:
   leading option and is the one the chosen answer differs from by a hair: it uses
   the genuinely extensible half of LazyFiles exactly as designed, and needs no
   changes to it either. It loses on the dependency — LazyFiles hard-depends on
-  `Rclone_jll`, pinned to `1.74.3`, so every S3SQLite install would download an
+  `Rclone_jll`, pinned to `1.74.3`, so every ChainTables install would download an
   rclone binary it never executes and inherit that artifact's platform matrix.
   Forty lines of cache is not worth it.
 - **`AWS.jl`** can send arbitrary headers and return a status as a value, but
@@ -127,16 +128,17 @@ Two properties are load-bearing and are recorded as such:
 
 ## Consequences
 
-- **S3SQLite's non-stdlib dependencies reduce to SQLite.jl.** No rclone binary, no
-  version pin inherited from another package, and nothing between the chain and
-  the bytes on the wire that we did not write.
+- **ChainTables has no non-stdlib dependency** — stdlib plus the vendored encoder
+  and the vendored signer (ADR-0022; this ADR first said *reduce to SQLite.jl*).
+  No rclone binary, no version pin inherited from another package, and nothing
+  between the chain and the bytes on the wire that we did not write.
 - **The rclone ≥ 1.74 floor is no longer ours.** Issue #8 found that system rclone
   1.65.2 cannot reach the test bucket (`400 MissingNamespaceHeader`). AWS
   documents `x-amz-bucket-namespace` as a CreateBucket header and states that
   applications need no change to use an account-regional bucket, so that failure
   was most likely rclone's own bucket check rather than the data plane. Either
-  way it leaves S3SQLite's transport, and the platform question inherits nothing.
-- **Issue #6's `--no-session` requirement is retired for S3SQLite.** It existed
+  way it leaves ChainTables's transport, and the platform question inherits nothing.
+- **Issue #6's `--no-session` requirement is retired for ChainTables.** It existed
   because LazyFiles never reads `AWS_SESSION_TOKEN`; a signer of our own signs
   `x-amz-security-token`, so aws-vault sessions, SSO and MFA all work.
 - **The key layout is free of filename rules.** LazyFiles rejected `:`, the

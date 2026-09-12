@@ -22,8 +22,9 @@ are untouched, the new table files are orphans the next open sweeps, and the
 model reloads the touched tables from the old head's files. Nothing is rolled
 back because nothing was committed locally.
 
-Rewritten by issue #26. The first version of this ADR wrapped the PUT inside a
-SQLite transaction so that a `412` would roll the apply back; the argument was
+Rewritten by issue #26. The first version of this ADR wrapped the PUT inside
+the local copy's write transaction so that a `412` would roll the apply back;
+the argument was
 that ops are not invertible (ADR-0003 admits whole-table rewrites) and a local
 copy holding a rejected record had no recovery short of a full replay. That
 argument stands; what changed is the mechanism. With write-once, hash-named

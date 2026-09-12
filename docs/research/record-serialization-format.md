@@ -1,7 +1,13 @@
 # Canonical serialization format for transaction records
 
-Research for [issue #4](https://github.com/jonalm/S3SQLite/issues/4), part of the
-[v1 design spec map (#1)](https://github.com/jonalm/S3SQLite/issues/1).
+> **Historical.** Written when the package was S3SQLite and a local copy was a
+> SQLite file, so value fidelity is argued against SQLite's storage classes.
+> The recommendation stands (ADR-0006); the value domain it must carry is now
+> ADR-0025's four value types, and NaN is admitted and canonicalised rather
+> than refused ([ADR-0022](../adr/0022-content-lives-in-a-julia-model-and-determinism-rests-on-the-encoder.md)).
+
+Research for [issue #4](https://github.com/jonalm/ChainTables/issues/4), part of the
+[v1 design spec map (#1)](https://github.com/jonalm/ChainTables/issues/1).
 Sources verified 2026-09-10.
 
 ---

@@ -116,7 +116,7 @@ Untouched tables keep the head's `table_hash`, which the committer uses as is:
 that skip trusts the head, and the head is content-addressed, so the logical
 fingerprint it produces is right even if a local file has since been damaged —
 the damage is the local copy's problem, caught at its next load, never the
-chain's. `verify(db)` hashes everything on demand.
+chain's. `verify(copy)` hashes everything on demand.
 
 The ceiling is **1 GB per table file on disk**, chosen so that a table resident
 as Julia values stays within a few GB at a 3–5× expansion. Lazy loading is

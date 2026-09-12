@@ -4,8 +4,8 @@ status: accepted
 
 # Errors are types, and the message is the contract
 
-Every failure S3SQLite raises is a concrete type under one abstract supertype,
-`S3SQLite.S3SQLiteError <: Exception`, and every type's **message** is held to a
+Every failure ChainTables raises is a concrete type under one abstract supertype,
+`ChainTables.ChainTablesError <: Exception`, and every type's **message** is held to a
 three-part contract: what happened, the evidence, and the next move — naming the
 function to call, where there is one.
 
@@ -18,17 +18,17 @@ function to call, where there is one.
 | `FingerprintMismatchError` | apply, commit pre-check | `repair!(copy)` |
 | `DivergenceError` | repair | this machine cannot reproduce the chain |
 | `UnsupportedStoreError` | commit | use AWS, or set `assume_first_writer_wins` |
-| `ForeignLibraryError` | commit | use `SQLite_jll`, or set `assume_sqlite_is_equivalent` |
-| `RewrittenChainError` | fetch of an applied slot | stop; the bucket was written from outside the protocol |
+| `RewrittenChainError` | sync, on the fetch of the head's own slot | stop; the bucket was written from outside the protocol |
 | `ChainNotFoundError` | sync | wrong bucket or prefix, **or** a truncated chain |
 | `NotALocalCopyError` | open | this file is not ours |
 | `LayoutVersionError` | open | a newer client wrote it; rebuild, or upgrade |
 | `WrongChainError` | open | this copy belongs to another chain |
-| `LocalCopyInconsistentError` | open | the head and the applied log disagree |
+| `LocalCopyInconsistentError` | open, load | a damaged copy — a head not self-consistent, or a table file whose bytes do not hash to its name: `repair!(copy)`; no readable head: delete the directory and sync |
 | `MalformedRecordError` | apply | none under this format version: the committer had a bug, the chain is dead beyond that slot (ADR-0025) |
 
-ADR-0008 and ADR-0014 both closed by saying each failure must be
-*distinguishable* and that the names were issue #16's. This is that list.
+ADR-0023 and ADR-0014 both close by saying each failure must be
+*distinguishable* and that the names were issue #16's. This is that list
+(`ForeignLibraryError`, once here, left with ADR-0022).
 
 ## Why types at all, when the message is the target
 
@@ -58,8 +58,8 @@ Three parts, in order:
    *rewritten chain*, *divergence*.
 2. **The evidence**, as both message text and fields on the exception: chain id,
    slot, expected against computed, and for a fingerprint mismatch the record's
-   `sqlite_version` and `build_profile` against this machine's — ADR-0007's
-   named forensics, which are useless if only the type carries them.
+   `client.lib` and `client.julia` against this machine's — ADR-0006's and
+   ADR-0022's named forensics, which are useless if only the type carries them.
 3. **The next move**, naming the function: `repair!(copy)`, `unpin!(copy)`,
    `sync!(copy)`, or the field to set.
 
@@ -82,10 +82,12 @@ prevent. `verify(copy; full = true)` puts the bisected first bad slot in the
 exception's fields and in its message, rather than returning it, for the same
 reason.
 
-`repair!` is the one function that returns a report —
-`(; rebuilt_to_slot, indexes_recreated)` — because it succeeded at something the
-user asked for and the counts are what they will want to see. It raises
-`DivergenceError` when the fresh replay reproduces the mismatch.
+`repair!` is the one function that returns a report — `(; slot, files_rewritten)`,
+since ADR-0023 made repair an in-place rewrite of mismatching table files (this
+ADR first returned a rebuilt-to slot and a count of recreated local indexes,
+which left with ADR-0022) — because it succeeded at something the user asked
+for and the counts are what they will want to see. It raises `DivergenceError`
+when the fresh replay reproduces the mismatch.
 
 ## Considered options
 

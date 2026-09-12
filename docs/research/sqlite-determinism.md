@@ -1,6 +1,11 @@
 # SQLite replay determinism hazards
 
-Research for [#3](https://github.com/jonalm/S3SQLite/issues/3) (part of [#1](https://github.com/jonalm/S3SQLite/issues/1)).
+> **Historical.** Written when the package was S3SQLite and a local copy was a
+> SQLite file. SQLite left the replay path on 2026-09-12 ([ADR-0022](../adr/0022-content-lives-in-a-julia-model-and-determinism-rests-on-the-encoder.md)), so
+> nothing below constrains the design; it is kept as the record of why an
+> engine was a hazard and as the measurements that record cites.
+
+Research for [#3](https://github.com/jonalm/ChainTables/issues/3) (part of [#1](https://github.com/jonalm/ChainTables/issues/1)).
 
 **Question.** Two S3SQLite clients replay the *same* sequence of structured write
 operations against their own local SQLite file. What can make their resulting

@@ -8,7 +8,7 @@ status: accepted
 
 A damaged copy — a table file whose bytes do not hash to its name, or a head
 that is not self-consistent — **raises** at open or at load, and the error names
-`repair!(db)`. A state fingerprint mismatch at apply is divergence (ADR-0007 as
+`repair!(copy)`. A state fingerprint mismatch at apply is divergence (ADR-0007 as
 amended by ADR-0023) and raises too, naming `repair!` as the confirming step.
 The client never starts a rebuild itself: it can take minutes, so it is a thing
 the user asks for.
@@ -41,7 +41,7 @@ checked every fetch of an already-applied slot against a per-slot applied log.
 The log is gone, because record `N`'s hash transitively commits to every slot
 below it, so the head's `transaction_hash` alone contradicts any rewrite of the
 chain the copy has applied. What the log bought was *localization* after a
-record-cache eviction under a consistent rewrite; `verify(db; full=true)`'s
+record-cache eviction under a consistent rewrite; `verify(copy; full=true)`'s
 `prev_hash` walk recovers what it can, and a rewritten chain is a hard stop
 regardless.
 
@@ -57,9 +57,9 @@ not refusing to work.
 
 ## `verify`
 
-`verify(db)` hashes every table file the head names, recomputes the fingerprint
+`verify(copy)` hashes every table file the head names, recomputes the fingerprint
 from the head's `tables` list and compares both with the head — the pass
-ADR-0023 deliberately keeps out of `open`; local only, no network. `verify(db;
+ADR-0023 deliberately keeps out of `open`; local only, no network. `verify(copy;
 full = true)` is ADR-0007's localizing form: walk the cached records, rehash each
 and check `prev_hash`, replaying to bisect to the first mismatching slot.
 Record-hash verification folds in here rather than becoming a third entry point,
