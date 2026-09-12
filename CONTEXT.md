@@ -93,6 +93,13 @@ file. It is derived state, always rebuildable from the chain, and everything in 
 may be deleted.
 _Avoid_: materialized database, cache, mirror, replica
 
+**Table view**:
+A read of one table of a local copy, fixed at the head the copy had when the
+view was taken. It is the only way content is read. A sync or a commit moves the
+copy and leaves every view already taken as it was, and nothing done to a view
+reaches the copy.
+_Avoid_: snapshot, query result, cursor, handle, dataframe
+
 **Table file**:
 The file that holds one table's content in a local copy — exactly the bytes the
 state fingerprint hashes for that table, so the file is named by its own hash. A
@@ -188,7 +195,7 @@ _Avoid_: snapshot, frozen copy, historical database
 ### Writing
 
 **Write builder**:
-The only way to create a transaction record. Reads go straight to SQLite; only
+The only way to create a transaction record. Reads go through table views; only
 writes pass through the builder. A builder is a value, and it is used once: it
 collects the ops of one transaction record, and committing it consumes it. It is
 never re-run, because a commit that loses its slot is raised rather than retried.

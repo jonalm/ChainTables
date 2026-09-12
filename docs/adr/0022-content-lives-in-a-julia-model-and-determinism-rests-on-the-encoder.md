@@ -110,8 +110,9 @@ renamed by issue #29 with the package.
 ## Considered options
 
 - **Keep SQLite as a read engine only**, content in the model. Rejected: a hard
-  dependency on a database for a job an optional engine does; DuckDB.jl takes
-  it as a weak dependency (issue #27).
+  dependency on a database for a job an optional engine does. DuckDB.jl was to
+  take that job as a weak dependency; issue #27 ruled any read engine out of
+  v1's scope (ADR-0024).
 - **Mark the four ADRs superseded and keep them.** Rejected, and the rule is
   set here: a superseded ADR is deleted, an amended one is edited in place,
   numbers are never reused, and git history is the archive. Four dead files in
@@ -147,8 +148,9 @@ renamed by issue #29 with the package.
   half of the test substrate, and `test/sqlite_jl_marshalling.jl` (deleted by
   issue #32). **Reserved table**'s successor is the head file (issue #26).
 - **Assumed guarantee** keeps only its AWS instance (ADR-0016).
-- **Dependencies**: no hard non-stdlib dependency. DuckDB.jl weak-only is issue
-  #27's; the `Project.toml` edit is issue #32's.
+- **Dependencies**: no non-stdlib dependency, hard or weak — issue #27 put the
+  DuckDB.jl extension out of scope (ADR-0024). The `Project.toml` edit is issue
+  #32's.
 - **Glossary**: **Typed value** and **Replay determinism** are redefined here;
   the full pass is issue #30's.
 - Issues #20 and #23 are closed as invalidated.

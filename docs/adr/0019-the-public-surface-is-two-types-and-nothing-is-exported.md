@@ -24,10 +24,12 @@ point-in-time rebuild is addressed without any local copy open, so the chain mus
 be a value in its own right. A side table keyed on the handle — the third option
 — was rejected outright as invisible state.
 
-`LocalCopy` forwards `DBInterface.execute` and `DBInterface.prepare`, and
-`S3SQLite.sqlite(copy)` hands out the plain `SQLite.DB` for anything else. The
-settled premise is that reads go straight to SQLite; forwarding is safe because
-ADR-0008's `PRAGMA query_only = 1` is what actually stops a write.
+**Amended by ADR-0024**: `LocalCopy` forwards nothing and holds no database.
+Reads go through **table views** — `table(copy, :t)` returns a `TableView`, a
+Tables.jl table fixed at the head it was taken at, which is the third type with
+behaviour. This paragraph first forwarded `DBInterface.execute` and handed out
+the plain `SQLite.DB` under `PRAGMA query_only`; both left with SQLite
+(ADR-0022).
 
 Two more types exist for values, not for behaviour: **`TransactionHash`** and
 **`StateFingerprint`**, each 32 bytes, shown as hex. They are the two things the
