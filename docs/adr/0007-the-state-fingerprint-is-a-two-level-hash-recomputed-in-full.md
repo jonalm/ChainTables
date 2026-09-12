@@ -75,7 +75,7 @@ the digest is fixed, so a client may call a hardware-accelerated SHA-256.
   checkpoint computes every table hash to name its files, so its fingerprint is
   free and is compared with that record's. Between checkpoints a wrong
   intermediate fingerprint propagates, so detection is never lost, and
-  `verify(chain; full=true)` recovers localization on demand by bisecting to the
+  `verify(copy; full=true)` recovers localization on demand by bisecting to the
   first mismatching slot. A point-in-time rebuild verifies the record it stops at.
 - **The committer runs no extra pass.** It needs the post-apply fingerprint anyway
   to build the record, and it has no independent value to check it against — it is
