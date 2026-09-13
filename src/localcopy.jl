@@ -367,7 +367,8 @@ else `LocalCopyInconsistentError`. Its `chain_id` is checked against
 [`expected_chain_id`](@ref)`(chain)` when that is known — `WrongChainError` —
 and its layout and format versions against this client's — `LayoutVersionError`.
 Then the sweep: every other head, every table file the head does not name, and
-every `.tmp` are deleted.
+every `.tmp` are deleted. Last, a chain whose S3 client points at a host that is
+not AWS warns once per process that commits will refuse (ADR-0016).
 
 Qualified by design: `ChainTables.open` reads as documentation at every call
 site, and `Base.open` is not extended.
@@ -390,6 +391,7 @@ function open(chain, path::AbstractString)
     copy.head = choose_head(copy, expected_chain_id(chain))
     copy.tables = copy.head === nothing ? Dict{String,Vector{UInt8}}() : Dict(copy.head.tables)
     sweep!(copy)
+    warn_unsupported_store(chain)           # ADR-0016: open warns, commit! refuses (s3.jl)
     return copy
 end
 

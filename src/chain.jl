@@ -10,7 +10,7 @@ using .Ops: Client
 # ---------------------------------------------------------------------------
 
 """
-    Chain(bucket, prefix; store, region = nothing, credentials = nothing, endpoint = nothing,
+    Chain(bucket, prefix; store = nothing, region = nothing, credentials = nothing, endpoint = nothing,
           path_style = false, assume_first_writer_wins = false, read_ahead = 8,
           cache_dir = default_cache_dir(), record_host = true, record_user = true)
 
@@ -19,10 +19,18 @@ are location, never identity — the chain id is in every record (ADR-0011). Con
 one performs no I/O.
 
 - `store`: the [`AbstractObjectStore`](@ref) the chain is reached through —
-  `Testing.InMemoryObjectStore` in tests. `nothing` means the S3 client, which #34 step 9
-  builds; until then `store` is required.
-- `region`, `credentials`, `endpoint`, `path_style`: the S3 client's (step 9; ADR-0010,
-  ADR-0016). `region` is required by that client, not by a supplied `store`.
+  `Testing.InMemoryObjectStore` in tests. `nothing`, the default, is the S3 client,
+  [`S3ObjectStore`](@ref), built from the four keywords below.
+- `region`: what SigV4 signs for; required by the S3 client — the keyword, else
+  `AWS_REGION`, else `AWS_DEFAULT_REGION`, never guessed (ADR-0019) — and ignored by a
+  supplied `store`.
+- `credentials`: resolved now, for the S3 client only (ADR-0019, ADR-0010): `nothing` reads
+  `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN` and errors if the
+  keys are absent; a [`Credentials`](@ref) is taken as is; a callable returning one is
+  called before every request, so a long-lived reader outlives an aws-vault session.
+- `endpoint`, `path_style`: the S3 client's URL. `endpoint = nothing` is AWS; an endpoint
+  whose host is not `.amazonaws.com` / `.amazonaws.com.cn` warns at `open` and refuses
+  at `commit!` (ADR-0016).
 - `assume_first_writer_wins`: lifts the commit-time refusal on a store that is not AWS
   S3 (ADR-0016); the promise it asserts is the minimum backend contract.
 - `read_ahead`: how many records `sync!` fetches ahead of apply, at least 1 — v1's one
@@ -62,8 +70,11 @@ function Chain(bucket::AbstractString, prefix::AbstractString;
     (startswith(prefix, "/") || endswith(prefix, "/")) && throw(ArgumentError(
         "Chain: prefix $(repr(prefix)) begins or ends with '/'; a slot key is <prefix>/<12 digits>, so give the prefix without them"))
     read_ahead >= 1 || throw(ArgumentError("Chain: read_ahead is $read_ahead; at least 1 record is fetched ahead"))
-    store === nothing && throw(ArgumentError("Chain: store = nothing means the S3 client, which is not built yet (#34 step 9); " *
-        "pass store = an AbstractObjectStore, such as ChainTables.Testing.InMemoryObjectStore()"))
+    if store === nothing                     # the S3 client (s3.jl): region and credentials resolve now, no I/O
+        region = resolve_region(region)
+        credentials = resolve_credentials(credentials)
+        store = S3ObjectStore(bucket; region, credentials, endpoint, path_style)
+    end
     store isa AbstractObjectStore || throw(ArgumentError("Chain: store is a $(typeof(store)), not an AbstractObjectStore"))
     return Chain{typeof(store)}(String(bucket), String(prefix), region === nothing ? nothing : String(region), credentials,
                                 endpoint === nothing ? nothing : String(endpoint), path_style, assume_first_writer_wins,
@@ -131,9 +142,11 @@ record carrying zero ops to slot 0, and return its id (base32 text), `slot = 0` 
 record's [`TransactionHash`](@ref) — **not** a local copy: every local copy is built by replay,
 so `open` and `sync!` follow (ADR-0019). The only thing that may write slot 0. Two
 clients creating one prefix are resolved like any commit (ADR-0002): the second raises
-`LostRaceError` naming the chain already there, and is never retried.
+`LostRaceError` naming the chain already there, and is never retried. Like `commit!`, it
+refuses a store that is not AWS S3 unless `assume_first_writer_wins` (ADR-0016).
 """
 function create_chain(chain::Chain)
+    refuse_unsupported_store(chain, "create_chain(chain)")     # ADR-0016: before anything is written
     chain_id = rand(UInt8, 16)
     record = Record(chain_id, 0, nothing, Model.state_fingerprint(Content()),
                     Ops.local_client(; chain.record_host, chain.record_user), nothing, Ops.Op[])
@@ -354,7 +367,9 @@ built (over 64 MiB is `WriteBuilderError` with the byte count) and put condition
 with the retry loop and read-back of ADR-0010. Our record at the slot — created, or
 found after a lost acknowledgement — writes the head; another client's there is
 `LostRaceError`, never retried. Anything short of the head write leaves the copy at its
-head with the model dropped (`discard!`).
+head with the model dropped (`discard!`). Before any of it, an S3 client at a host that is
+not AWS is refused with `UnsupportedStoreError` unless the chain's
+`assume_first_writer_wins` is set (ADR-0016).
 
 `comment` is free text carried in the record, never read (ADR-0006).
 """
@@ -366,6 +381,7 @@ function commit!(w::WriteBuilder; comment = nothing)
     check_open(copy)
     chain = chain_of(copy, "commit!")
     refuse_pinned(copy, "commit!")
+    refuse_unsupported_store(chain, "commit!(w)")             # ADR-0016: before anything is applied
     h = copy.head
     h === nothing && throw(ArgumentError("commit!(w): the local copy at $(copy.path) has no head; sync!(copy) binds it first"))
     isempty(w.ops) && throw(WriteBuilderError("commit!(w): the builder has no ops; a record after genesis carries at least " *
