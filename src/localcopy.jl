@@ -371,13 +371,13 @@ function open(chain, path::AbstractString)
     heads = joinpath(path, "heads")
     tables = joinpath(path, "tables")
     if ispath(path) && !isdir(path)
-        throw(NotALocalCopyError("not a local copy: $path exists and is not a directory. Open a directory path."))
+        throw(NotALocalCopyError("not a local copy: $path exists and is not a directory. Open a directory path."; path))
     elseif !isdir(path) || isempty(readdir(path))
         mkpath(heads)
         mkpath(tables)
     elseif !(isdir(heads) && isdir(tables))
         throw(NotALocalCopyError("not a local copy: $path is a non-empty directory without heads/ and tables/. " *
-            "Open a different path, or empty this one if it is disposable."))
+            "Open a different path, or empty this one if it is disposable."; path))
     end
     copy = LocalCopy{typeof(chain)}(chain, path, nothing, Dict{String,Vector{UInt8}}(), Content(), Set{String}(), false)
     copy.head = choose_head(copy, expected_chain_id(chain))
@@ -399,8 +399,8 @@ function choose_head(copy::LocalCopy, expected)
         catch e
             e isa HeadRejected || rethrow()
             e.kind === :not_ours && throw(NotALocalCopyError("not a local copy: head $file of $(copy.path) $(e.msg). " *
-                "Open a different path."))
-            e.kind === :layout && throw(LayoutVersionError(layout_message(copy, file, e.msg)))
+                "Open a different path."; path = copy.path))
+            e.kind === :layout && throw(LayoutVersionError(layout_message(copy, file, e.msg); path = copy.path, file))
             push!(reasons, "head $file $(e.msg)")
             continue
         end
@@ -411,7 +411,8 @@ function choose_head(copy::LocalCopy, expected)
         end
         if expected !== nothing && h.chain_id != expected
             throw(WrongChainError("wrong chain: the local copy at $(copy.path) is bound to chain $(h.chain_id) (head slot $(h.slot)), " *
-                "the chain being opened is $expected: open a different path for this chain."))
+                "the chain being opened is $expected: open a different path for this chain.";
+                path = copy.path, bound = h.chain_id, opened = String(expected)))
         end
         missing_file = findfirst(p -> !isfile(table_path(copy, last(p))), h.tables)
         if missing_file !== nothing
@@ -424,7 +425,8 @@ function choose_head(copy::LocalCopy, expected)
     end
     isempty(names) && return nothing
     throw(LocalCopyInconsistentError("damaged copy: no head of the local copy at $(copy.path) can be opened — " *
-        join(reasons, "; ") * ". No readable head cannot be repaired: delete the directory and sync!(copy) again."))
+        join(reasons, "; ") * ". No readable head cannot be repaired: delete the directory and sync!(copy) again.";
+        path = copy.path, file = "heads/$(names[1])"))
 end
 
 function layout_message(copy::LocalCopy, file, what)
@@ -526,7 +528,8 @@ end
 function damaged(copy::LocalCopy, name, hash, what)
     h = copy.head
     return LocalCopyInconsistentError("damaged copy: table file tables/$(bytes2hex(hash)) (table $(repr(name)) at slot $(h.slot), " *
-        "chain $(h.chain_id)) $what. repair!(copy) rewrites it from the record cache.")
+        "chain $(h.chain_id)) $what. repair!(copy) rewrites it from the record cache.";
+        path = copy.path, slot = h.slot, file = "tables/$(bytes2hex(hash))")
 end
 
 """
@@ -698,7 +701,10 @@ function checkpoint!(copy::LocalCopy, chain_id::AbstractVector{UInt8}, slot::Int
             "$(bytes2hex(staged.state_fingerprint)) after applying it. " *
             "$(by)this client is $(here.lib) on Julia $(here.julia). The local copy stays $at. " *
             "This machine's replay diverges from the chain, or apply has a bug: repair!(copy) confirms it — " *
-            "a fresh replay that also mismatches proves this machine cannot reproduce the chain."))
+            "a fresh replay that also mismatches proves this machine cannot reproduce the chain.";
+            chain_id = chain_id_string(chain_id), slot = Int64(slot), expected = Vector{UInt8}(state_fingerprint),
+            computed = staged.state_fingerprint,
+            record_client = client === nothing ? nothing : (; lib = client.lib, julia = client.julia), this_client = here))
     end
     write_head!(copy, chain_id, slot, transaction_hash, staged)
     return nothing

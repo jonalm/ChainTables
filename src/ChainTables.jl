@@ -10,6 +10,7 @@ include("ops.jl")        # step 3
 include("builder.jl")    # step 4
 include("localcopy.jl")  # steps 5, 7, 8
 include("store.jl")      # steps 6, 7
+include("chain.jl")      # step 7: Chain, create_chain, sync!, commit!
 include("s3.jl")         # step 9
 include("Testing.jl")    # step 6
 

@@ -15,30 +15,48 @@ using .Model: fail
 
 The single-use write builder (ADR-0019, ADR-0001): the ops of one transaction
 record, collected by the op functions below and consumed by `commit!`. Taken
-with [`write_builder`](@ref) over a local copy; constructed over a
-`Model.Content` directly by the copy's lane, with the `copy` and the `head` the
-builder is bound to riding along for `commit!`'s stale-head check.
+with [`write_builder`](@ref) over a local copy, or constructed over a
+`Model.Content` directly (the tests do); `copy` and `head` — the copy's
+`(; slot, transaction_hash)` when the builder was taken — ride along for
+`commit!`'s stale-head check.
 
 The builder holds no rows of the content it was taken over, only the shape of
-every table, evolved by its own `create_table!`, `add_column!`, `drop_column!`
-and `drop_table!` ops — so an insert after an `add_column!` in the same builder
-names the new column. Rows are checked against those shapes eagerly; whether a
-key is present or absent is the state gate, which `commit!` runs.
+every table it names, evolved by its own `create_table!`, `add_column!`,
+`drop_column!` and `drop_table!` ops — so an insert after an `add_column!` in
+the same builder names the new column. Rows are checked against those shapes
+eagerly; whether a key is present or absent is the state gate, which `commit!`
+runs. Over a local copy the shapes come from the copy's tables, loaded on the
+first op that names one (`pending` holds the names not yet loaded) — a builder
+never touches a table it does not name, and `commit!` needs every table it
+names resident anyway (ADR-0023).
 
 Fields: `ops`, the canonical ops in call order; `spent`, set by [`spend!`](@ref)
 once `commit!` has consumed the builder.
 """
 mutable struct WriteBuilder{C,H}
-    scratch::Model.Content     # every table as an empty Table carrying its shape, evolved by this builder's shape ops
+    scratch::Model.Content     # every table named so far as an empty Table carrying its shape, evolved by this builder's shape ops
+    pending::Set{String}       # the copy's tables not yet in scratch; a name here exists and is loaded on first mention
     ops::Vector{Ops.Op}
     spent::Bool
     copy::C
     head::H
 end
 
-function WriteBuilder(content::Model.Content; copy = nothing, head = nothing)
+function WriteBuilder(content::Model.Content; copy = nothing, head = nothing, pending = Set{String}())
     scratch = Model.Content(name => Model.Table(t.shape) for (name, t) in content)
-    return WriteBuilder{typeof(copy),typeof(head)}(scratch, Ops.Op[], false, copy, head)
+    return WriteBuilder{typeof(copy),typeof(head)}(scratch, Set{String}(pending), Ops.Op[], false, copy, head)
+end
+
+# The scratch table for `name`, loading its shape from the copy on first mention
+# (hash-before-use, whole table resident — `load_table!`'s own rule). Unknown names
+# fail in the model's words.
+function scratch_table(w::WriteBuilder, name::AbstractString)
+    if name in w.pending
+        t = load_table!(w.copy, name)
+        w.scratch[name] = Model.Table(t.shape)
+        delete!(w.pending, name)
+    end
+    return Model.table(w.scratch, name)
 end
 
 """
@@ -53,7 +71,7 @@ where the op needs it absent, or absent where it needs it present — runs at
 `commit!`. A builder held across a `sync!` raises `StaleHeadError` at `commit!`
 and is never re-run (ADR-0002).
 
-The `LocalCopy` method is added by the local-copy lane (#34 step 7).
+The `LocalCopy` method lives in `chain.jl` with `commit!`.
 """
 function write_builder end
 
@@ -196,6 +214,7 @@ function create_table!(f, w::WriteBuilder, table)
         d = TableDeclaration(Model.Column[], nothing)
         f(d)
         shape = Model.Shape(d.columns, something(d.key, String[]))   # every rule of a shape, the model's own
+        name in w.pending && fail("table $(repr(name)) already exists")
         Model.create_table!(w.scratch, name, shape)
         push!(w.ops, Ops.CreateTable(name, shape))
     end
@@ -251,7 +270,7 @@ function add_column!(w::WriteBuilder, table, column, T; nullable = false, fill)
         name = tablename(table)
         cname = colname(column)
         c = Model.Column(cname, tag_value_type(T, cname), nullable)
-        t = Model.table(w.scratch, name)
+        t = scratch_table(w, name)
         f = cell(c, fill)
         Model.add_column!(t, c, f)                                  # exists, fill against the column, identifier
         push!(w.ops, Ops.AddColumn(name, c, f))
@@ -269,7 +288,7 @@ function drop_column!(w::WriteBuilder, table, column)
         live(w)
         name = tablename(table)
         cname = colname(column)
-        Model.drop_column!(Model.table(w.scratch, name), cname)
+        Model.drop_column!(scratch_table(w, name), cname)
         push!(w.ops, Ops.DropColumn(name, cname))
     end
 end
@@ -284,7 +303,11 @@ function drop_table!(w::WriteBuilder, table)
     guarded("drop_table!(w, $(repr(table)))") do
         live(w)
         name = tablename(table)
-        Model.drop_table!(w.scratch, name)
+        if name in w.pending                 # dropped unread: nothing of it is needed until commit!
+            delete!(w.pending, name)
+        else
+            Model.drop_table!(w.scratch, name)
+        end
         push!(w.ops, Ops.DropTable(name))
     end
 end
@@ -305,7 +328,7 @@ function insert_rows!(w::WriteBuilder, table, rows)
     guarded("insert_rows!(w, $(repr(table)))") do
         live(w)
         name = tablename(table)
-        s = Model.table(w.scratch, name).shape
+        s = scratch_table(w, name).shape
         rs, names = rowset(rows)
         foreach(n -> Model.column_index(s, String(n)), names)
         for c in s.columns
@@ -329,7 +352,7 @@ function update_rows!(w::WriteBuilder, table, rows)
     guarded("update_rows!(w, $(repr(table)))") do
         live(w)
         name = tablename(table)
-        s = Model.table(w.scratch, name).shape
+        s = scratch_table(w, name).shape
         rs, names = rowset(rows)
         foreach(n -> Model.column_index(s, String(n)), names)
         for k in s.key
@@ -355,7 +378,7 @@ function delete_rows!(w::WriteBuilder, table, rows)
     guarded("delete_rows!(w, $(repr(table)))") do
         live(w)
         name = tablename(table)
-        s = Model.table(w.scratch, name).shape
+        s = scratch_table(w, name).shape
         rs, names = rowset(rows)
         for n in names
             c = s.columns[Model.column_index(s, String(n))]

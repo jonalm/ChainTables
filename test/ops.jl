@@ -110,7 +110,9 @@ using SHA: sha256
         @test_throws "slot 0 carries a prev_hash; genesis has no parent" Record(chain_id, 0, prev, fp, client, nothing, [DropTable("t")])
         @test_throws "slot 1 has no prev_hash; every slot after genesis names its parent" Record(chain_id, 1, nothing, fp, client, nothing, [DropTable("t")])
         @test_throws "slot -1 is negative" Record(chain_id, -1, nothing, fp, client, nothing, [DropTable("t")])
-        @test_throws "record has no ops; a record carries at least one" Record(chain_id, 0, nothing, fp, client, nothing, Ops.Op[])
+        # zero ops is legal at slot 0 — the genesis create_chain writes — and nowhere else (ADR-0019)
+        @test isempty(Record(chain_id, 0, nothing, fp, client, nothing, Ops.Op[]).ops)
+        @test_throws "record has no ops; a record after genesis carries at least one" Record(chain_id, 1, prev, fp, client, nothing, Ops.Op[])
         @test_throws "comment contains U+0000" Record(chain_id, 0, nothing, fp, client, "a\0b", [DropTable("t")])
         @test_throws "comment is not well-formed UTF-8" Record(chain_id, 0, nothing, fp, client, "\xff", [DropTable("t")])
         @test_throws "client.host contains U+0000" Client("\0", nothing, "L", "J", 1)
@@ -133,7 +135,8 @@ using SHA: sha256
         @test_throws "slot 0 carries a prev_hash" bad(with(w0; prev_hash = prev))
         @test_throws "comment is not text" bad(with(w0; comment = 1))
         @test_throws "ops is not an array" bad(with(w0; ops = 1))
-        @test_throws "record has no ops" bad(with(w0; ops = Any[]))
+        @test isempty(bad(with(w0; ops = Any[])).ops)
+        @test_throws "record has no ops" bad(with(w0; slot = 1, prev_hash = prev, ops = Any[]); slot = 1)
         @test_throws "op 1: op is not a map" bad(with(w0; ops = Any[1]))
         @test_throws "op 2: unknown op \"nope\"" bad(with(w0; ops = Any[w0["ops"][1], Dict{String,Any}("op" => "nope", "table" => "t")]))
         @test_throws "client is not a map" bad(with(w0; client = 1))
@@ -213,7 +216,9 @@ using SHA: sha256
         bad = second(1, [DropColumn("t", "v"), Insert("t", [Any[3.0]])])
         @test_throws MalformedRecordError Ops.apply!(c, bad)
         @test_throws "malformed record at slot 1: op 2 (insert on \"t\"): column \"id\" is int64, got a value of type Float64" Ops.apply!(fresh(), bad)
-        @test_throws "(chain 000102030405060708090a0b0c0d0e0f)" Ops.apply!(fresh(), bad)
+        @test_throws "(chain AAAQEAYEAUDAOCAJBIFQYDIOB4)" Ops.apply!(fresh(), bad)      # the chain id as humans read it (ADR-0019)
+        err = try; Ops.apply!(fresh(), bad); nothing; catch e; e; end
+        @test (err.chain_id, err.slot, err.op) == ("AAAQEAYEAUDAOCAJBIFQYDIOB4", 1, 2)
         @test_throws "the chain is dead beyond this slot; a new chain is the recovery" Ops.apply!(fresh(), bad)
 
         # each structural check of ADR-0025, refused at the op that breaks it

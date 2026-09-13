@@ -1,5 +1,5 @@
 # #34 steps 6, 7 — ADR-0010, ADR-0019, ADR-0011, ADR-0012, ADR-0002: object-store port,
-# PutOutcome/ObjectMeta, record cache; step 7 adds galloping and the commit retry loop.
+# PutOutcome/ObjectMeta, record cache, the commit retry loop with its read-back, galloping.
 #
 # `ChainTables.open` is defined in localcopy.jl, so every file below is opened with
 # `Base.open`.
@@ -164,6 +164,21 @@ function fetch_record(cache::RecordCache, store::AbstractObjectStore, bucket::Ab
     isfile(path) && return read(path)
     bytes = fetch_object(store, key)
     bytes === nothing && return nothing
+    cache_record!(cache, bucket, key, bytes)
+    return bytes
+end
+
+"""
+    cache_record!(cache, bucket, key, bytes) -> nothing
+
+Put `bytes` in the cache as the record at `key`: written to a temporary file in the
+destination directory and renamed into place. What [`fetch_record`](@ref) does with a
+fetched object, and what the commit layer does with a record it has just put — a record
+of our own is as immutable as a fetched one, and `repair!` and `verify` replay from the
+cache (ADR-0014), so our own commits belong there too.
+"""
+function cache_record!(cache::RecordCache, bucket::AbstractString, key::AbstractString, bytes)
+    path = record_path(cache, bucket, key)
     dir = dirname(path)
     mkpath(dir)
     tmp = tempname(dir; cleanup = false)
@@ -176,5 +191,125 @@ function fetch_record(cache::RecordCache, store::AbstractObjectStore, bucket::Ab
         rm(tmp; force = true)
         rethrow()
     end
-    return bytes
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+# Transport failures and the retry rule (ADR-0010, ADR-0002). One request per port
+# call; the commit layer owns the loop, because the read-back that decides a
+# commit's outcome has to happen between attempts.
+# ---------------------------------------------------------------------------
+
+"""
+    TransportError(msg; status = nothing) <: Exception
+
+What a port verb raises when a request failed: `status` is the HTTP status when there
+was a response, `nothing` for a connect failure or a timeout. Deliberately outside
+ADR-0020's taxonomy: it is the transport's word, and the commit layer decides what it
+means — [`retryable`](@ref) says whether the request is re-issued. A test's
+`InMemoryObjectStore` `fault` throws one to simulate a failed request.
+"""
+struct TransportError <: Exception
+    msg::String
+    status::Union{Nothing,Int}
+end
+TransportError(msg; status = nothing) = TransportError(msg, status)
+Base.showerror(io::IO, e::TransportError) =
+    print(io, "TransportError: ", e.msg, e.status === nothing ? "" : " (HTTP $(e.status))")
+
+"""
+    retryable(e) -> Bool
+
+ADR-0010's rule: a connect failure or timeout (`status === nothing`), a `5xx`, and a
+`409` are retried; every other status — an auth `4xx` above all — is not, and neither is
+any exception that is not a [`TransportError`](@ref). A `412` never reaches here: the
+port returns it as a `PutOutcome`.
+"""
+retryable(e::TransportError) = e.status === nothing || 500 <= e.status < 600 || e.status == 409
+retryable(e) = false
+
+"""
+    PUT_ATTEMPTS, PUT_BACKOFF_S
+
+How many times [`put_record!`](@ref) issues its conditional put before giving up, and
+the pause before each re-issue. Bounded and short: a commit that cannot land in four
+attempts is a transport the user should hear about, not one to wait on.
+"""
+const PUT_ATTEMPTS = 4
+const PUT_BACKOFF_S = (0.05, 0.1, 0.2)
+
+"""
+    put_record!(store, cache, bucket, key, bytes) -> nothing | Vector{UInt8}
+
+The conditional put of a record with ADR-0010's retry loop and ADR-0002's read-back.
+Returns `nothing` when `bytes` are at `key` — created by this call, or found there by
+the read-back after a lost acknowledgement — and the **other** record's bytes when a
+different object holds the slot, which is a lost race for the caller to raise. The
+outcome is decided by the read-back, never by the status:
+
+| the slot then holds | the outcome |
+|---|---|
+| our bytes | success — only the acknowledgement was lost |
+| other bytes | the race is lost; never retried |
+| nothing | the request never landed; retry, bounded |
+
+A retryable failure ([`retryable`](@ref)) is re-issued after the read-back, up to
+[`PUT_ATTEMPTS`](@ref); any other exception propagates at once. The read-back goes
+through the record cache, so what is found is cached as the slot's record; so is a record
+this call created.
+"""
+function put_record!(store::AbstractObjectStore, cache::RecordCache, bucket::AbstractString, key::AbstractString, bytes)
+    ours = Ops.transaction_hash(bytes)
+    failure = nothing
+    for attempt in 1:PUT_ATTEMPTS
+        attempt == 1 || sleep(PUT_BACKOFF_S[attempt-1])
+        outcome = try
+            put_object_if_absent(store, key, bytes)
+        catch e
+            retryable(e) || rethrow()
+            failure = e
+            nothing
+        end
+        if outcome !== nothing
+            outcome.created && (cache_record!(cache, bucket, key, bytes); return nothing)
+            outcome.status == 412 || error("put_object_if_absent($(typeof(store))) returned created = false with status " *
+                "$(outcome.status); the port promises false only for a 412 (ADR-0019)")
+        end
+        found = fetch_record(cache, store, bucket, key)
+        found === nothing || return Ops.transaction_hash(found) == ours ? nothing : found
+    end
+    failure === nothing || throw(failure)
+    throw(RewrittenChainError("rewritten chain: the put to $key was refused as existing (412) and a fetch found nothing " *
+        "there, $PUT_ATTEMPTS times over. Objects are appearing and vanishing from outside the protocol; nothing heals it."))
+end
+
+# ---------------------------------------------------------------------------
+# Head discovery (ADR-0012): gallop, then bisect. Stat probes only; nothing is
+# listed and nothing is cached — a miss must be seen again the moment the slot lands.
+# ---------------------------------------------------------------------------
+
+"""
+    gallop(store, keyof, lo) -> Int64
+
+The highest slot that exists, probing `stat_object(store, keyof(s))` at `lo + 1`,
+`lo + 2`, `lo + 4`, … until a miss and then bisecting the last gap (ADR-0012). `lo` is
+a slot known to exist — the local head — or `-1` for a copy with no head, and is
+returned unchanged when `lo + 1` is absent. Sound because the chain has no gaps
+(ADR-0002): a miss is the end of the chain. `O(log Δ)` probes warm, `O(log N)` cold.
+"""
+function gallop(store::AbstractObjectStore, keyof, lo::Integer)
+    exists(s) = stat_object(store, keyof(s)) !== nothing
+    lo = Int64(lo)
+    hit, step = lo, Int64(1)
+    probe = lo + step
+    while exists(probe)
+        hit = probe
+        step *= 2
+        probe = lo + step
+    end
+    while probe - hit > 1
+        mid = (hit + probe) ÷ 2
+        exists(mid) ? (hit = mid) : (probe = mid)
+    end
+    return hit
 end

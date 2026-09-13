@@ -326,7 +326,8 @@ Base.getproperty(r::BuilderTestRow, n::Symbol) = getfield(r, :fields)[n]
         w2 = WriteBuilder(Content(); copy = :the_copy, head = (; slot = 3))
         @test w2.copy === :the_copy && w2.head.slot == 3
         @test w2 isa WriteBuilder{Symbol,<:NamedTuple}
-        # write_builder exists for step 7 to add its LocalCopy method to
-        @test isempty(methods(CT.write_builder))
+        # write_builder's one method is over a LocalCopy (chain.jl); a builder over bare content is the tests' own
+        @test length(methods(CT.write_builder)) == 1
+        @test_throws "commit!(w): this builder was not taken over a local copy" CT.commit!(WriteBuilder(Content()))
     end
 end

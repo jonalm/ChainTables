@@ -55,7 +55,7 @@ import SHA
 using ..CBOR
 using ..Model
 using ..Model: Shape, Column, Content, ModelError, fail
-using ..ChainTables: MalformedRecordError, WriteBuilderError
+using ..ChainTables: ChainTables, MalformedRecordError, WriteBuilderError
 
 # ---------------------------------------------------------------------------
 # The seven ops (ADR-0025)
@@ -327,10 +327,11 @@ end
 
 One transaction record (ADR-0006): the envelope's fields as Julia values, with
 `prev_hash === nothing` at slot 0 and nowhere else, `comment === nothing` when
-absent, and `ops` a non-empty vector of [`Op`](@ref). `format_version` is not a
+absent, and `ops` a vector of [`Op`](@ref) — empty only at slot 0, the zero-op
+genesis `create_chain` writes (ADR-0019). `format_version` is not a
 field: a `Record` is always [`FORMAT_VERSION`](@ref). The constructor holds
 every envelope rule — 16-byte chain id, 32-byte hashes, a non-negative slot,
-`prev_hash` present exactly after genesis, at least one op, a comment of
+`prev_hash` present exactly after genesis, at least one op after genesis, a comment of
 well-formed UTF-8 without U+0000 — raising `Model.ModelError`, so the builder
 and [`decode_record`](@ref) share one check. A record never holds its own
 `transaction_hash`: that is a function of its stored bytes.
@@ -353,7 +354,7 @@ struct Record
             prev_hash === nothing && fail("slot $slot has no prev_hash; every slot after genesis names its parent")
             length(prev_hash) == 32 || fail("prev_hash is $(length(prev_hash)) bytes; a SHA-256 is 32")
         end
-        isempty(ops) && fail("record has no ops; a record carries at least one")
+        slot == 0 || !isempty(ops) || fail("record has no ops; a record after genesis carries at least one (ADR-0019)")
         check_text("comment", comment)
         return new(Vector{UInt8}(chain_id), slot, prev_hash === nothing ? nothing : Vector{UInt8}(prev_hash),
                    Vector{UInt8}(state_fingerprint), client, comment, collect(Op, ops))
@@ -412,12 +413,14 @@ end
 
 # The MalformedRecordError message (ADR-0020): what happened, the evidence in the
 # text, and the one next move ADR-0025 allows.
-function malformed(slot, chain_id, what)
+function malformed(slot, chain_id, what; op = nothing)
     where = slot === nothing ? "at an unknown slot" : "at slot $slot"
-    evidence = chain_id === nothing ? "" : " (chain $(bytes2hex(chain_id)))"
+    cid = chain_id === nothing ? nothing : ChainTables.chain_id_string(chain_id)
+    evidence = cid === nothing ? "" : " (chain $cid)"
     return MalformedRecordError("malformed record $where: $what$evidence. " *
         "No client can apply it under format_version $FORMAT_VERSION: the committer had a bug, " *
-        "the chain is dead beyond this slot; a new chain is the recovery (ADR-0025).")
+        "the chain is dead beyond this slot; a new chain is the recovery (ADR-0025).";
+        chain_id = cid, slot, op)
 end
 
 function envelope_field(w, name)
@@ -605,7 +608,7 @@ function apply!(c::Content, r::Record)
             apply!(c, op)
         catch e
             e isa ModelError || rethrow()
-            throw(malformed(r.slot, r.chain_id, "op $i ($(op_name(op)) on $(repr(op.table))): $(e.msg)"))
+            throw(malformed(r.slot, r.chain_id, "op $i ($(op_name(op)) on $(repr(op.table))): $(e.msg)"; op = i))
         end
     end
     return nothing

@@ -26,6 +26,7 @@ import ChainTables
     include("builder.jl")
     include("localcopy.jl")
     include("store.jl")
+    include("chain.jl")
     include("s3.jl")
     include("Testing.jl")
 end
