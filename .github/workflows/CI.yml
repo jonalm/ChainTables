@@ -1,5 +1,6 @@
 # The determinism vector's cells (ADR-0022, #34 §4): Julia compat floor and latest,
 # on every runner GitHub offers. test/model.jl asserts one literal state_fingerprint
+# and test/ops.jl one literal transaction_hash
 # in every cell; a red cell here is a chain break, not a flake.
 name: CI
 on:

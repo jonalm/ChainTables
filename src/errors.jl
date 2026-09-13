@@ -48,3 +48,9 @@ struct LocalCopyInconsistentError <: ChainTablesError; msg::String; end
 
 # apply
 struct MalformedRecordError <: ChainTablesError; msg::String; end
+
+# The message is the contract (ADR-0020): every type shows as its message, so a
+# `@test_throws "…"` matches the text a user reads. Step 3 added this so apply's
+# MalformedRecordError could be tested by message; step 7 keeps it when it adds
+# the evidence fields.
+Base.showerror(io::IO, e::ChainTablesError) = print(io, nameof(typeof(e)), ": ", e.msg)

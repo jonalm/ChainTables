@@ -240,8 +240,8 @@ using SHA: sha256
     # The determinism vector (ADR-0022, #34 §4). One fixed op sequence, one literal
     # state_fingerprint, asserted identical on every CI cell. The literals were
     # minted from the first green run and are FROZEN: changing one is a chain break
-    # and needs an ADR. The transaction_hash literal joins here when step 3's
-    # envelope exists. Covers -0.0, 2^63-1, typemin, a non-ASCII text key, a
+    # and needs an ADR. The same sequence as one genesis record, with the frozen
+    # transaction_hash literal, is in test/ops.jl. Covers -0.0, 2^63-1, typemin, a non-ASCII text key, a
     # sign-bit-set NaN, ±Inf, null, an empty table, a key-only table, a dropped
     # table, add/drop column, update and delete.
     # ------------------------------------------------------------------------
