@@ -105,7 +105,7 @@ using ChainTables.Testing: InMemoryObjectStore
     # Every `ChainTables.<name>` the README's code block calls must exist: the example is
     # the front door, and a rename that leaves it behind is drift.
     @testset "every name the README calls is defined" begin
-        readme = read(joinpath(@__DIR__, "..", "README.md"), String)
+        readme = replace(read(joinpath(@__DIR__, "..", "README.md"), String), "\r\n" => "\n")   # a CRLF checkout
         m = match(r"```julia\n(.*?)```"s, readme)
         @test m !== nothing
         block = m.captures[1]
@@ -113,7 +113,7 @@ using ChainTables.Testing: InMemoryObjectStore
         @test :Chain in called && :create_chain in called && :commit! in called && :as_of in called
         for name in called
             @test isdefined(CT, name)
-            @test Base.Docs.hasdoc(CT, name)
+            @test haskey(Base.Docs.meta(CT), Base.Docs.Binding(CT, name))   # documented; Docs.hasdoc is 1.11+
         end
     end
 end
