@@ -10,18 +10,17 @@ slot: the first writer wins, and a lost race raises rather than retries.
 It fits read-heavy data with infrequent writes, low concurrent-write
 probability, and a total size that fits on every client.
 
-**Status: the v1 design is locked (tag `spec-v1`) and not yet implemented.**
-The contract is [`CONTEXT.md`](CONTEXT.md), the glossary, and
-[`docs/adr/`](docs/adr/), the decisions. The build effort is tracked in the
-epic linked from the map, issue #1. Nothing below runs yet.
+**Status: v1 is built.** The docstrings are the reference: every public name
+is qualified (`ChainTables.commit!`, nothing is exported) and documented, so
+`?ChainTables.commit!` at the REPL is the surface. The design behind them is
+[`CONTEXT.md`](CONTEXT.md), the glossary, and [`docs/adr/`](docs/adr/), the
+decisions; the design map is issue #1 and the build map is issue #34.
 
 ## The worked example
 
-This narrative is the spec's front door and the build's first acceptance test:
-the test suite runs the same sequence against
-`ChainTables.Testing.InMemoryObjectStore`, and drift between the two is a bug.
-Names marked *proposed* in the epic's surface inventory may still change before
-docstrings freeze; the sequence of events will not.
+This narrative is the front door and an acceptance test: `test/readme.jl` runs
+the same sequence against `ChainTables.Testing.InMemoryObjectStore`, asserting
+every commented value, and drift between the two is a bug.
 
 ```julia
 import ChainTables
