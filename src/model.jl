@@ -275,6 +275,84 @@ function check_key_order(s::Shape, rows)
     return nothing
 end
 
+"""
+    check_insert(shape, rows) -> nothing
+
+The structural half of an insert, without the table: every row passes
+[`check_row`](@ref) and keys are distinct within the op. The write builder runs
+exactly this in `insert_rows!`; [`insert_rows!`](@ref) runs it and then the
+state gate, so the two are one code path (ADR-0025).
+"""
+function check_insert(s::Shape, rows)
+    seen = Set{Any}()
+    for row in rows
+        check_row(s, row)
+        k = key_of(s, row)
+        k in seen && fail("duplicate key $(repr(k)) inside one op")
+        push!(seen, k)
+    end
+    return nothing
+end
+
+"""
+    check_update(shape, names, rows) -> Vector{Int}
+
+The structural half of an update, without the table: `names` are distinct
+non-key columns, at least one; each row is `[key…, values…]` with the right
+cell count, every cell of its column's value type, keys distinct within the op.
+Returns the declaration positions of `names`. The write builder runs exactly
+this in `update_rows!`; [`update_rows!`](@ref) runs it and then the state gate.
+"""
+function check_update(s::Shape, names, rows)
+    isempty(names) && fail("update names no non-key column")
+    cols = Int[]
+    for n in names
+        j = column_index(s, n)
+        j in s.keyidx && fail("update names key column $(repr(n)); a key never changes (delete then insert)")
+        j in cols && fail("duplicate column $(repr(n)) in one update")
+        push!(cols, j)
+    end
+    nk = length(s.keyidx)
+    seen = Set{Any}()
+    for row in rows
+        length(row) == nk + length(cols) ||
+            fail("update row has $(length(row)) cells; expected $nk key cells and $(length(cols)) values")
+        k = Tuple(row[1:nk])
+        for (i, j) in enumerate(s.keyidx)
+            check_cell(s.columns[j], k[i])
+        end
+        k in seen && fail("duplicate key $(repr(k)) inside one op")
+        push!(seen, k)
+        for (p, j) in enumerate(cols)
+            check_cell(s.columns[j], row[nk+p])
+        end
+    end
+    return cols
+end
+
+"""
+    check_delete(shape, keys) -> nothing
+
+The structural half of a delete, without the table: every key (a tuple or
+vector in key declaration order) has one cell per key column, each of its
+column's value type, and keys are distinct within the op. The write builder
+runs exactly this in `delete_rows!`; [`delete_rows!`](@ref) runs it and then
+the state gate.
+"""
+function check_delete(s::Shape, ks)
+    seen = Set{Any}()
+    for k in ks
+        k = Tuple(k)
+        length(k) == length(s.keyidx) || fail("key $(repr(k)) has $(length(k)) cells; the key has $(length(s.keyidx))")
+        for (i, j) in enumerate(s.keyidx)
+            check_cell(s.columns[j], k[i])
+        end
+        k in seen && fail("duplicate key $(repr(k)) inside one op")
+        push!(seen, k)
+    end
+    return nothing
+end
+
 # ---------------------------------------------------------------------------
 # Table: shape + columnar rows + key index
 # ---------------------------------------------------------------------------
@@ -343,18 +421,15 @@ rows_in_key_order(t::Table) = (row_at(t, i) for i in sortperm(key_vector(t)))
 """
     insert_rows!(table, rows) -> nothing
 
-Insert rows (vectors of cells in declaration order). Every cell is checked
-against the shape, keys must be distinct within the op and absent from the table
-(the state gate of ADR-0001); nothing is written if any check fails.
+Insert rows (vectors of cells in declaration order): [`check_insert`](@ref),
+then the state gate of ADR-0001 — every key absent from the table; nothing is
+written if any check fails.
 """
 function insert_rows!(t::Table, rows)
-    seen = Set{Any}()
+    check_insert(t.shape, rows)
     for row in rows
-        check_row(t.shape, row)
         k = key_of(t.shape, row)
-        k in seen && fail("duplicate key $(repr(k)) inside one op")
         haskey(t.index, k) && fail("insert names a key that is present: $(repr(k))")
-        push!(seen, k)
     end
     for row in rows
         push_row!(t, row)
@@ -375,34 +450,15 @@ end
 
 Update the non-key columns `names` (in any order) of the rows named by their key.
 Each row is `[key…, values…]`: the full key in key declaration order followed by
-one value per name (ADR-0005, ADR-0025). Every key must be present and distinct
-within the op; a key column may not be named.
+one value per name (ADR-0005, ADR-0025). [`check_update`](@ref), then the state
+gate — every key present in the table; nothing is written if any check fails.
 """
 function update_rows!(t::Table, names, rows)
-    s = t.shape
-    isempty(names) && fail("update names no non-key column")
-    cols = Int[]
-    for n in names
-        j = column_index(s, n)
-        j in s.keyidx && fail("update names key column $(repr(n)); a key never changes (delete then insert)")
-        j in cols && fail("duplicate column $(repr(n)) in one update")
-        push!(cols, j)
-    end
-    nk = length(s.keyidx)
-    seen = Set{Any}()
+    cols = check_update(t.shape, names, rows)
+    nk = length(t.shape.keyidx)
     for row in rows
-        length(row) == nk + length(cols) ||
-            fail("update row has $(length(row)) cells; expected $nk key cells and $(length(cols)) values")
         k = Tuple(row[1:nk])
-        for (i, j) in enumerate(s.keyidx)
-            check_cell(s.columns[j], k[i])
-        end
-        k in seen && fail("duplicate key $(repr(k)) inside one op")
         haskey(t.index, k) || fail("update names a key that is absent: $(repr(k))")
-        push!(seen, k)
-        for (p, j) in enumerate(cols)
-            check_cell(s.columns[j], row[nk+p])
-        end
     end
     for row in rows
         i = t.index[Tuple(row[1:nk])]
@@ -416,21 +472,15 @@ end
 """
     delete_rows!(table, keys) -> nothing
 
-Delete the rows at `keys` (tuples in key declaration order). Every key must be
-present and distinct within the op.
+Delete the rows at `keys` (tuples in key declaration order): [`check_delete`](@ref),
+then the state gate — every key present in the table; nothing is written if any
+check fails.
 """
 function delete_rows!(t::Table, ks)
-    s = t.shape
-    seen = Set{Any}()
+    check_delete(t.shape, ks)
     for k in ks
         k = Tuple(k)
-        length(k) == length(s.keyidx) || fail("key $(repr(k)) has $(length(k)) cells; the key has $(length(s.keyidx))")
-        for (i, j) in enumerate(s.keyidx)
-            check_cell(s.columns[j], k[i])
-        end
-        k in seen && fail("duplicate key $(repr(k)) inside one op")
         haskey(t.index, k) || fail("delete names a key that is absent: $(repr(k))")
-        push!(seen, k)
     end
     drop = falses(nrows(t))
     for k in ks
