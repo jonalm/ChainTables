@@ -93,7 +93,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
         mktempdir() do dir
             store, chain = fixture(dir)
             created = CT.create_chain(chain)
-            @test created.slot == 0 && occursin(r"^[A-Z2-7]{26}$", created.chain_id) && length(created.transaction_hash) == 32
+            @test created.slot == 0 && occursin(r"^[A-Z2-7]{26}$", created.chain_id) && created.transaction_hash isa CT.TransactionHash
             @test collect(keys(store.objects)) == ["p/000000000000"]
             @test store.calls == [(:put_object_if_absent, "p/000000000000")]
             genesis = Ops.decode_record(store.objects["p/000000000000"]; slot = 0)
@@ -173,7 +173,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             declare!(w)
             CT.insert_rows!(w, :samples, [(id = 1, label = "a", mass = 1.5), (id = 2, label = "b", mass = missing)])
             r1 = CT.commit!(w; comment = "first samples")
-            @test r1.slot == 1 && length(r1.transaction_hash) == 32
+            @test r1.slot == 1 && r1.transaction_hash isa CT.TransactionHash && r1.state_fingerprint isa CT.StateFingerprint
             @test r1.state_fingerprint == CT.head(copy).state_fingerprint == Model.state_fingerprint(copy.content)
             @test CT.head(copy) == (; slot = 1, transaction_hash = r1.transaction_hash, state_fingerprint = r1.state_fingerprint)
             @test heads(copy) == ["000000000001"] && length(tabs(copy)) == 1

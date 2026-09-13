@@ -1,6 +1,7 @@
 # #34 step 5 — ADR-0023, ADR-0009, ADR-0013, ADR-0019, ADR-0020: table files, the
 # head file, open and its checks, sweep, lazy load with hash-before-use,
-# checkpoints. Steps 7 and 8 add sync!/commit! and verify/repair!/as_of/views here.
+# checkpoints. Step 7's sync!/commit! live in chain.jl; step 8 added the view cache,
+# the temporary copy, pin!/unpin! here, with views.jl and recovery.jl on top.
 #
 # `ChainTables.open` is defined in this file, so inside the module a bare `open`
 # is ChainTables.open: every file below is opened with `Base.open`.
@@ -304,10 +305,13 @@ open or written by the last checkpoint (`nothing` while the copy is fresh and
 unbound); and the model, loaded lazily — `tables` is the head's `name =>
 table_hash` list, `content` holds every table read from its file or created
 since the last head, and `loaded` the names read from a file, so a name in
-`loaded` and no longer in `content` was dropped. A handle: `Base.close`
-drops the model and every later call raises.
+`loaded` and no longer in `content` was dropped; `views` caches one `TableView`
+per table for the current head (ADR-0024), dropped when the head moves. A
+handle: `Base.close` drops the model and every later call raises; a copy
+`as_of` built with no path is `temporary`, and `close` deletes its directory
+(ADR-0015).
 
-Taken with [`open`](@ref); advanced by `sync!` and `commit!` (#34 step 7)
+Taken with [`open`](@ref) or `as_of`; advanced by `sync!` and `commit!`
 through [`load_tables!`](@ref), [`stage!`](@ref), [`write_head!`](@ref),
 [`discard!`](@ref) and [`checkpoint!`](@ref). The chain is any value:
 `open` reads nothing from it but [`expected_chain_id`](@ref).
@@ -324,6 +328,8 @@ mutable struct LocalCopy{C}
     tables::Dict{String,Vector{UInt8}}
     content::Content
     loaded::Set{String}
+    views::Dict{String,Any}        # name => TableView at the current head (views.jl follows this file)
+    temporary::Bool
     closed::Bool
 end
 
@@ -379,7 +385,8 @@ function open(chain, path::AbstractString)
         throw(NotALocalCopyError("not a local copy: $path is a non-empty directory without heads/ and tables/. " *
             "Open a different path, or empty this one if it is disposable."; path))
     end
-    copy = LocalCopy{typeof(chain)}(chain, path, nothing, Dict{String,Vector{UInt8}}(), Content(), Set{String}(), false)
+    copy = LocalCopy{typeof(chain)}(chain, path, nothing, Dict{String,Vector{UInt8}}(), Content(), Set{String}(),
+                                    Dict{String,Any}(), false, false)
     copy.head = choose_head(copy, expected_chain_id(chain))
     copy.tables = copy.head === nothing ? Dict{String,Vector{UInt8}}() : Dict(copy.head.tables)
     sweep!(copy)
@@ -464,34 +471,58 @@ end
 """
     close(copy) -> nothing
 
-Drop the model; every later call on the copy raises (ADR-0019). Deleting a
-temporary `as_of` copy's directory is #34 step 8's.
+Drop the model and the cached views; every later call on the copy raises
+(ADR-0019). A view already held stays what it was. A temporary copy — `as_of`
+with no `path` — has its directory deleted (ADR-0015). Closing twice is a no-op.
 """
 function Base.close(copy::LocalCopy)
+    copy.closed && return nothing
     copy.closed = true
     empty!(copy.content)
     empty!(copy.loaded)
+    empty!(copy.views)
+    copy.temporary && rm(copy.path; recursive = true, force = true)
     return nothing
 end
 
 """
     ispinned(copy) -> Bool
 
-Whether the `pin` file exists: `as_of` creates it, `unpin!` deletes it, `sync!`
-and `commit!` refuse while it exists (ADR-0015, ADR-0023).
+Whether the `pin` file exists: `as_of` creates it, [`unpin!`](@ref) deletes it,
+`sync!` and `commit!` refuse while it exists (ADR-0015, ADR-0023).
 """
 ispinned(copy::LocalCopy) = isfile(joinpath(copy.path, "pin"))
+
+pin!(copy::LocalCopy) = (touch(joinpath(copy.path, "pin")); nothing)
+
+"""
+    unpin!(copy) -> nothing
+
+Delete the `pin` file: the copy is live thereafter, and the next `sync!` advances
+it (ADR-0015) — replaying onward from a pinned slot yields exactly what a replay
+from slot 0 would, so a pinned copy going live is legitimate; it must only never
+happen by accident. A copy that is not pinned is refused: it is live already. A
+temporary `as_of` copy stays temporary, and `close` still deletes it.
+"""
+function unpin!(copy::LocalCopy)
+    check_open(copy)
+    ispinned(copy) || throw(ArgumentError("unpin!(copy): the local copy at $(copy.path) is not pinned; it is live already"))
+    rm(joinpath(copy.path, "pin"))
+    return nothing
+end
 
 """
     head(copy) -> (; slot, transaction_hash, state_fingerprint)
 
-The head the copy is at (ADR-0024). Raises while the copy is fresh and unbound.
+The head the copy is at (ADR-0024): its slot, its [`TransactionHash`](@ref) and its
+[`StateFingerprint`](@ref). Raises while the copy is fresh and unbound.
 """
 function head(copy::LocalCopy)
     check_open(copy)
     h = copy.head
     h === nothing && throw(ArgumentError("the local copy at $(copy.path) has no head yet; sync!(copy) binds it"))
-    return (; slot = h.slot, transaction_hash = h.transaction_hash, state_fingerprint = h.state_fingerprint)
+    return (; slot = h.slot, transaction_hash = TransactionHash(h.transaction_hash),
+            state_fingerprint = StateFingerprint(h.state_fingerprint))
 end
 
 """
@@ -639,7 +670,8 @@ The local commit point (ADR-0009, ADR-0023): write the head file for `slot`
 naming `staged.tables` — after every file it names, to `.tmp` then renamed —
 then sweep. `chain_id` is the record's 16 bytes; `staged` is [`stage!`](@ref)'s
 result. The slot must advance and the chain id must not change. Afterwards
-every table in `copy.content` is a loaded table of the new head.
+every table in `copy.content` is a loaded table of the new head, and the cached
+views of the old head are dropped (ADR-0024).
 """
 function write_head!(copy::LocalCopy, chain_id::AbstractVector{UInt8}, slot::Integer, transaction_hash::AbstractVector{UInt8}, staged)
     check_open(copy)
@@ -655,6 +687,7 @@ function write_head!(copy::LocalCopy, chain_id::AbstractVector{UInt8}, slot::Int
     copy.head = h
     copy.tables = Dict(h.tables)
     copy.loaded = Set(keys(copy.content))
+    empty!(copy.views)
     sweep!(copy)
     return nothing
 end

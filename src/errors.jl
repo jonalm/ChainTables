@@ -1,11 +1,12 @@
 # ADR-0020 (errors are types, the message is the contract). Every lane raises these
-# types; #34 step 7 completed the taxonomy with the evidence fields.
+# types; #34 step 7 completed the taxonomy with the evidence fields, step 8 typed the hashes.
 #
 # Each type carries `msg` — the three-part message: what happened in the glossary's
 # words, the evidence, the next move naming the function — and the same evidence as
 # fields, so a caller can branch on the type and read the chain id, slot and hashes
 # without parsing text. Every evidence field is keyword-optional and `nothing` when
-# the raiser does not know it; hashes are the raw 32 bytes.
+# the raiser does not know it; a hash is a `TransactionHash` or a `StateFingerprint`
+# (ADR-0019), built from the raw 32 bytes a raiser passes.
 
 """
     ChainTablesError <: Exception
@@ -24,7 +25,8 @@ stat one key, list a prefix (ADR-0010, ADR-0019). Declared here rather than in
 """
 abstract type AbstractObjectStore end
 
-const MaybeBytes = Union{Nothing,Vector{UInt8}}
+const MaybeTxn = Union{Nothing,TransactionHash}
+const MaybeFp = Union{Nothing,StateFingerprint}
 const MaybeString = Union{Nothing,String}
 const MaybeInt = Union{Nothing,Int64}
 
@@ -54,10 +56,10 @@ struct LostRaceError <: ChainTablesError
     msg::String
     chain_id::MaybeString
     slot::MaybeInt
-    transaction_hash::MaybeBytes
+    transaction_hash::MaybeTxn
 end
 LostRaceError(msg; chain_id = nothing, slot = nothing, transaction_hash = nothing) =
-    LostRaceError(msg, chain_id, slot, transaction_hash)
+    LostRaceError(msg, chain_id, slot, maybe_hash(TransactionHash, transaction_hash))
 
 """
     UnsupportedStoreError(msg; endpoint)
@@ -97,39 +99,43 @@ PinnedCopyError(msg; path = nothing, slot = nothing) = PinnedCopyError(msg, path
 """
     FingerprintMismatchError(msg; chain_id, slot, expected, computed, record_client, this_client)
 
-Raised at a checkpoint, by the commit pre-check and by `verify`: the record's
-`state_fingerprint` (`expected`) against what this client holds (`computed`)
-(ADR-0007, ADR-0023). `record_client` and `this_client` are `(; lib, julia)` — the
-forensics ADR-0006 and ADR-0022 named — when known. Next move: `repair!(copy)`.
+Raised at a checkpoint, by the commit and `as_of` pre-checks and by `verify`: the
+record's `state_fingerprint` (`expected`) against what this client holds or computes
+(`computed`) (ADR-0007, ADR-0023); from `verify(copy)` without `full`, the head's
+fingerprint against the one its table files hash to, `computed = nothing` when a file
+is missing. `record_client` and `this_client` are `(; lib, julia)` — the forensics
+ADR-0006 and ADR-0022 named — when known. Next move: `repair!(copy)`.
 """
 struct FingerprintMismatchError <: ChainTablesError
     msg::String
     chain_id::MaybeString
     slot::MaybeInt
-    expected::MaybeBytes
-    computed::MaybeBytes
+    expected::MaybeFp
+    computed::MaybeFp
     record_client::Any
     this_client::Any
 end
 FingerprintMismatchError(msg; chain_id = nothing, slot = nothing, expected = nothing, computed = nothing,
                          record_client = nothing, this_client = nothing) =
-    FingerprintMismatchError(msg, chain_id, slot, expected, computed, record_client, this_client)
+    FingerprintMismatchError(msg, chain_id, slot, maybe_hash(StateFingerprint, expected), maybe_hash(StateFingerprint, computed),
+                             record_client, this_client)
 
 """
     DivergenceError(msg; chain_id, slot, expected, computed)
 
-Raised by `repair!`: a fresh replay also mismatches, so this machine cannot reproduce
-the chain (ADR-0014). Deliberately does not say which side is right. Raised by #34 step 8.
+Raised by `repair!`: a fresh replay of the record cache to the head's `slot` yields
+`computed`, the head carries `expected`, so this machine cannot reproduce the chain
+(ADR-0014). Deliberately does not say which side is right.
 """
 struct DivergenceError <: ChainTablesError
     msg::String
     chain_id::MaybeString
     slot::MaybeInt
-    expected::MaybeBytes
-    computed::MaybeBytes
+    expected::MaybeFp
+    computed::MaybeFp
 end
 DivergenceError(msg; chain_id = nothing, slot = nothing, expected = nothing, computed = nothing) =
-    DivergenceError(msg, chain_id, slot, expected, computed)
+    DivergenceError(msg, chain_id, slot, maybe_hash(StateFingerprint, expected), maybe_hash(StateFingerprint, computed))
 
 """
     RewrittenChainError(msg; chain_id, slot, expected, found)
@@ -143,11 +149,11 @@ struct RewrittenChainError <: ChainTablesError
     msg::String
     chain_id::MaybeString
     slot::MaybeInt
-    expected::MaybeBytes
-    found::MaybeBytes
+    expected::MaybeTxn
+    found::MaybeTxn
 end
 RewrittenChainError(msg; chain_id = nothing, slot = nothing, expected = nothing, found = nothing) =
-    RewrittenChainError(msg, chain_id, slot, expected, found)
+    RewrittenChainError(msg, chain_id, slot, maybe_hash(TransactionHash, expected), maybe_hash(TransactionHash, found))
 
 """
     ChainNotFoundError(msg; bucket, prefix)

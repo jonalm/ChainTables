@@ -128,7 +128,7 @@ location(chain::Chain) = isempty(chain.prefix) ? chain.bucket : "$(chain.bucket)
 
 Create the chain at `chain`'s bucket and prefix: mint the chain id, commit a genesis
 record carrying zero ops to slot 0, and return its id (base32 text), `slot = 0` and the
-record's transaction hash — **not** a local copy: every local copy is built by replay,
+record's [`TransactionHash`](@ref) — **not** a local copy: every local copy is built by replay,
 so `open` and `sync!` follow (ADR-0019). The only thing that may write slot 0. Two
 clients creating one prefix are resolved like any commit (ADR-0002): the second raises
 `LostRaceError` naming the chain already there, and is never retried.
@@ -153,7 +153,7 @@ function create_chain(chain::Chain)
             "create_chain writes slot 0 once and is never retried: open(chain, path) and sync!(copy) to use the " *
             "existing chain, or create under another prefix."; chain_id = cid, slot = 0, transaction_hash = th))
     end
-    return (; chain_id = chain_id_string(chain_id), slot = 0, transaction_hash = Ops.transaction_hash(bytes))
+    return (; chain_id = chain_id_string(chain_id), slot = 0, transaction_hash = TransactionHash(Ops.transaction_hash(bytes)))
 end
 
 # ---------------------------------------------------------------------------
@@ -194,7 +194,7 @@ function check_head_slot(copy::LocalCopy, chain::Chain)
 end
 
 """
-    sync!(copy) -> (; applied, slot, transaction_hash)
+    sync!(copy) -> (; applied, slot, transaction_hash::TransactionHash)
 
 Bring the local copy up to the chain's head (ADR-0013): fetch the head's own slot and
 hold it against the head (ADR-0014 — `RewrittenChainError`, or `WrongChainError` when
@@ -225,10 +225,10 @@ function sync!(copy::LocalCopy)
             "chain was created there — create_chain(chain) writes slot 0, and only that. The two cannot be told apart " *
             "from here.";
             bucket = chain.bucket, prefix = chain.prefix))
-        return (; applied = 0, slot = h.slot, transaction_hash = h.transaction_hash)
+        return (; applied = 0, slot = h.slot, transaction_hash = TransactionHash(h.transaction_hash))
     end
     applied = replay!(copy, lo + 1, top).applied
-    return (; applied, slot = copy.head.slot, transaction_hash = copy.head.transaction_hash)
+    return (; applied, slot = copy.head.slot, transaction_hash = TransactionHash(copy.head.transaction_hash))
 end
 
 # A task's result, with the task's own exception rather than the TaskFailedException
@@ -337,7 +337,7 @@ function write_builder(copy::LocalCopy)
 end
 
 """
-    commit!(w; comment = nothing) -> (; slot, transaction_hash, state_fingerprint)
+    commit!(w; comment = nothing) -> (; slot, transaction_hash::TransactionHash, state_fingerprint::StateFingerprint)
 
 Commit the builder's ops as one transaction record at the slot above the copy's head
 (ADR-0002, ADR-0009). In order: the builder is spent (a second `commit!` is
@@ -381,19 +381,8 @@ function commit!(w::WriteBuilder; comment = nothing)
         throw(WriteBuilderError("commit!(w): comment is a $(typeof(comment)), not text"))
     store, cache, bucket = chain.store, chain.cache, chain.bucket
     # the commit pre-check (ADR-0007, ADR-0014): the head against its own record
-    parent_bytes = check_head_slot(copy, chain)
-    parent = Ops.decode_record(parent_bytes; slot = h.slot)
-    if parent.state_fingerprint != h.state_fingerprint
-        here = written_by_here()
-        throw(FingerprintMismatchError("state fingerprint mismatch at slot $(h.slot) (chain $(h.chain_id)): the record's " *
-            "state_fingerprint is $(bytes2hex(parent.state_fingerprint)), the head of the local copy at $(copy.path) " *
-            "holds $(bytes2hex(h.state_fingerprint)). The record was written by $(parent.client.lib) on Julia " *
-            "$(parent.client.julia); this client is $(here.lib) on Julia $(here.julia). The copy drifted from the chain " *
-            "since it was applied, and commits nothing onto it: repair!(copy) confirms whether this machine reproduces " *
-            "the chain.";
-            chain_id = h.chain_id, slot = h.slot, expected = parent.state_fingerprint, computed = h.state_fingerprint,
-            record_client = (; lib = parent.client.lib, julia = parent.client.julia), this_client = here))
-    end
+    check_head_record(copy, chain, "The copy drifted from the chain since it was applied, and commits nothing onto it: " *
+        "repair!(copy) confirms whether this machine reproduces the chain.")
     slot = h.slot + 1
     key = slot_key(chain, slot)
     # the preflight (ADR-0002): a taken next slot is a stale head, before anything is applied
@@ -439,5 +428,22 @@ function commit!(w::WriteBuilder; comment = nothing)
         rethrow()
     end
     write_head!(copy, chain_id, slot, th, staged)
-    return (; slot, transaction_hash = th, state_fingerprint = staged.state_fingerprint)
+    return (; slot, transaction_hash = TransactionHash(th), state_fingerprint = StateFingerprint(staged.state_fingerprint))
+end
+
+# The head against its own record (ADR-0007, ADR-0014): the slot is fetched through the
+# cache and held against the head (`check_head_slot`), then the record's fingerprint
+# against the head's. Returns the record; `next` is the caller's next move for the message.
+function check_head_record(copy::LocalCopy, chain::Chain, next)
+    h = copy.head
+    bytes = check_head_slot(copy, chain)
+    record = Ops.decode_record(bytes; slot = h.slot)
+    record.state_fingerprint == h.state_fingerprint && return record
+    here = written_by_here()
+    throw(FingerprintMismatchError("state fingerprint mismatch at slot $(h.slot) (chain $(h.chain_id)): the record's " *
+        "state_fingerprint is $(bytes2hex(record.state_fingerprint)), the head of the local copy at $(copy.path) " *
+        "holds $(bytes2hex(h.state_fingerprint)). The record was written by $(record.client.lib) on Julia " *
+        "$(record.client.julia); this client is $(here.lib) on Julia $(here.julia). $next";
+        chain_id = h.chain_id, slot = h.slot, expected = record.state_fingerprint, computed = h.state_fingerprint,
+        record_client = (; lib = record.client.lib, julia = record.client.julia), this_client = here))
 end

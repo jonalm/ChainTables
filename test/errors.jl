@@ -1,7 +1,7 @@
 # ADR-0020 — the taxonomy: fourteen types under one supertype, each with `msg` and its evidence as
 # keyword fields defaulting to nothing. Every type is provoked, with @test_throws "<message>", in
-# the test file of the lane that raises it (localcopy.jl, ops.jl, builder.jl, chain.jl); the two
-# steps 8 and 9 raise — DivergenceError, UnsupportedStoreError — are checked by construction here.
+# the test file of the lane that raises it (localcopy.jl, ops.jl, builder.jl, chain.jl, recovery.jl);
+# the one step 9 raises — UnsupportedStoreError — is checked by construction here.
 @testset "errors" begin
     for T in (
         ChainTables.StaleHeadError, ChainTables.LostRaceError, ChainTables.WriteBuilderError,
@@ -20,7 +20,15 @@
     end
     e = ChainTables.DivergenceError("divergence: this machine cannot reproduce the chain"; chain_id = "A"^26, slot = 3,
                                     expected = zeros(UInt8, 32), computed = ones(UInt8, 32))
-    @test (e.chain_id, e.slot, e.expected[1], e.computed[1]) == ("A"^26, 3, 0x00, 0x01)
+    @test (e.chain_id, e.slot, e.expected, e.computed) == ("A"^26, 3, zeros(UInt8, 32), ones(UInt8, 32))
+    # a hash given as raw bytes is carried as its type (ADR-0019): fingerprints and transaction hashes apart
+    @test e.expected isa ChainTables.StateFingerprint && e.computed isa ChainTables.StateFingerprint
+    e = ChainTables.RewrittenChainError("rewritten chain"; expected = zeros(UInt8, 32), found = ChainTables.TransactionHash(ones(UInt8, 32)))
+    @test e.expected isa ChainTables.TransactionHash && e.found isa ChainTables.TransactionHash && e.found == ones(UInt8, 32)
+    @test ChainTables.LostRaceError("lost race"; transaction_hash = zeros(UInt8, 32)).transaction_hash isa ChainTables.TransactionHash
+    e = ChainTables.FingerprintMismatchError("mismatch"; expected = zeros(UInt8, 32), computed = ones(UInt8, 32))
+    @test e.expected isa ChainTables.StateFingerprint && e.computed isa ChainTables.StateFingerprint
+    @test_throws "a StateFingerprint is 32 bytes, got 3" ChainTables.FingerprintMismatchError("mismatch"; expected = UInt8[1, 2, 3])
     e = ChainTables.UnsupportedStoreError("unsupported store"; endpoint = "https://minio.local")
     @test e.endpoint == "https://minio.local"
     @test fieldnames(ChainTables.WriteBuilderError) == (:msg,)   # the call to fix is the whole evidence
