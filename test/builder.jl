@@ -2,7 +2,11 @@
 using ChainTables: Model, Ops, WriteBuilder, WriteBuilderError, ChainTablesError
 using ChainTables.Model: Column, Shape, Table, Content
 using ChainTables.Ops: CreateTable, AddColumn, DropColumn, DropTable, Insert, Update, Delete, Client, Record
-import Dates
+# A type that is none of the four tags, standing in for DateTime (ADR-0019 names
+# it) without loading Dates into the test environment.
+struct BuilderTestDateTime
+    year::Int
+end
 
 # A Tables.jl-style row without Tables.jl: propertynames and getproperty are the
 # whole interface the builder reads (Tables.AbstractRow, DataFrameRow, NamedTuple).
@@ -146,7 +150,7 @@ Base.getproperty(r::BuilderTestRow, n::Symbol) = getfield(r, :fields)[n]
         @test_throws "column \"id\" is int64, got a value of type UInt64" CT.insert_rows!(w, :samples, [(id = UInt64(1), label = "a", mass = 1.0)])
         @test_throws "column \"mass\" is float64, got a value of type Int64" CT.insert_rows!(w, :samples, [(id = 1, label = "a", mass = 1)])
         @test_throws "column \"label\" is text, got a value of type Symbol" CT.insert_rows!(w, :samples, [(id = 1, label = :a, mass = 1.0)])
-        @test_throws "column \"label\" is text, got a value of type Dates.DateTime" CT.insert_rows!(w, :samples, [(id = 1, label = Dates.DateTime(2020), mass = 1.0)])
+        @test_throws "column \"label\" is text, got a value of type BuilderTestDateTime" CT.insert_rows!(w, :samples, [(id = 1, label = BuilderTestDateTime(2020), mass = 1.0)])
         @test_throws "column \"label\" is text and does not admit null" CT.insert_rows!(w, :samples, [(id = 1, label = missing, mass = 1.0)])
         @test_throws "column \"mass\": nothing is not a value; null is spelt missing" CT.insert_rows!(w, :samples, [(id = 1, label = "a", mass = nothing)])
         @test_throws "column \"label\" is not well-formed UTF-8" CT.insert_rows!(w, :samples, [(id = 1, label = "\xff", mass = 1.0)])
@@ -231,7 +235,7 @@ Base.getproperty(r::BuilderTestRow, n::Symbol) = getfield(r, :fields)[n]
         @test bad_tag(AbstractString) == "column!(t, :c, AbstractString): type tag AbstractString for column \"c\" is not one of Int64, Float64, String, Vector{UInt8}; a text column's tag is String"
         @test bad_tag(Int32) == "column!(t, :c, Int32): type tag Int32 for column \"c\" is not one of Int64, Float64, String, Vector{UInt8}; Int32 values widen at insert, the tag is Int64"
         @test bad_tag(Float32) == "column!(t, :c, Float32): type tag Float32 for column \"c\" is not one of Int64, Float64, String, Vector{UInt8}; Float32 values widen at insert, the tag is Float64"
-        @test startswith(bad_tag(Dates.DateTime), "column!(t, :c, Dates.DateTime): type tag Dates.DateTime for column \"c\" is not one of")
+        @test startswith(bad_tag(BuilderTestDateTime), "column!(t, :c, BuilderTestDateTime): type tag BuilderTestDateTime for column \"c\" is not one of")
         for T in (Any, Union{Missing,Int64}, Missing, Nothing, Vector{Int64}, SubString{String}, UInt8, Int128, Integer, Real, Symbol, Char)
             @test occursin("type tag $T for column \"c\" is not one of", bad_tag(T))
         end
