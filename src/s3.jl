@@ -110,7 +110,7 @@ end
 
 The S3 client (ADR-0010): the four verbs of the port over a vendored SigV4 signer and
 stdlib `Downloads`, one request per call and no retry inside — libcurl retries nothing
-on its own, so ADR-0002's "transport-level retry is off" is obtained, not configured.
+on its own, so ADR-0010's "the transport never retries" is obtained, not configured.
 `region` and `credentials` are already resolved (see [`resolve_region`](@ref) and
 [`resolve_credentials`](@ref)). `Chain` builds one when `store = nothing`.
 

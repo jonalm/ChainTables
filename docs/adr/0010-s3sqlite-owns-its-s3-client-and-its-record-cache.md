@@ -31,9 +31,10 @@ had to satisfy: `412` must be available as a value, which the rclone CLI cannot
 do — it exits `1` for a lost race and `1` for a broken socket, with
 `PreconditionFailed` only as English on stderr.
 
-That constraint does not exist. ADR-0002 already requires the committer to read
-the slot back after a failed PUT, to tell a lost acknowledgement from a lost
-race, and that read-back answers the whole question from chain state alone:
+That constraint does not exist. This ADR requires the committer to read the
+slot back after a failed PUT, to tell a lost acknowledgement from a lost race
+(ADR-0002 decides the conditional put and says nothing about what follows a
+failure), and that read-back answers the whole question from chain state alone:
 
 | The slot then holds | The commit outcome |
 | --- | --- |
@@ -53,14 +54,26 @@ fails, which issue #8 has already measured once by hand.
 
 ## The transport
 
-A vendored SigV4 signer over stdlib `Downloads`, `SHA` and `Base64` — no
-dependency added. `Downloads.request(url; method, headers, input, throw=false)`
-returns a response carrying `.status`, and libcurl does not retry on its own,
-so ADR-0002's "transport-level retry must be off" is obtained rather than
-configured. Vendoring matches ADR-0006's call on the CBOR encoder.
+A vendored SigV4 signer over stdlib `Downloads`, `SHA` and `Base64`.
+`Downloads.request(url; method, headers, input, throw=false)` returns a response
+carrying `.status`, and libcurl does not retry on its own, so the rule below —
+**the transport never retries** — is obtained rather than configured.
+
+That rule is this ADR's, not ADR-0002's, and it is not a rule against depending
+on an S3 client. Its reasons: the read-back has to run *between* attempts, so
+the retry budget must live in one place, the commit layer; a transport that
+retries on its own hides transient failures the caller should see (the repo's
+fail-fast stance); and a hidden backoff turns a one-second failure into a
+minute. It is **not** a correctness requirement — a transport that re-issued a
+PUT which had already landed would get a `412`, and the read-back resolves a
+`412` correctly whatever caused it. A client whose retries can be switched off
+entirely satisfies the rule; boto3 does (`total_max_attempts = 1`, and urllib3
+underneath is called with `retries = Retry(False)`). AWS.jl does not, which is
+why the signer is vendored (see the options below and ADR-0027). Vendoring
+matches ADR-0006's call on the CBOR encoder.
 
 - **One request per port call.** The commit layer owns the retry loop, because
-  ADR-0002's read-back has to happen *between* attempts and only the commit layer
+  the read-back above has to happen *between* attempts and only the commit layer
   can perform it. Retry on connect failure, timeout, `5xx` and `409`; never on
   `412`, which is terminal; never on an auth `4xx`.
 - **`409 Conflict` is a documented third outcome** of a conditional write — a
@@ -113,25 +126,37 @@ Two properties are load-bearing and are recorded as such:
   `Rclone_jll`, pinned to `1.74.3`, so every ChainTables install would download an
   rclone binary it never executes and inherit that artifact's platform matrix.
   Forty lines of cache is not worth it.
-- **`AWS.jl`** can send arbitrary headers and return a status as a value, but
-  carries sixteen direct dependencies, builds path-style URLs with no endpoint
-  option, and wraps every request in a hardcoded four-attempt retry layer that
-  cannot be disabled — the one thing ADR-0002 forbids.
+- **`AWS.jl`** (checked at 1.94.1) can send arbitrary headers and return a
+  status as a value, and its dependency weight alone would not rule it out
+  (ADR-0027). It fails the transport rule above: it has two retry layers, an
+  outer one that is configurable (`AWSConfig(; max_attempts)`, retrying expired
+  credentials, throttling and `RequestTimeout`) and an inner one in both the
+  HTTP.jl and `Downloads` backends that is hardcoded to four attempts on connect
+  errors, request errors and `5xx`, with one- to eight-second backoff, and
+  cannot be turned off. Neither layer retries `409` or `412`, so the read-back
+  stays correct under it; the cost is a second retry budget, hidden transient
+  failures, and up to ~14 s of backoff per port call. Its URLs are also built
+  as `https://s3.<region>.amazonaws.com/…` with no endpoint option, so a
+  non-AWS endpoint (ADR-0016) would need its own path anyway.
 - **`AWSS3.jl`** cannot send `If-None-Match` at all: `s3_put` builds its header
   dictionary internally and passes keyword arguments past it.
 - **`CloudBase.jl`** has a clean, tested `awssign!`, but hard-depends on three
   jlls including `minio_jll`.
 - **`HTTP.jl`** would work with `retry=false`, which is mandatory rather than
-  optional: its default retryable set includes `409`, and it treats PUT as
-  idempotent, so out of the box it would re-issue the very request whose
-  ambiguity the read-back exists to resolve.
+  optional: it treats PUT as idempotent and retries it on transport errors and
+  `408`/`429`/`5xx` (checked at 2.5.5; `409` is not in the set), so out of the
+  box it would re-issue the very request whose ambiguity the read-back exists
+  to resolve. It is only a transport, though — the signer would still be ours,
+  so it buys nothing over `Downloads`.
 
 ## Consequences
 
-- **ChainTables has no non-stdlib dependency** — stdlib plus the vendored encoder
-  and the vendored signer (ADR-0022; this ADR first said *reduce to SQLite.jl*).
-  No rclone binary, no version pin inherited from another package, and nothing
-  between the chain and the bytes on the wire that we did not write.
+- **ChainTables adds no dependency for the transport** — stdlib plus the vendored
+  encoder and the vendored signer (ADR-0022; this ADR first said *reduce to
+  SQLite.jl*). No rclone binary, no version pin inherited from another package,
+  and nothing between the chain and the bytes on the wire that we did not write.
+  This is not a rule against dependencies; ADR-0027 sets the criterion, and the
+  signer stays vendored because AWS.jl fails it.
 - **The rclone ≥ 1.74 floor is no longer ours.** Issue #8 found that system rclone
   1.65.2 cannot reach the test bucket (`400 MissingNamespaceHeader`). AWS
   documents `x-amz-bucket-namespace` as a CreateBucket header and states that

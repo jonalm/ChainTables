@@ -195,7 +195,7 @@ function cache_record!(cache::RecordCache, bucket::AbstractString, key::Abstract
 end
 
 # ---------------------------------------------------------------------------
-# Transport failures and the retry rule (ADR-0010, ADR-0002). One request per port
+# Transport failures and the retry rule (ADR-0010). One request per port
 # call; the commit layer owns the loop, because the read-back that decides a
 # commit's outcome has to happen between attempts.
 # ---------------------------------------------------------------------------
@@ -241,7 +241,7 @@ const PUT_BACKOFF_S = (0.05, 0.1, 0.2)
 """
     put_record!(store, cache, bucket, key, bytes) -> nothing | Vector{UInt8}
 
-The conditional put of a record with ADR-0010's retry loop and ADR-0002's read-back.
+The conditional put of a record with ADR-0010's retry loop and read-back.
 Returns `nothing` when `bytes` are at `key` — created by this call, or found there by
 the read-back after a lost acknowledgement — and the **other** record's bytes when a
 different object holds the slot, which is a lost race for the caller to raise. The

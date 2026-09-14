@@ -96,8 +96,10 @@ constraints for that effort, not built here: a read engine folds ASCII case in
 identifiers, so issue #28's charset decision should keep names distinct under an
 ASCII fold; and `register_table` interpolates its name unescaped, so a chain name
 must never reach it. `LocalCopy` no longer forwards `DBInterface`; nothing on the
-surface speaks SQL. **No weak dependency is added** — the package's non-stdlib
-dependencies stay at none (ADR-0022).
+surface speaks SQL. **No weak dependency is added**: a read engine is that
+second effort's job and, if built, a separate package's. It never enters this
+package as a dependency, weak or hard. That is a scope decision, not a
+dependency-count one (ADR-0027).
 
 Also settled in passing: invalid UTF-8 can never reach a view, because a
 `String` typed value is a CBOR text string and RFC 8949 requires it to be valid
@@ -127,7 +129,8 @@ UTF-8 — the builder refuses it. Handed to issue #28 as a reason of its own.
   `S3SQLite.sqlite(copy)` paragraph now points here. `TableView` joins `Chain`
   and `LocalCopy` as the third type with behaviour.
 - **ADR-0022 is amended in place**: DuckDB.jl leaves the "read engine only"
-  option and the dependencies line; non-stdlib dependencies stay at none.
+  option and the dependencies line. (The "stay at none" this once said is
+  withdrawn by ADR-0027.)
 - **Issue #28 inherits** the free hand over the model representation, the
   ASCII-fold reason for the identifier charset, and the UTF-8 note.
 - **Memory**: a viewed table is resident twice, model and view, until the head

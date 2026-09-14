@@ -134,7 +134,7 @@ renamed by issue #29 with the package.
 - **Amended by this ADR, body edits owed by issue #32**: ADR-0007 (the model
   replaces the read-back, the catalog and the C API; the primary-key order
   comes from issue #28's comparator; there is nothing to exclude by name),
-  ADR-0010 (non-stdlib dependencies reduce to none — stdlib plus the vendored
+  ADR-0010 (SQLite.jl leaves; the transport is stdlib plus the vendored
   encoder and the vendored signer), ADR-0019 (only the AWS open-time warning
   remains; `assume_sqlite_is_equivalent` and `PRAGMA query_only` are gone),
   ADR-0001 (its note on the deleted ADR-0004; the identifier charset is issue
@@ -148,8 +148,9 @@ renamed by issue #29 with the package.
   half of the test substrate, and `test/sqlite_jl_marshalling.jl` (deleted by
   issue #31, with the dependency). **Reserved table**'s successor is the head file (issue #26).
 - **Assumed guarantee** keeps only its AWS instance (ADR-0016).
-- **Dependencies**: no non-stdlib dependency, hard or weak — issue #27 put the
-  DuckDB.jl extension out of scope (ADR-0024). The `Project.toml` edit is issue
+- **Dependencies**: SQLite.jl leaves, and issue #27 put the DuckDB.jl extension
+  out of scope (ADR-0024). That the count reached zero was a state, not a rule;
+  ADR-0027 sets the criterion for adding one. The `Project.toml` edit is issue
   #32's.
 - **Glossary**: **Typed value** and **Replay determinism** are redefined here;
   the full pass is issue #30's.
