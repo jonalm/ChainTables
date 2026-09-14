@@ -10,8 +10,8 @@ using .Ops: Client
 # ---------------------------------------------------------------------------
 
 """
-    Chain(bucket, prefix; store = nothing, region = nothing, credentials = nothing, endpoint = nothing,
-          path_style = false, assume_first_writer_wins = false, read_ahead = 8,
+    Chain(bucket, prefix; store = nothing, gateway = nothing, region = nothing, credentials = nothing,
+          endpoint = nothing, path_style = false, assume_first_writer_wins = false, read_ahead = 8,
           cache_dir = default_cache_dir(), record_host = true, record_user = true)
 
 Where a chain lives and how this client talks to it (ADR-0019): `bucket` and `prefix`
@@ -21,6 +21,13 @@ one performs no I/O.
 - `store`: the [`AbstractObjectStore`](@ref) the chain is reached through —
   `Testing.InMemoryObjectStore` in tests. `nothing`, the default, is the S3 client,
   [`S3ObjectStore`](@ref), built from the four keywords below.
+- `gateway`: the function URL of a gateway bucket's gateway, `https://host[:port]`
+  (ADR-0028). Builds a [`GatewayObjectStore`](@ref) from the bucket and the four keywords
+  below: commits go through the gateway, reads go to S3 directly, the record cap is 4 MiB,
+  and `client.user` is the caller's name from `sts:GetCallerIdentity`, fetched at the first
+  write. An `ArgumentError` together with `store` (two stores), with `record_user = false`
+  (the gateway refuses a record with no author), or with a `region` that disagrees with
+  the one in a `*.lambda-url.<region>.on.aws` host.
 - `region`: what SigV4 signs for; required by the S3 client — the keyword, else
   `AWS_REGION`, else `AWS_DEFAULT_REGION`, never guessed (ADR-0019) — and ignored by a
   supplied `store`.
@@ -61,8 +68,8 @@ struct Chain{S<:AbstractObjectStore}
 end
 
 function Chain(bucket::AbstractString, prefix::AbstractString;
-               store = nothing, region = nothing, credentials = nothing, endpoint = nothing, path_style = false,
-               assume_first_writer_wins = false, read_ahead = 8, cache_dir = default_cache_dir(),
+               store = nothing, gateway = nothing, region = nothing, credentials = nothing, endpoint = nothing,
+               path_style = false, assume_first_writer_wins = false, read_ahead = 8, cache_dir = default_cache_dir(),
                record_host = true, record_user = true)
     isempty(bucket) && throw(ArgumentError("Chain: the bucket name is empty"))
     '.' in bucket && throw(ArgumentError("Chain: bucket name $(repr(bucket)) contains a dot, which breaks certificate " *
@@ -70,12 +77,22 @@ function Chain(bucket::AbstractString, prefix::AbstractString;
     (startswith(prefix, "/") || endswith(prefix, "/")) && throw(ArgumentError(
         "Chain: prefix $(repr(prefix)) begins or ends with '/'; a slot key is <prefix>/<12 digits>, so give the prefix without them"))
     read_ahead >= 1 || throw(ArgumentError("Chain: read_ahead is $read_ahead; at least 1 record is fetched ahead"))
-    if store === nothing                     # the S3 client (s3.jl): region and credentials resolve now, no I/O
+    if gateway !== nothing                   # the gateway store (gateway.jl, ADR-0028): the S3 client plus a function URL
+        store === nothing || throw(ArgumentError("Chain: gateway and store were both given; a chain has one store, and " *
+            "the gateway keyword builds it from the bucket, region and credentials (ADR-0028)"))
+        record_user || throw(ArgumentError("Chain: record_user = false with a gateway: the gateway refuses a record " *
+            "with no author (ADR-0028), so this chain could never commit; leave record_user = true"))
+        region = resolve_region(region)
+        credentials = resolve_credentials(credentials)
+        store = GatewayObjectStore(bucket, gateway; region, credentials, endpoint, path_style)
+    elseif store === nothing                 # the S3 client (s3.jl): region and credentials resolve now, no I/O
         region = resolve_region(region)
         credentials = resolve_credentials(credentials)
         store = S3ObjectStore(bucket; region, credentials, endpoint, path_style)
     end
     store isa AbstractObjectStore || throw(ArgumentError("Chain: store is a $(typeof(store)), not an AbstractObjectStore"))
+    (store isa GatewayObjectStore && !record_user) && throw(ArgumentError("Chain: record_user = false with a gateway " *
+        "store: the gateway refuses a record with no author (ADR-0028), so this chain could never commit; leave record_user = true"))
     return Chain{typeof(store)}(String(bucket), String(prefix), region === nothing ? nothing : String(region), credentials,
                                 endpoint === nothing ? nothing : String(endpoint), path_style, assume_first_writer_wins,
                                 Int(read_ahead), RecordCache(; dir = cache_dir), store, record_host, record_user)
@@ -131,6 +148,49 @@ end
 location(chain::Chain) = isempty(chain.prefix) ? chain.bucket : "$(chain.bucket)/$(chain.prefix)"
 
 # ---------------------------------------------------------------------------
+# What a write needs of the store beyond the put (ADR-0028): the author, fetched before
+# anything is applied, and the cap, checked after encoding and before the put.
+# ---------------------------------------------------------------------------
+
+# The author for this write — `record_author(store)`: the environment on a plain bucket,
+# the STS caller's name on a gateway bucket, `nothing` when the chain suppresses it. A
+# refusal raised on the way (the principal is not a user) is enriched with the chain and slot.
+function write_author(chain::Chain, chain_id, slot)
+    chain.record_user || return nothing
+    try
+        return record_author(chain.store)
+    catch e
+        e isa WriteRefusedError ? throw(refused_for(e, chain, chain_id, slot)) : rethrow()
+    end
+end
+
+# A record over the store's cap: `WriteBuilderError` naming the byte count, the cap and the
+# store, and the next move. `encode_record` has already enforced the 64 MiB format cap.
+function check_record_cap(store::AbstractObjectStore, bytes, call)
+    cap = record_cap(store)
+    length(bytes) <= cap || throw(WriteBuilderError("$call: record is $(length(bytes)) bytes; the cap on a " *
+        "$(nameof(typeof(store))) is $cap bytes ($(cap ÷ (1024 * 1024)) MiB): split the write into more than one commit"))
+    return nothing
+end
+
+# The store's refusal, told for the chain and the slot it was for (ADR-0020: the evidence
+# as fields; the store knew only the key and the caller).
+function refused_for(e::WriteRefusedError, chain::Chain, chain_id, slot)
+    key = something(e.key, slot_key(chain, slot))
+    msg = "write refused for slot $slot of chain $chain_id at $(location(chain)): " * chopprefix(e.msg, "write refused: ")
+    return WriteRefusedError(msg; chain_id, slot, key, e.caller, e.reason)
+end
+
+# `put_record!`, with a gateway's refusal enriched for the chain and the slot.
+function put_record_for!(chain::Chain, chain_id, slot, bytes)
+    try
+        return put_record!(chain.store, chain.cache, chain.bucket, slot_key(chain, slot), bytes)
+    catch e
+        e isa WriteRefusedError ? throw(refused_for(e, chain, chain_id, slot)) : rethrow()
+    end
+end
+
+# ---------------------------------------------------------------------------
 # create_chain (ADR-0019, ADR-0002): the only writer of slot 0
 # ---------------------------------------------------------------------------
 
@@ -143,15 +203,21 @@ record's [`TransactionHash`](@ref) — **not** a local copy: every local copy is
 so `open` and `sync!` follow (ADR-0019). The only thing that may write slot 0. Two
 clients creating one prefix are resolved like any commit (ADR-0002): the second raises
 `LostRaceError` naming the chain already there, and is never retried. Like `commit!`, it
-refuses a store that is not AWS S3 unless `assume_first_writer_wins` (ADR-0016).
+refuses a store that is not AWS S3 unless `assume_first_writer_wins` (ADR-0016), fetches
+the author from the store next (`record_author`; STS on a gateway bucket, ADR-0028),
+holds the record to the store's cap, and raises `WriteRefusedError` when a gateway
+refuses the slot.
 """
 function create_chain(chain::Chain)
     refuse_unsupported_store(chain, "create_chain(chain)")     # ADR-0016: before anything is written
     chain_id = rand(UInt8, 16)
+    cid = chain_id_string(chain_id)
+    user = write_author(chain, cid, 0)                         # ADR-0028: the author, before anything is written
     record = Record(chain_id, 0, nothing, Model.state_fingerprint(Content()),
-                    Ops.local_client(; chain.record_host, chain.record_user), nothing, Ops.Op[])
+                    Ops.local_client(; chain.record_host, user), nothing, Ops.Op[])
     bytes = Ops.encode_record(record)
-    found = put_record!(chain.store, chain.cache, chain.bucket, slot_key(chain, 0), bytes)
+    check_record_cap(chain.store, bytes, "create_chain(chain)")
+    found = put_record_for!(chain, cid, 0, bytes)
     if found !== nothing
         th = Ops.transaction_hash(found)
         theirs = try
@@ -166,7 +232,7 @@ function create_chain(chain::Chain)
             "create_chain writes slot 0 once and is never retried: open(chain, path) and sync!(copy) to use the " *
             "existing chain, or create under another prefix."; chain_id = cid, slot = 0, transaction_hash = th))
     end
-    return (; chain_id = chain_id_string(chain_id), slot = 0, transaction_hash = TransactionHash(Ops.transaction_hash(bytes)))
+    return (; chain_id = cid, slot = 0, transaction_hash = TransactionHash(Ops.transaction_hash(bytes)))
 end
 
 # ---------------------------------------------------------------------------
@@ -363,13 +429,16 @@ chain's head — nothing applied, nothing written. Then the ops are applied to t
 the state gate: insert on a present key, update or delete on an absent one, refused as
 `WriteBuilderError` naming the op, through the same checks apply runs (ADR-0025) — the
 touched tables' files are written, the fingerprint is taken from them, the record is
-built (over 64 MiB is `WriteBuilderError` with the byte count) and put conditionally
-with the retry loop and read-back of ADR-0010. Our record at the slot — created, or
-found after a lost acknowledgement — writes the head; another client's there is
-`LostRaceError`, never retried. Anything short of the head write leaves the copy at its
-head with the model dropped (`discard!`). Before any of it, an S3 client at a host that is
-not AWS is refused with `UnsupportedStoreError` unless the chain's
-`assume_first_writer_wins` is set (ADR-0016).
+built (over the store's cap — 64 MiB, 4 MiB on a gateway bucket — is `WriteBuilderError`
+with the byte count) and put conditionally with the retry loop and read-back of
+ADR-0010. Our record at the slot — created, or found after a lost acknowledgement —
+writes the head; another client's there is `LostRaceError`, never retried; a gateway's
+refusal is `WriteRefusedError`, never retried (ADR-0028). Anything short of the head
+write leaves the copy at its head with the model dropped (`discard!`). Before any of it,
+an S3 client at a host that is not AWS is refused with `UnsupportedStoreError` unless the
+chain's `assume_first_writer_wins` is set (ADR-0016), and right after that the author is
+fetched from the store (`record_author`: the environment on a plain bucket, the STS
+caller's name on a gateway bucket).
 
 `comment` is free text carried in the record, never read (ADR-0006).
 """
@@ -384,6 +453,7 @@ function commit!(w::WriteBuilder; comment = nothing)
     refuse_unsupported_store(chain, "commit!(w)")             # ADR-0016: before anything is applied
     h = copy.head
     h === nothing && throw(ArgumentError("commit!(w): the local copy at $(copy.path) has no head; sync!(copy) binds it first"))
+    user = write_author(chain, h.chain_id, h.slot + 1)         # ADR-0028: the author, before anything is applied
     isempty(w.ops) && throw(WriteBuilderError("commit!(w): the builder has no ops; a record after genesis carries at least " *
         "one, and genesis is create_chain's (ADR-0019). Add ops, or do not commit."))
     if w.head.slot != h.slot || w.head.transaction_hash != h.transaction_hash
@@ -395,7 +465,7 @@ function commit!(w::WriteBuilder; comment = nothing)
     end
     comment === nothing || comment isa AbstractString ||
         throw(WriteBuilderError("commit!(w): comment is a $(typeof(comment)), not text"))
-    store, cache, bucket = chain.store, chain.cache, chain.bucket
+    store = chain.store
     # the commit pre-check (ADR-0007, ADR-0014): the head against its own record
     check_head_record(copy, chain, "The copy drifted from the chain since it was applied, and commits nothing onto it: " *
         "repair!(copy) confirms whether this machine reproduces the chain.")
@@ -423,14 +493,15 @@ function commit!(w::WriteBuilder; comment = nothing)
         chain_id = chain_id_bytes(h.chain_id)
         record = try
             Record(chain_id, slot, h.transaction_hash, staged.state_fingerprint,
-                   Ops.local_client(; chain.record_host, chain.record_user), comment === nothing ? nothing : String(comment), w.ops)
+                   Ops.local_client(; chain.record_host, user), comment === nothing ? nothing : String(comment), w.ops)
         catch e
             e isa ModelError || rethrow()
             throw(WriteBuilderError("commit!(w): $(e.msg)"))
         end
         bytes = Ops.encode_record(record)
+        check_record_cap(store, bytes, "commit!(w)")            # ADR-0028: the store's cap, before the put
         th = Ops.transaction_hash(bytes)
-        found = put_record!(store, cache, bucket, key, bytes)
+        found = put_record_for!(chain, h.chain_id, slot, bytes)
         if found !== nothing
             throw(LostRaceError("lost race for slot $slot of chain $(h.chain_id) at $(location(chain)): another client's " *
                 "record is there (transaction hash $(bytes2hex(Ops.transaction_hash(found)))). sync!(copy), recompute the " *

@@ -96,6 +96,35 @@ vector, not `nothing`.
 function list_objects end
 
 # ---------------------------------------------------------------------------
+# What the commit layer asks a store beyond the four verbs (ADR-0028): the record cap and
+# the author. Internal dispatch, not port verbs — the port stays four verbs (ADR-0010).
+# ---------------------------------------------------------------------------
+
+"""
+    record_cap(store) -> Int
+
+The largest transaction record `commit!` and `create_chain` will put through `store`, in
+bytes: `Ops.MAX_RECORD_BYTES` (64 MiB, ADR-0006) unless the store says otherwise — a
+[`GatewayObjectStore`](@ref) says 4 MiB (ADR-0028). Checked after `encode_record`, before
+the put; over it is `WriteBuilderError` naming the byte count, the cap and the store.
+"""
+record_cap(::AbstractObjectStore) = Ops.MAX_RECORD_BYTES
+
+"""
+    record_author(store) -> String | nothing
+
+The name a record committed through `store` carries as its author, `client.user`
+(ADR-0006, ADR-0028): `USER`, else `USERNAME`, from the environment, or `nothing` when
+neither is set — unless the store says otherwise. A [`GatewayObjectStore`](@ref) returns
+the caller's name from `sts:GetCallerIdentity` and ignores the environment. Called by
+`commit!` and `create_chain` before anything is applied; never at `Chain` construction.
+"""
+function record_author(::AbstractObjectStore)
+    user = get(ENV, "USER", get(ENV, "USERNAME", ""))
+    return isempty(user) ? nothing : user
+end
+
+# ---------------------------------------------------------------------------
 # The record cache (ADR-0010, ADR-0012, ADR-0013, ADR-0019). Keyed by bucket and key
 # under one directory; a hit is served from disk and never re-validated against the
 # store, which is correct because every key ChainTables writes is written once
@@ -220,12 +249,13 @@ Base.showerror(io::IO, e::TransportError) =
 """
     retryable(e) -> Bool
 
-ADR-0010's rule: a connect failure or timeout (`status === nothing`), a `5xx`, and a
-`409` are retried; every other status — an auth `4xx` above all — is not, and neither is
-any exception that is not a [`TransportError`](@ref). A `412` never reaches here: the
-port returns it as a `PutOutcome`.
+ADR-0010's rule: a connect failure or timeout (`status === nothing`), a `5xx`, a `409`
+and a `429` are retried; every other status — an auth `4xx` above all — is not, and
+neither is any exception that is not a [`TransportError`](@ref). A `412` never reaches
+here: the port returns it as a `PutOutcome`. `429` joined the set with ADR-0028: a Lambda
+gateway throttles with it, S3 throttles with `503`, so a plain bucket is unchanged.
 """
-retryable(e::TransportError) = e.status === nothing || 500 <= e.status < 600 || e.status == 409
+retryable(e::TransportError) = e.status === nothing || 500 <= e.status < 600 || e.status == 409 || e.status == 429
 retryable(e) = false
 
 """

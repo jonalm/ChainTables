@@ -167,13 +167,14 @@ using SHA: sha256
     # julia advisory; time_ms int64 milliseconds since the epoch.
     # ------------------------------------------------------------------------
     @testset "local client" begin
-        c = Ops.local_client()
+        c = Ops.local_client(; user = "carol")
         @test startswith(c.lib, "ChainTables 0.")
         @test c.julia == string(VERSION)
         @test c.host isa String && !isempty(c.host)
-        @test c.user isa String && !isempty(c.user)
+        @test c.user == "carol"                       # the resolved author, never read from ENV here (ADR-0028)
         @test abs(c.time_ms - round(Int64, time() * 1000)) < 60_000
-        c2 = Ops.local_client(; record_host = false, record_user = false)
+        @test Ops.local_client(; user = "").user === nothing
+        c2 = Ops.local_client(; record_host = false)
         @test c2.host === nothing && c2.user === nothing
         @test !haskey(Ops.wire(Record(chain_id, 0, nothing, fp, c2, nothing, [DropTable("t")]))["client"], "host")
     end

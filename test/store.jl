@@ -37,6 +37,19 @@ ChainTables.fetch_object(s::StoreTestInterrupted, key) =
         @test !isdefined(ChainTables, :delete_object)
     end
 
+    @testset "retryable: no response, 5xx, 409 and 429; never another 4xx (ADR-0010, ADR-0028)" begin
+        @test ChainTables.retryable(ChainTables.TransportError("no response"))
+        for status in (500, 502, 503, 504, 409, 429)
+            e = ChainTables.TransportError("PUT https://gw/?key=p%2F000000000001: HTTP $status"; status)
+            @test ChainTables.retryable(e)
+            @test sprint(showerror, e) == "TransportError: PUT https://gw/?key=p%2F000000000001: HTTP $status (HTTP $status)"
+        end
+        for status in (400, 403, 404, 412, 413)
+            @test !ChainTables.retryable(ChainTables.TransportError("refused"; status))
+        end
+        @test !ChainTables.retryable(ErrorException("not a transport error"))
+    end
+
     @testset "cache directory: CHAINTABLES_CACHE_DIR, else the depot (ADR-0019)" begin
         withenv("CHAINTABLES_CACHE_DIR" => nothing) do
             @test default_cache_dir() == joinpath(first(DEPOT_PATH), "chaintables", "records")

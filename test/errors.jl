@@ -1,14 +1,14 @@
-# ADR-0020 — the taxonomy: fourteen types under one supertype, each with `msg` and its evidence as
+# ADR-0020 — the taxonomy: fifteen types under one supertype, each with `msg` and its evidence as
 # keyword fields defaulting to nothing. Every type is provoked, with @test_throws "<message>", in
-# the test file of the lane that raises it (localcopy.jl, ops.jl, builder.jl, chain.jl, recovery.jl);
-# the one step 9 raises — UnsupportedStoreError — is checked by construction here.
+# the test file of the lane that raises it (localcopy.jl, ops.jl, builder.jl, chain.jl, recovery.jl,
+# gateway.jl); the one step 9 raises — UnsupportedStoreError — is checked by construction here.
 @testset "errors" begin
     for T in (
         ChainTables.StaleHeadError, ChainTables.LostRaceError, ChainTables.WriteBuilderError,
         ChainTables.PinnedCopyError, ChainTables.FingerprintMismatchError, ChainTables.DivergenceError,
         ChainTables.UnsupportedStoreError, ChainTables.RewrittenChainError, ChainTables.ChainNotFoundError,
         ChainTables.NotALocalCopyError, ChainTables.LayoutVersionError, ChainTables.WrongChainError,
-        ChainTables.LocalCopyInconsistentError, ChainTables.MalformedRecordError,
+        ChainTables.LocalCopyInconsistentError, ChainTables.MalformedRecordError, ChainTables.WriteRefusedError,
     )
         @test T <: ChainTables.ChainTablesError
         @test ChainTables.ChainTablesError <: Exception
@@ -32,5 +32,11 @@
     e = ChainTables.UnsupportedStoreError("unsupported store"; endpoint = "https://minio.local")
     @test e.endpoint == "https://minio.local"
     @test fieldnames(ChainTables.WriteBuilderError) == (:msg,)   # the call to fix is the whole evidence
+    # the gateway's refusal (ADR-0028): one type, the reason a field, never retried
+    e = ChainTables.WriteRefusedError("write refused"; chain_id = "A"^26, slot = 4, key = "p/000000000004",
+                                      caller = "alice@example.com", reason = "not_allowed")
+    @test (e.chain_id, e.slot, e.key, e.caller, e.reason) == ("A"^26, 4, "p/000000000004", "alice@example.com", "not_allowed")
+    @test fieldnames(ChainTables.WriteRefusedError) == (:msg, :chain_id, :slot, :key, :caller, :reason)
+    @test !ChainTables.retryable(e)
     @test isabstracttype(ChainTables.AbstractObjectStore)
 end

@@ -308,15 +308,16 @@ end
 Base.:(==)(a::Client, b::Client) = all(isequal(getfield(a, f), getfield(b, f)) for f in fieldnames(Client))
 
 """
-    local_client(; record_host = true, record_user = true) -> Client
+    local_client(; record_host = true, user = nothing) -> Client
 
 This machine's `client` map, at this moment: `lib` is `"ChainTables <version>"`,
-`julia` is `string(VERSION)`, `time_ms` is now. `record_host = false` or
-`record_user = false` leaves the field out (ADR-0006).
+`julia` is `string(VERSION)`, `time_ms` is now, `user` the author the caller resolved —
+`record_author(store)` in the commit layer, which reads the environment for a plain
+bucket and asks STS for a gateway bucket (ADR-0028). `record_host = false` leaves the
+host out, and `user = nothing` (or empty) the user (ADR-0006).
 """
-function local_client(; record_host = true, record_user = true)
+function local_client(; record_host = true, user = nothing)
     host = record_host ? gethostname() : nothing
-    user = record_user ? get(ENV, "USER", get(ENV, "USERNAME", "")) : nothing
     user == "" && (user = nothing)
     return Client(host, user, "ChainTables $(pkgversion(@__MODULE__))", string(VERSION),
                   round(Int64, time() * 1000))

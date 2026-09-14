@@ -239,6 +239,33 @@ struct MalformedRecordError <: ChainTablesError
 end
 MalformedRecordError(msg; chain_id = nothing, slot = nothing, op = nothing) = MalformedRecordError(msg, chain_id, slot, op)
 
+"""
+    WriteRefusedError(msg; chain_id, slot, key, caller, reason)
+
+Raised by `commit!` and `create_chain` on a gateway bucket: the gateway refused to fill
+the slot, and nothing is retried (ADR-0028). `key` is the slot's key, `caller` the author
+name this client resolved for itself, and `reason` says who must act:
+
+| `reason` | cause | next move |
+|---|---|---|
+| `"not_allowed"` | the gateway policy has no entry for this name on this prefix, or the principal is not a user or assumed role | ask the bucket's operator to add the name to the gateway policy |
+| `"author_mismatch"` | `client.user` ≠ the caller name | a bug, or credentials changed between the STS call and the put; report it |
+| `"forbidden"` | AWS returned 403 before the gateway ran | the principal lacks `lambda:InvokeFunctionUrl` and `lambda:InvokeFunction`; ask the operator for the writer permission set |
+
+One type with a `reason` rather than three: the caller's branch is the same in every case —
+stop, and have a person act.
+"""
+struct WriteRefusedError <: ChainTablesError
+    msg::String
+    chain_id::MaybeString
+    slot::MaybeInt
+    key::MaybeString
+    caller::MaybeString
+    reason::MaybeString
+end
+WriteRefusedError(msg; chain_id = nothing, slot = nothing, key = nothing, caller = nothing, reason = nothing) =
+    WriteRefusedError(msg, chain_id, slot, key, caller, reason)
+
 # The message is the contract (ADR-0020): every type shows as its message, so a
 # `@test_throws "…"` matches the text a user reads.
 Base.showerror(io::IO, e::ChainTablesError) = print(io, nameof(typeof(e)), ": ", e.msg)

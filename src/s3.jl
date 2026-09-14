@@ -163,9 +163,9 @@ Base.show(io::IO, s::S3ObjectStore) = print(io, "S3ObjectStore(", repr(s.bucket)
 # `scheme://host[:port]`, nothing more: a path, query or fragment on the endpoint is
 # refused rather than silently dropped. A default port is stripped, since libcurl omits
 # it from the Host header it sends and the signature covers that header.
-function parse_endpoint(endpoint::AbstractString)
+function parse_endpoint(endpoint::AbstractString; what = "endpoint")
     m = match(r"^(https?)://([^/?#\s]+)/?$"i, endpoint)
-    m === nothing && throw(ArgumentError("Chain: endpoint $(repr(endpoint)) is not of the form scheme://host[:port] " *
+    m === nothing && throw(ArgumentError("Chain: $what $(repr(endpoint)) is not of the form scheme://host[:port] " *
         "(http or https, no path); the bucket and key are added by ChainTables"))
     scheme = lowercase(m.captures[1])
     hostport = lowercase(m.captures[2])
@@ -184,11 +184,15 @@ and China endpoints. A suffix test on a host, not a security control.
 is_aws(store::S3ObjectStore) = store.endpoint_host === nothing ||
     endswith(store.endpoint_host, ".amazonaws.com") || endswith(store.endpoint_host, ".amazonaws.com.cn")
 
+# The S3 client a store reads through: itself, or a gateway store's S3 half (gateway.jl).
+s3_half(store::S3ObjectStore) = store
+
 # ---------------------------------------------------------------------------
-# The gate (ADR-0016, ADR-0019, ADR-0020): warn at open, refuse at commit
+# The gate (ADR-0016, ADR-0019, ADR-0020): warn at open, refuse at commit. A gateway
+# store is gated on its S3 half: the reads and the read-back go there (ADR-0028).
 # ---------------------------------------------------------------------------
 
-unsupported_store(chain) = chain isa Chain && chain.store isa S3ObjectStore && !is_aws(chain.store)
+unsupported_store(chain) = chain isa Chain && chain.store isa Union{S3ObjectStore,GatewayObjectStore} && !is_aws(chain.store)
 
 """
     warn_unsupported_store(chain) -> nothing
@@ -200,7 +204,7 @@ silent.
 """
 function warn_unsupported_store(chain)
     unsupported_store(chain) || return nothing
-    @warn "unsupported object store: the endpoint $(chain.store.endpoint) is not AWS S3, the only store ChainTables v1 " *
+    @warn "unsupported object store: the endpoint $(s3_half(chain.store).endpoint) is not AWS S3, the only store ChainTables v1 " *
           "claims (ADR-0016). This local copy syncs and reads normally; commit!(w) will refuse unless the chain is " *
           "constructed with assume_first_writer_wins = true." maxlog = 1
     return nothing
@@ -218,7 +222,7 @@ become a suppressed refusal (ADR-0019).
 """
 function refuse_unsupported_store(chain, call)
     unsupported_store(chain) && !chain.assume_first_writer_wins || return nothing
-    endpoint = chain.store.endpoint
+    endpoint = s3_half(chain.store).endpoint
     throw(UnsupportedStoreError("unsupported object store: $call refuses to commit to $endpoint, which is not AWS S3, " *
         "the only store ChainTables v1 claims (ADR-0016). The commit protocol requires that a PUT carrying " *
         "`If-None-Match: *` either creates the key or fails with 412 and never overwrites an existing key, and " *
@@ -259,28 +263,30 @@ canonical_query(query) = join(sort!([uri_encode(String(k)) * "=" * uri_encode(St
 query_string(query) = isempty(query) ? "" : "?" * canonical_query(query)
 
 """
-    sign_request(credentials, region, method, path, query, headers, payload_hash, amzdate)
+    sign_request(credentials, region, method, path, query, headers, payload_hash, amzdate; service = "s3")
         -> (; canonical_request, string_to_sign, signature, authorization)
 
-SigV4 for S3 (ADR-0010): `path` is the already-encoded canonical URI, `query` the
-parameters as pairs, `headers` **every** header to sign as lowercase-name pairs — `host`
-and the `x-amz-*` headers are required by AWS, and everything sent is signed because
-that is what the reference implementations do — `payload_hash` the hex SHA-256 of the
-body, `amzdate` the request time as `yyyymmddTHHMMSSZ`. The `authorization` field is the
-`Authorization` header's value.
+SigV4 (ADR-0010): `path` is the already-encoded canonical URI, `query` the parameters as
+pairs, `headers` **every** header to sign as lowercase-name pairs — `host` and the
+`x-amz-*` headers are required by AWS, and everything sent is signed because that is
+what the reference implementations do — `payload_hash` the hex SHA-256 of the body,
+`amzdate` the request time as `yyyymmddTHHMMSSZ`, and `service` the scope's service:
+`s3` for the bucket, `lambda` for a gateway's function URL and `sts` for
+`GetCallerIdentity` (ADR-0028). The `authorization` field is the `Authorization`
+header's value.
 """
 function sign_request(credentials::Credentials, region::AbstractString, method::AbstractString, path::AbstractString,
-                      query, headers, payload_hash::AbstractString, amzdate::AbstractString)
+                      query, headers, payload_hash::AbstractString, amzdate::AbstractString; service::AbstractString = "s3")
     sorted = sort([lowercase(String(k)) => strip(String(v)) for (k, v) in headers]; by = first)
     signed_headers = join(first.(sorted), ';')
     canonical_headers = join((k * ":" * v * "\n" for (k, v) in sorted))
     canonical_request = join((method, path, canonical_query(query), canonical_headers, signed_headers, payload_hash), '\n')
     datestamp = amzdate[1:8]
-    scope = "$datestamp/$region/s3/aws4_request"
+    scope = "$datestamp/$region/$service/aws4_request"
     string_to_sign = join(("AWS4-HMAC-SHA256", amzdate, scope, bytes2hex(sha256(canonical_request))), '\n')
     k = hmac_sha256(Vector{UInt8}("AWS4" * credentials.secret_access_key), datestamp)
     k = hmac_sha256(k, String(region))
-    k = hmac_sha256(k, "s3")
+    k = hmac_sha256(k, String(service))
     k = hmac_sha256(k, "aws4_request")
     signature = bytes2hex(hmac_sha256(k, string_to_sign))
     authorization = "AWS4-HMAC-SHA256 Credential=$(credentials.access_key_id)/$scope, SignedHeaders=$signed_headers, " *
@@ -358,56 +364,81 @@ object_path(store::S3ObjectStore, key::AbstractString) =
     (store.path_style ? "/" * store.bucket : "") * "/" * uri_encode(key; keep_slash = true)
 
 """
-    request_headers(store, method, key; query, body, headers, now) -> (; url, headers)
+    signed_headers(credentials, region, service, host, method, path; query, body, headers, now) -> Vector{Pair{String,String}}
 
-The URL and the full header list of one signed request: `host`, `x-amz-content-sha256`,
-`x-amz-date`, `x-amz-security-token` under a session, the caller's `headers`, then
-`authorization` over all of them, and `content-length` — unsigned, because libcurl owns
-it — for a body. Split from [`s3_request`](@ref) so a test can see what is signed.
+The full header list of one signed request to `service` (ADR-0010, ADR-0028): `host`,
+`x-amz-content-sha256`, `x-amz-date`, `x-amz-security-token` under a session, the
+caller's `headers`, then `authorization` over all of them, and `content-length` —
+unsigned, because libcurl owns it — for a `PUT` or `POST`. `path` is the already-encoded
+canonical URI.
 """
-function request_headers(store::S3ObjectStore, method::AbstractString, key::AbstractString;
-                         query = Pair{String,String}[], body = UInt8[], headers = Pair{String,String}[],
-                         now::Integer = floor(Int64, time()))
-    credentials = current_credentials(store)
+function signed_headers(credentials::Credentials, region::AbstractString, service::AbstractString, host::AbstractString,
+                        method::AbstractString, path::AbstractString;
+                        query = Pair{String,String}[], body = UInt8[], headers = Pair{String,String}[],
+                        now::Integer = floor(Int64, time()))
     amzdate = amz_date(now)
     payload_hash = bytes2hex(sha256(body))
-    path = object_path(store, key)
-    signed = Pair{String,String}["host" => store.host, "x-amz-content-sha256" => payload_hash, "x-amz-date" => amzdate]
+    signed = Pair{String,String}["host" => String(host), "x-amz-content-sha256" => payload_hash, "x-amz-date" => amzdate]
     credentials.session_token === nothing || push!(signed, "x-amz-security-token" => credentials.session_token)
     for (k, v) in headers
         push!(signed, lowercase(String(k)) => String(v))
     end
-    sig = sign_request(credentials, store.region, method, path, query, signed, payload_hash, amzdate)
+    sig = sign_request(credentials, region, method, path, query, signed, payload_hash, amzdate; service)
     sent = copy(signed)
     push!(sent, "authorization" => sig.authorization)
-    method == "PUT" && push!(sent, "content-length" => string(length(body)))
+    method in ("PUT", "POST") && push!(sent, "content-length" => string(length(body)))
+    return sent
+end
+
+"""
+    request_headers(store, method, key; query, body, headers, now) -> (; url, headers)
+
+The URL and the full header list of one signed S3 request — [`signed_headers`](@ref) for
+service `s3` at the object's path. Split from [`s3_request`](@ref) so a test can see
+what is signed.
+"""
+function request_headers(store::S3ObjectStore, method::AbstractString, key::AbstractString;
+                         query = Pair{String,String}[], body = UInt8[], headers = Pair{String,String}[],
+                         now::Integer = floor(Int64, time()))
+    path = object_path(store, key)
+    sent = signed_headers(current_credentials(store), store.region, "s3", store.host, method, path; query, body, headers, now)
     return (; url = store.base * path * query_string(query), headers = sent)
+end
+
+"""
+    http_request(url, method, headers, body, timeout) -> (; status, headers, body)
+
+One request over stdlib `Downloads`, no retry inside (ADR-0010): the response whatever
+its status, for the caller to interpret; no response at all — connect failure, timeout,
+TLS — is a `TransportError` with no status. `body` is sent for a `PUT` or `POST`.
+"""
+function http_request(url::AbstractString, method::AbstractString, headers, body, timeout::Real)
+    output = IOBuffer()
+    response = Downloads.request(url; method, headers, input = method in ("PUT", "POST") ? IOBuffer(body) : nothing,
+                                 output, timeout, throw = false)
+    response isa Downloads.RequestError &&
+        throw(TransportError("$method $url: no response — $(response.message)"))
+    return (; status = response.status, headers = response.headers, body = take!(output))
 end
 
 function s3_request(store::S3ObjectStore, method::AbstractString, key::AbstractString;
                     query = Pair{String,String}[], body = UInt8[], headers = Pair{String,String}[])
     req = request_headers(store, method, key; query, body, headers)
-    output = IOBuffer()
-    response = Downloads.request(req.url; method, headers = req.headers,
-                                 input = method == "PUT" ? IOBuffer(body) : nothing, output,
-                                 timeout = store.timeout, throw = false)
-    response isa Downloads.RequestError &&
-        throw(TransportError("$method $(req.url): no response — $(response.message)"))
-    return (; status = response.status, headers = response.headers, body = take!(output))
+    return http_request(req.url, method, req.headers, body, store.timeout)
 end
 
 header(response, name) = (i = findfirst(kv -> kv[1] == name, response.headers); i === nothing ? nothing : response.headers[i][2])
 
-# The message of a failed request: the status and, when S3 sent its error document,
-# its `Code` and `Message`.
-function failure(method, store, key, response)
+# The message of a failed request: the status and, when AWS sent its XML error document
+# (S3's, or STS's), its `Code` and `Message`.
+failure(method, store::S3ObjectStore, key, response) = failure(method, store.base * object_path(store, key), response)
+function failure(method, url::AbstractString, response)
     body = String(copy(response.body))
     code = match(r"<Code>([^<]*)</Code>", body)
     message = match(r"<Message>([^<]*)</Message>", body)
     detail = code === nothing ? "" : " " * xml_unescape(code.captures[1]) *
              (message === nothing ? "" : ": " * xml_unescape(message.captures[1]))
-    return TransportError("$method $(store.base)$(object_path(store, key)): HTTP $(response.status)$detail";
-                          status = response.status)
+    return TransportError("$method $url: HTTP $(response.status)$detail"; status = response.status)
 end
 
 function xml_unescape(s::AbstractString)
