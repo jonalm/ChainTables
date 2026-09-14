@@ -525,36 +525,18 @@ duplicate key is not an error here: apply and the builder refuse it.
 """
 sort_rows(rows, keyof) = sort(collect(rows); by = keyof)
 
-# Strictly increasing under the typed key order, or the rule broken: the
-# canonical form of an op's rows (ADR-0025).
-function check_key_order(keys)
-    prev = nothing
-    started = false
-    for k in keys
-        if started
-            isequal(prev, k) && fail("duplicate key $(repr(k)) inside one op")
-            isless(prev, k) || fail("rows are not in primary-key order: $(repr(k)) after $(repr(prev))")
-        end
-        prev = k
-        started = true
-    end
-    return nothing
-end
-
-nkey(t::Model.Table) = length(t.shape.keyidx)
-keyed(t::Model.Table, rows) = (Tuple(r[1:min(end, nkey(t))]) for r in rows)
-
 """
     apply!(content, op::Op) -> nothing
     apply!(content, record::Record) -> nothing
 
-Apply one op, or every op of a record in order, to a `Model.Content`. Every
-structural check the write builder runs is run here through the model's own
-primitives (ADR-0025): value type and nullability against the shape, every
-column named by an insert, known table and column, a non-key column for
-`drop_column`, no duplicate key inside an op, rows in typed key order, update
-columns in declaration order, and the state gate of ADR-0001. Apply never
-computes and never sorts.
+Apply one op, or every op of a record in order, to a `Model.Content`. Each op
+is a delegation to the model primitive it reduces to, and every structural
+check the write builder runs is run there (ADR-0025): value type and
+nullability against the shape, every column named by an insert, known table and
+column, a non-key column for `drop_column`, no duplicate key inside an op, rows
+in typed key order, update columns in declaration order, and the state gate of
+ADR-0001. Apply never computes and never sorts: nothing is checked here that
+the model does not check itself.
 
 The op form raises `Model.ModelError` for the builder to fold into
 `WriteBuilderError`; the record form folds it into `MalformedRecordError`
@@ -562,45 +544,13 @@ naming the slot, the op index and the rule (ADR-0020), and applies nothing
 after the op that failed — the content is then partially applied and the
 caller discards it; the local copy's files are untouched (ADR-0013).
 """
-function apply!(c::Content, op::CreateTable)
-    Model.create_table!(c, op.table, op.shape)
-    return nothing
-end
-function apply!(c::Content, op::AddColumn)
-    Model.add_column!(Model.table(c, op.table), op.column, op.fill)
-    return nothing
-end
-function apply!(c::Content, op::DropColumn)
-    Model.drop_column!(Model.table(c, op.table), op.column)
-    return nothing
-end
-function apply!(c::Content, op::DropTable)
-    Model.drop_table!(c, op.table)
-    return nothing
-end
-function apply!(c::Content, op::Insert)
-    t = Model.table(c, op.table)
-    for row in op.rows
-        Model.check_row(t.shape, row)
-    end
-    check_key_order(Model.key_of(t.shape, row) for row in op.rows)
-    Model.insert_rows!(t, op.rows)
-    return nothing
-end
-function apply!(c::Content, op::Update)
-    t = Model.table(c, op.table)
-    idx = [Model.column_index(t.shape, n) for n in op.columns]
-    issorted(idx; lt = <) || fail("update columns are not in declaration order: $(repr(op.columns))")
-    check_key_order(keyed(t, op.rows))
-    Model.update_rows!(t, op.columns, op.rows)
-    return nothing
-end
-function apply!(c::Content, op::Delete)
-    t = Model.table(c, op.table)
-    check_key_order(keyed(t, op.keys))
-    Model.delete_rows!(t, op.keys)
-    return nothing
-end
+apply!(c::Content, op::CreateTable) = (Model.create_table!(c, op.table, op.shape); nothing)
+apply!(c::Content, op::AddColumn) = (Model.add_column!(Model.table(c, op.table), op.column, op.fill); nothing)
+apply!(c::Content, op::DropColumn) = (Model.drop_column!(Model.table(c, op.table), op.column); nothing)
+apply!(c::Content, op::DropTable) = (Model.drop_table!(c, op.table); nothing)
+apply!(c::Content, op::Insert) = (Model.insert_rows!(Model.table(c, op.table), op.rows); nothing)
+apply!(c::Content, op::Update) = (Model.update_rows!(Model.table(c, op.table), op.columns, op.rows); nothing)
+apply!(c::Content, op::Delete) = (Model.delete_rows!(Model.table(c, op.table), op.keys); nothing)
 
 function apply!(c::Content, r::Record)
     for (i, op) in enumerate(r.ops)

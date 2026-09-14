@@ -334,9 +334,9 @@ function insert_rows!(w::WriteBuilder, table, rows)
         for c in s.columns
             Symbol(c.name) in names || fail("row set names no column $(repr(c.name)); an insert names every column")
         end
-        vecs = [cells(s.columns, r) for r in rs]
+        vecs = Ops.sort_rows((cells(s.columns, r) for r in rs), r -> Model.key_of(s, r))
         Model.check_insert(s, vecs)
-        push!(w.ops, Ops.Insert(name, Ops.sort_rows(vecs, r -> Model.key_of(s, r))))
+        push!(w.ops, Ops.Insert(name, vecs))
     end
 end
 
@@ -361,10 +361,10 @@ function update_rows!(w::WriteBuilder, table, rows)
         keycols = [s.columns[j] for j in s.keyidx]
         valcols = [c for c in s.columns if Symbol(c.name) in names && !(c.name in s.key)]   # declaration order
         columns = String[c.name for c in valcols]
-        vecs = [vcat(cells(keycols, r), cells(valcols, r)) for r in rs]
-        Model.check_update(s, columns, vecs)
         nk = length(s.keyidx)
-        push!(w.ops, Ops.Update(name, columns, Ops.sort_rows(vecs, r -> Tuple(r[1:nk]))))
+        vecs = Ops.sort_rows((vcat(cells(keycols, r), cells(valcols, r)) for r in rs), r -> Tuple(r[1:nk]))
+        Model.check_update(s, columns, vecs)
+        push!(w.ops, Ops.Update(name, columns, vecs))
     end
 end
 
@@ -388,8 +388,8 @@ function delete_rows!(w::WriteBuilder, table, rows)
             Symbol(k) in names || fail("row set names no key column $(repr(k)); a delete names the full key")
         end
         keycols = [s.columns[j] for j in s.keyidx]
-        vecs = [cells(keycols, r) for r in rs]
+        vecs = Ops.sort_rows((cells(keycols, r) for r in rs), Tuple)
         Model.check_delete(s, vecs)
-        push!(w.ops, Ops.Delete(name, Ops.sort_rows(vecs, Tuple)))
+        push!(w.ops, Ops.Delete(name, vecs))
     end
 end

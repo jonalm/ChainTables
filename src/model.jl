@@ -41,7 +41,10 @@ takes the `[name, hash]` list sorted by name — the head file's `tables` list.
 Every rule the model enforces raises [`ModelError`](@ref), which is internal: the
 write builder folds it into `WriteBuilderError` and apply into
 `MalformedRecordError` naming the slot and op (ADR-0020, ADR-0025), so the
-builder's checks and apply's are one code path. Each batch primitive validates
+builder's checks and apply's are one code path. What makes an op canonical —
+rows in typed key order, no duplicate key, update columns in declaration order —
+is decided here and nowhere else: the builder produces that form and the
+primitives refuse anything else, they never sort. Each batch primitive validates
 its whole op before it mutates anything, so a refused op leaves the table as it
 was.
 
@@ -255,18 +258,21 @@ function check_row(s::Shape, row)
 end
 
 """
-    check_key_order(shape, rows) -> nothing
+    check_key_order(keys; context = "inside one op") -> nothing
 
-`rows` (vectors of cells in declaration order) are in strictly increasing typed
-key order: the canonical form of an op's rows and of a table file (ADR-0025).
+`keys` (tuples in key declaration order) are strictly increasing under the
+typed key order: the canonical form of an op's rows and of a table file
+(ADR-0025). The one place the rule lives: [`check_insert`](@ref),
+[`check_update`](@ref), [`check_delete`](@ref) and [`read_table`](@ref) all run
+it, so the builder, apply and the table file agree on what is refused. A
+duplicate is named with `context`; the order message is the same everywhere.
 """
-function check_key_order(s::Shape, rows)
+function check_key_order(keys; context = "inside one op")
     prev = nothing
     started = false
-    for row in rows
-        k = key_of(s, row)
+    for k in keys
         if started
-            isequal(prev, k) && fail("duplicate key $(repr(k)) inside one op")
+            isequal(prev, k) && fail("duplicate key $(repr(k)) $context")
             isless(prev, k) || fail("rows are not in primary-key order: $(repr(k)) after $(repr(prev))")
         end
         prev = k
@@ -279,18 +285,16 @@ end
     check_insert(shape, rows) -> nothing
 
 The structural half of an insert, without the table: every row passes
-[`check_row`](@ref) and keys are distinct within the op. The write builder runs
-exactly this in `insert_rows!`; [`insert_rows!`](@ref) runs it and then the
-state gate, so the two are one code path (ADR-0025).
+[`check_row`](@ref) and the rows are the canonical payload — in typed key
+order, no duplicate key ([`check_key_order`](@ref)). The write builder sorts
+and then runs exactly this in `insert_rows!`; [`insert_rows!`](@ref) runs it
+and then the state gate, so the two are one code path (ADR-0025).
 """
 function check_insert(s::Shape, rows)
-    seen = Set{Any}()
     for row in rows
         check_row(s, row)
-        k = key_of(s, row)
-        k in seen && fail("duplicate key $(repr(k)) inside one op")
-        push!(seen, k)
     end
+    check_key_order(key_of(s, row) for row in rows)
     return nothing
 end
 
@@ -298,10 +302,12 @@ end
     check_update(shape, names, rows) -> Vector{Int}
 
 The structural half of an update, without the table: `names` are distinct
-non-key columns, at least one; each row is `[key…, values…]` with the right
-cell count, every cell of its column's value type, keys distinct within the op.
-Returns the declaration positions of `names`. The write builder runs exactly
-this in `update_rows!`; [`update_rows!`](@ref) runs it and then the state gate.
+non-key columns, at least one, in declaration order; each row is `[key…,
+values…]` with the right cell count, every cell of its column's value type;
+the rows in typed key order with no duplicate key ([`check_key_order`](@ref)).
+Returns the declaration positions of `names`. The write builder orders the
+columns, sorts the rows and then runs exactly this in `update_rows!`;
+[`update_rows!`](@ref) runs it and then the state gate.
 """
 function check_update(s::Shape, names, rows)
     isempty(names) && fail("update names no non-key column")
@@ -312,21 +318,19 @@ function check_update(s::Shape, names, rows)
         j in cols && fail("duplicate column $(repr(n)) in one update")
         push!(cols, j)
     end
+    issorted(cols) || fail("update columns are not in declaration order: $(repr(names))")
     nk = length(s.keyidx)
-    seen = Set{Any}()
     for row in rows
         length(row) == nk + length(cols) ||
             fail("update row has $(length(row)) cells; expected $nk key cells and $(length(cols)) values")
-        k = Tuple(row[1:nk])
         for (i, j) in enumerate(s.keyidx)
-            check_cell(s.columns[j], k[i])
+            check_cell(s.columns[j], row[i])
         end
-        k in seen && fail("duplicate key $(repr(k)) inside one op")
-        push!(seen, k)
         for (p, j) in enumerate(cols)
             check_cell(s.columns[j], row[nk+p])
         end
     end
+    check_key_order(Tuple(row[1:nk]) for row in rows)
     return cols
 end
 
@@ -335,21 +339,19 @@ end
 
 The structural half of a delete, without the table: every key (a tuple or
 vector in key declaration order) has one cell per key column, each of its
-column's value type, and keys are distinct within the op. The write builder
-runs exactly this in `delete_rows!`; [`delete_rows!`](@ref) runs it and then
-the state gate.
+column's value type; the keys in typed key order with no duplicate
+([`check_key_order`](@ref)). The write builder sorts and then runs exactly
+this in `delete_rows!`; [`delete_rows!`](@ref) runs it and then the state gate.
 """
 function check_delete(s::Shape, ks)
-    seen = Set{Any}()
     for k in ks
         k = Tuple(k)
         length(k) == length(s.keyidx) || fail("key $(repr(k)) has $(length(k)) cells; the key has $(length(s.keyidx))")
         for (i, j) in enumerate(s.keyidx)
             check_cell(s.columns[j], k[i])
         end
-        k in seen && fail("duplicate key $(repr(k)) inside one op")
-        push!(seen, k)
     end
+    check_key_order(Tuple(k) for k in ks)
     return nothing
 end
 
@@ -363,8 +365,8 @@ end
 
 One table of the model: its [`Shape`](@ref), columnar storage and a `Dict` from
 key tuple to row index. `rows` are vectors of cells in declaration order, checked
-like an insert (types, nullability, distinct keys); their order does not matter,
-since encoding sorts by key.
+like an insert (types, nullability, typed key order, no duplicate key): the
+canonical payload, as an op or a table file carries it.
 """
 mutable struct Table
     shape::Shape
@@ -421,9 +423,9 @@ rows_in_key_order(t::Table) = (row_at(t, i) for i in sortperm(key_vector(t)))
 """
     insert_rows!(table, rows) -> nothing
 
-Insert rows (vectors of cells in declaration order): [`check_insert`](@ref),
-then the state gate of ADR-0001 — every key absent from the table; nothing is
-written if any check fails.
+Insert rows (vectors of cells in declaration order, in typed key order):
+[`check_insert`](@ref), then the state gate of ADR-0001 — every key absent
+from the table; nothing is written if any check fails.
 """
 function insert_rows!(t::Table, rows)
     check_insert(t.shape, rows)
@@ -448,10 +450,11 @@ end
 """
     update_rows!(table, names, rows) -> nothing
 
-Update the non-key columns `names` (in any order) of the rows named by their key.
-Each row is `[key…, values…]`: the full key in key declaration order followed by
-one value per name (ADR-0005, ADR-0025). [`check_update`](@ref), then the state
-gate — every key present in the table; nothing is written if any check fails.
+Update the non-key columns `names` (in declaration order) of the rows named by
+their key. Each row is `[key…, values…]`: the full key in key declaration order
+followed by one value per name, and the rows are in typed key order (ADR-0005,
+ADR-0025). [`check_update`](@ref), then the state gate — every key present in
+the table; nothing is written if any check fails.
 """
 function update_rows!(t::Table, names, rows)
     cols = check_update(t.shape, names, rows)
@@ -472,9 +475,9 @@ end
 """
     delete_rows!(table, keys) -> nothing
 
-Delete the rows at `keys` (tuples in key declaration order): [`check_delete`](@ref),
-then the state gate — every key present in the table; nothing is written if any
-check fails.
+Delete the rows at `keys` (tuples in key declaration order, in typed key
+order): [`check_delete`](@ref), then the state gate — every key present in the
+table; nothing is written if any check fails.
 """
 function delete_rows!(t::Table, ks)
     check_delete(t.shape, ks)
@@ -645,19 +648,13 @@ function read_table(io::IO)
     shape = Shape(CBOR.decode(io))
     t = Table(shape)
     nr = CBOR.read_array_header(io)
-    prev = nothing
     for i in 1:nr
         row = CBOR.decode(io)
         row isa AbstractVector || fail("row $i is not an array")
         check_row(shape, row)
-        k = key_of(shape, row)
-        if i > 1
-            isequal(prev, k) && fail("duplicate key $(repr(k)) inside one op")
-            isless(prev, k) || fail("rows are not in primary-key order: $(repr(k)) after $(repr(prev))")
-        end
         push_row!(t, row)
-        prev = k
     end
+    check_key_order((key_at(t, i) for i in 1:nr); context = "in a table file")
     return t
 end
 

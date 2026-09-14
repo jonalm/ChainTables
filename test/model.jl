@@ -78,7 +78,11 @@ using SHA: sha256
         s = Shape([Column("id", "int64", false), Column("v", "text", true)], ["id"])
         t = Table(s)
         @test Model.nrows(t) == 0
-        Model.insert_rows!(t, [Any[2, "b"], Any[1, missing]])
+        # the primitives take the canonical payload and never sort (#48): rows in
+        # typed key order, update columns in declaration order
+        @test_throws "rows are not in primary-key order: (1,) after (2,)" Model.insert_rows!(t, [Any[2, "b"], Any[1, missing]])
+        @test Model.nrows(t) == 0
+        Model.insert_rows!(t, [Any[1, missing], Any[2, "b"]])
         @test Model.nrows(t) == 2
         @test Model.haskey(t, (1,)) && !Model.haskey(t, (3,))
         @test isequal(Model.getrow(t, (2,)), Any[2, "b"])
@@ -91,6 +95,9 @@ using SHA: sha256
         @test_throws "update names key column \"id\"" Model.update_rows!(t, ["id"], [Any[1, 7]])
         @test_throws "update names no non-key column" Model.update_rows!(t, String[], [Any[1]])
         @test_throws "column \"v\" is text, got a value of type Int64" Model.update_rows!(t, ["v"], [Any[1, 7]])
+        @test_throws "rows are not in primary-key order: (1,) after (2,)" Model.update_rows!(t, ["v"], [Any[2, "x"], Any[1, "y"]])
+        @test_throws "duplicate key (1,) inside one op" Model.update_rows!(t, ["v"], [Any[1, "x"], Any[1, "y"]])
+        @test_throws "rows are not in primary-key order: (1,) after (2,)" Model.delete_rows!(t, [(2,), (1,)])
         Model.delete_rows!(t, [(2,)])
         @test Model.nrows(t) == 1 && !Model.haskey(t, (2,))
         @test_throws "delete names a key that is absent: (2,)" Model.delete_rows!(t, [(2,)])
@@ -103,6 +110,11 @@ using SHA: sha256
         @test_throws "column \"n\" is int64 and does not admit null" Model.add_column!(t, Column("n", "int64", false), missing)
         Model.add_column!(t, Column("n", "int64", true), missing)
         @test isequal(Model.getrow(t, (1,)), Any[1, "one", 2.0, missing])
+        # update columns in declaration order is a Model rule, with the contract message (#48)
+        @test_throws "update columns are not in declaration order: [\"n\", \"w\"]" Model.update_rows!(t, ["n", "w"], [Any[1, 3, 3.0]])
+        @test_throws "duplicate column \"w\" in one update" Model.update_rows!(t, ["w", "w"], [Any[1, 3.0, 3.0]])
+        @test Model.check_update(t.shape, ["w", "n"], [Any[1, 3.0, 3]]) == [3, 4]
+        @test isequal(Model.getrow(t, (1,)), Any[1, "one", 2.0, missing])      # refused ops changed nothing
         @test_throws "column \"id\" is a key column and cannot be dropped" Model.drop_column!(t, "id")
         @test_throws "unknown column \"zz\"" Model.drop_column!(t, "zz")
         Model.drop_column!(t, "v")
@@ -134,8 +146,11 @@ using SHA: sha256
     # ------------------------------------------------------------------------
     @testset "NaN as a key matches itself and sorts after +Inf; -0.0 and 0.0 are two keys" begin
         s = Shape([Column("x", "float64", false), Column("l", "text", false)], ["x"])
-        t = Table(s, [Any[1.0, "one"], Any[NaN, "nan"], Any[0.0, "zero"], Any[Inf, "inf"],
-                      Any[-0.0, "negzero"], Any[-Inf, "neginf"]])
+        t = Table(s, [Any[-Inf, "neginf"], Any[-0.0, "negzero"], Any[0.0, "zero"], Any[1.0, "one"],
+                      Any[Inf, "inf"], Any[NaN, "nan"]])
+        @test_throws "rows are not in primary-key order: (Inf,) after (NaN,)" Table(s, [Any[NaN, "nan"], Any[Inf, "inf"]])
+        @test_throws "rows are not in primary-key order: (-0.0,) after (0.0,)" Table(s, [Any[0.0, "zero"], Any[-0.0, "negzero"]])
+        @test_throws "duplicate key (NaN,) inside one op" Table(s, [Any[NaN, "nan"], Any[signbit_nan, "nan again"]])
         @test Model.nrows(t) == 6
         @test Model.haskey(t, (NaN,)) && Model.haskey(t, (signbit_nan,))
         @test Model.getrow(t, (NaN,))[2] == "nan"
@@ -150,15 +165,21 @@ using SHA: sha256
         # composite keys: lexicographic in key declaration order, text by UTF-8 bytes,
         # bytes by bytes — and the key order is the declared key order, not column order
         s2 = Shape([Column("b", "bytes", false), Column("n", "int64", false), Column("s", "text", false)], ["s", "n"])
-        t2 = Table(s2, [Any[UInt8[], 1, "é"], Any[UInt8[], 2, "z"], Any[UInt8[], -1, "z"], Any[UInt8[], 0, "a"]])
+        t2 = Table(s2, [Any[UInt8[], 0, "a"], Any[UInt8[], -1, "z"], Any[UInt8[], 2, "z"], Any[UInt8[], 1, "é"]])
         @test [(r[3], r[2]) for r in Model.rows_in_key_order(t2)] == [("a", 0), ("z", -1), ("z", 2), ("é", 1)]
+        @test_throws "rows are not in primary-key order: (\"z\", -1) after (\"z\", 2)" Table(s2, [Any[UInt8[], 2, "z"], Any[UInt8[], -1, "z"]])
+        @test_throws "rows are not in primary-key order: (\"a\", 0) after (\"é\", 1)" Table(s2, [Any[UInt8[], 1, "é"], Any[UInt8[], 0, "a"]])
         @test Model.key_of(s2, Any[UInt8[], 1, "é"]) == ("é", 1)
         s3 = Shape([Column("k", "bytes", false)], ["k"])
-        t3 = Table(s3, [Any[UInt8[2]], Any[UInt8[1, 2]], Any[UInt8[1]], Any[UInt8[]]])
+        t3 = Table(s3, [Any[UInt8[]], Any[UInt8[1]], Any[UInt8[1, 2]], Any[UInt8[2]]])
         @test [r[1] for r in Model.rows_in_key_order(t3)] == [UInt8[], UInt8[1], UInt8[1, 2], UInt8[2]]
-        @test Model.check_key_order(s3, [Any[UInt8[1]], Any[UInt8[2]]]) === nothing
-        @test_throws "rows are not in primary-key order" Model.check_key_order(s3, [Any[UInt8[2]], Any[UInt8[1]]])
-        @test_throws "duplicate key (UInt8[0x01],) inside one op" Model.check_key_order(s3, [Any[UInt8[1]], Any[UInt8[1]]])
+        @test_throws "rows are not in primary-key order: (UInt8[0x01],) after (UInt8[0x01, 0x02],)" Table(s3, [Any[UInt8[1, 2]], Any[UInt8[1]]])
+        # the one key-order rule, over key tuples; the duplicate message names its context
+        @test Model.check_key_order([(UInt8[1],), (UInt8[2],)]) === nothing
+        @test Model.check_key_order(()) === nothing && Model.check_key_order([(1,)]) === nothing
+        @test_throws "rows are not in primary-key order: (UInt8[0x01],) after (UInt8[0x02],)" Model.check_key_order([(UInt8[2],), (UInt8[1],)])
+        @test_throws "duplicate key (UInt8[0x01],) inside one op" Model.check_key_order([(UInt8[1],), (UInt8[1],)])
+        @test_throws "duplicate key (1,) in a table file" Model.check_key_order([(1,), (1,)]; context = "in a table file")
     end
 
     # ------------------------------------------------------------------------
@@ -172,8 +193,11 @@ using SHA: sha256
         t0 = Table(keyonly)
         @test hex(stream(t0)) == empty_hex
         @test Model.table_hash(t0) == sha256(hex2bytes(empty_hex))
-        # a key-only table's stream: rows are one-cell arrays in key order
-        t1 = Table(keyonly, [Any[2], Any[1]])
+        # a key-only table's stream: rows are one-cell arrays in key order, whatever
+        # order they arrived in (two inserts, 2 then 1)
+        t1 = Table(keyonly)
+        Model.insert_rows!(t1, [Any[2]])
+        Model.insert_rows!(t1, [Any[1]])
         @test hex(stream(t1)) == hex(sep_table) * replace("82 $shape_hex 82 81 01 81 02", " " => "")
         @test Model.table_hash(t1) == sha256(stream(t1))
         # two identical tables have one table_hash; a different shape, another
@@ -204,10 +228,11 @@ using SHA: sha256
         @test_throws "not a table file" Model.read_table(IOBuffer(UInt8[]))
         @test_throws "shape is not a map, got a value of type Int64" Model.read_table(IOBuffer(vcat(sep_table, hex2bytes("820180"))))
         @test_throws "expected [shape, rows], got an array of 3" Model.read_table(IOBuffer(vcat(sep_table, hex2bytes("83"))))
-        # rows out of order or duplicated are refused, not sorted
+        # rows out of order or duplicated are refused, not sorted: the same rule an
+        # op is held to, worded for a table file (#48)
         body(rows) = vcat(sep_table, hex2bytes(replace("82 $shape_hex", " " => "")), CBOR.encode(rows))
-        @test_throws "rows are not in primary-key order" Model.read_table(IOBuffer(body(Any[Any[2], Any[1]])))
-        @test_throws "duplicate key (1,) inside one op" Model.read_table(IOBuffer(body(Any[Any[1], Any[1]])))
+        @test_throws "rows are not in primary-key order: (1,) after (2,)" Model.read_table(IOBuffer(body(Any[Any[2], Any[1]])))
+        @test_throws "duplicate key (1,) in a table file" Model.read_table(IOBuffer(body(Any[Any[1], Any[1]])))
         @test_throws "column \"id\" is int64, got a value of type Float64" Model.read_table(IOBuffer(body(Any[Any[1.5]])))
         @test_throws "row has 2 cells; the shape has 1 columns" Model.read_table(IOBuffer(body(Any[Any[1, 2]])))
         @test_throws CBOR.DecodeError Model.read_table(IOBuffer(vcat(sep_table, hex2bytes("82a2"))))
@@ -243,33 +268,35 @@ using SHA: sha256
     # and needs an ADR. The same sequence as one genesis record, with the frozen
     # transaction_hash literal, is in test/ops.jl. Covers -0.0, 2^63-1, typemin, a non-ASCII text key, a
     # sign-bit-set NaN, ±Inf, null, an empty table, a key-only table, a dropped
-    # table, add/drop column, update and delete.
+    # table, add/drop column, update and delete. Since #48 the primitives take
+    # the canonical payload, so the rows below are written in typed key order;
+    # the literals did not move.
     # ------------------------------------------------------------------------
     @testset "determinism vector" begin
         c = Content()
         Model.create_table!(c, "measurements", Shape([
             Column("sample", "text", false), Column("run", "int64", false),
             Column("value", "float64", true), Column("payload", "bytes", false)], ["sample", "run"]))
-        Model.insert_rows!(c["measurements"], [
-            Any["水", 1, -0.0, UInt8[]],
-            Any["água", 2, signbit_nan, UInt8[0x00, 0xff]],
-            Any["ß", typemax(Int64), Inf, UInt8[1, 2, 3]],
+        Model.insert_rows!(c["measurements"], [           # text keys by UTF-8 bytes: a < z < ß < água < 水
             Any["a", typemin(Int64), -Inf, UInt8[0]],
-            Any["z", 0, missing, UInt8[]],
             Any["z", -1, 0.1 + 0.2, UInt8[]],
+            Any["z", 0, missing, UInt8[]],
+            Any["ß", typemax(Int64), Inf, UInt8[1, 2, 3]],
+            Any["água", 2, signbit_nan, UInt8[0x00, 0xff]],
+            Any["水", 1, -0.0, UInt8[]],
         ])
         Model.create_table!(c, "points", Shape([Column("x", "float64", false), Column("label", "text", true)], ["x"]))
         Model.insert_rows!(c["points"], [
-            Any[-0.0, "negative zero"], Any[0.0, "zero"], Any[NaN, "nan"], Any[Inf, "inf"], Any[-Inf, "-inf"],
-            Any[1.5, "one and a half"], Any[1.0e300, "big"], Any[5.0e-324, "denormal"], Any[2.0, missing]])
+            Any[-Inf, "-inf"], Any[-0.0, "negative zero"], Any[0.0, "zero"], Any[5.0e-324, "denormal"], Any[1.5, "one and a half"],
+            Any[2.0, missing], Any[1.0e300, "big"], Any[Inf, "inf"], Any[NaN, "nan"]])
         Model.add_column!(c["points"], Column("weight", "float64", false), 2.0)
         Model.add_column!(c["points"], Column("tag", "text", true), missing)
-        Model.update_rows!(c["points"], ["label", "weight"], [Any[NaN, "not a number", 0.5], Any[-0.0, missing, -1.0]])
+        Model.update_rows!(c["points"], ["label", "weight"], [Any[-0.0, missing, -1.0], Any[NaN, "not a number", 0.5]])
         Model.delete_rows!(c["points"], [(1.5,), (Inf,)])
         Model.drop_column!(c["points"], "tag")
         Model.create_table!(c, "empty", Shape([Column("k", "int64", false), Column("v", "text", true)], ["k"]))
         Model.create_table!(c, "set", Shape([Column("k", "bytes", false)], ["k"]))
-        Model.insert_rows!(c["set"], [Any[UInt8[2]], Any[UInt8[1, 2]], Any[UInt8[1]], Any[UInt8[]]])
+        Model.insert_rows!(c["set"], [Any[UInt8[]], Any[UInt8[1]], Any[UInt8[1, 2]], Any[UInt8[2]]])
         Model.create_table!(c, "gone", Shape([Column("k", "int64", false)], ["k"]))
         Model.insert_rows!(c["gone"], [Any[1]])
         Model.drop_table!(c, "gone")
