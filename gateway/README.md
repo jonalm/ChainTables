@@ -15,6 +15,7 @@ the checks and status codes are listed at the top of [`handler.py`](handler.py).
 | `tests/` | pytest, S3 stubbed with botocore's `Stubber` |
 | `pyproject.toml`, `uv.lock` | dependencies, pinned exactly (`cbor2`, `boto3`) |
 | `build.sh` | produces the deployment zip |
+| `deploy.sh` | creates or updates the bucket, execution role, function, URL and bucket policy |
 
 ## Tests
 
@@ -62,5 +63,15 @@ gateway/build.sh --arch arm64 --policy ~/private/policy.json
 Writes `gateway/build/gateway-arm64.zip` from the locked dependencies, resolved for the
 Lambda platform (`manylinux_2_28`, which the Amazon Linux 2023 runtime satisfies; Python 3.13 by default), with `boto3` vendored so the
 gateway does not depend on the runtime's copy. `--arch x86_64` for an x86 function. Without
-`--policy` the zip has no policy and the deployment must set `CHAINTABLES_POLICY`. The
-deploy script and the IAM contract are the deploy ticket's ([#59](https://github.com/jonalm/ChainTables/issues/59)).
+`--policy` the zip has no policy and the deployment must set `CHAINTABLES_POLICY`.
+
+## Deploy
+
+```sh
+AWS_PROFILE=<admin profile> gateway/deploy.sh --bucket <bucket> --function <function> \
+    --region <region> --role <execution role> --zip gateway/build/gateway-arm64.zip
+```
+
+Generic and idempotent; every account-specific value is an argument with no default. What it
+creates, the IAM contract a writer or reader must satisfy, the bucket policy, and how a
+writer is onboarded are in [`docs/gateway-setup.md`](../docs/gateway-setup.md).

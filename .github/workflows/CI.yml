@@ -46,3 +46,4 @@ jobs:
       - run: uv sync --directory gateway --frozen
       - run: uv run --directory gateway pytest
       - run: gateway/build.sh --arch arm64
+      - run: bash -n gateway/deploy.sh && gateway/deploy.sh --help >/dev/null
