@@ -34,3 +34,11 @@ examples/tmpdata/*
 .claude/*
 # Local-only S3 test credentials (never committed)
 /env
+
+# Gateway (Python): venv, build output, deployment zip, and the private policy config
+/gateway/.venv/
+/gateway/build/
+/gateway/*.zip
+/gateway/policy.json
+/gateway/.pytest_cache/
+__pycache__/
