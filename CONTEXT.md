@@ -63,6 +63,15 @@ everything else, and the software never reads it.
 _Avoid_: label, message, tag, description
 _See_: [ADR-0006](docs/adr/0006-a-record-is-one-cbor-map-hashed-as-stored-bytes.md)
 
+**Author**:
+The name a transaction record gives for who committed it, carried in
+`client.user`. On a plain bucket it is advisory — whatever the committing
+process said; on a gateway bucket it is verified equal to the caller before the
+slot is filled.
+_Avoid_: committer, writer (that is a permission), owner, principal (that is
+the AWS identity the author is derived from), user (that is the field)
+_See_: [ADR-0028](docs/adr/0028-a-gateway-bucket-verifies-the-author-and-nothing-else.md)
+
 **Op**:
 One structured change inside a transaction record, such as the creation of a
 table or the insertion of a row set. An op holds literal values only and is
@@ -204,6 +213,15 @@ failing does not raise, it splits the chain. Only AWS S3 is supported for that
 reason.
 _Avoid_: backend, adapter, driver, blob store, client (that is the process)
 _See_: [ADR-0010](docs/adr/0010-s3sqlite-owns-its-s3-client-and-its-record-cache.md)
+
+**Gateway**:
+The one function that may fill a slot in a gateway bucket, and does so only
+after checking the author and the caller's right to the chain. It validates and
+never authors, reads no chain content, and is on the path of commits only —
+reads go to the bucket directly. Gatedness belongs to the bucket, never to the
+chain: a chain copied to a plain bucket is the same chain.
+_Avoid_: server, proxy, API, write service, gatekeeper, authoriser
+_See_: [ADR-0028](docs/adr/0028-a-gateway-bucket-verifies-the-author-and-nothing-else.md)
 
 **Assumed guarantee**:
 A promise about the environment that ChainTables cannot check, which a user makes on

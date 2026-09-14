@@ -24,6 +24,11 @@ prefix, and a port without the operation makes that unrepresentable rather than
 merely forbidden. The slot-to-key mapping lives above the port, in one function,
 so the key layout can be redrawn without touching the transport.
 
+*Amended by ADR-0028*: the port stays these four verbs. A gateway bucket's store
+routes `put_object_if_absent` through a Lambda function URL and the other three
+to S3 directly; the author a record carries comes through an internal
+`record_author(store)` dispatch, not a fifth verb.
+
 ## The chain decides a commit's outcome, not the HTTP status
 
 Issue #5 and issue #8 both named one constraint the hardest thing this decision
@@ -74,8 +79,10 @@ matches ADR-0006's call on the CBOR encoder.
 
 - **One request per port call.** The commit layer owns the retry loop, because
   the read-back above has to happen *between* attempts and only the commit layer
-  can perform it. Retry on connect failure, timeout, `5xx` and `409`; never on
-  `412`, which is terminal; never on an auth `4xx`.
+  can perform it. Retry on connect failure, timeout, `5xx`, `409` and `429`;
+  never on `412`, which is terminal; never on an auth `4xx`. (*Amended by
+  ADR-0028*: `429` joined the set because a Lambda gateway throttles with it;
+  S3 throttles with `503`, so a plain store is unchanged.)
 - **`409 Conflict` is a documented third outcome** of a conditional write — a
   delete landing on the key mid-flight — and AWS's guidance is to retry the
   attempt. It is not a lost race and must not be reported as one.

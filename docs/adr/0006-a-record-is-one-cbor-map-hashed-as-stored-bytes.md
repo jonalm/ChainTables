@@ -95,6 +95,10 @@ Pinning what §4.2.2 leaves open, per issue #4:
   chain hash. Rejected in favour of the simpler shape: a server changes who
   *authors* a record, not who annotates one. The client sends ops, the server
   builds and hashes the record, the client receives what was committed.
+  *Superseded by ADR-0028*: the server that arrived is a gateway which
+  **validates and never authors** — the client builds the record as here, and
+  the gateway checks `client.user` against the caller and does the conditional
+  put. The sealed-core rejection stands; the "server authors" shape does not.
 - **MessagePack, BSON, Avro.** All three carry the four value types exactly, and
   once byte-identity stopped being required of the wire they became admissible on
   fidelity. Avro is the interesting one — positional fields mean the key-ordering
@@ -134,7 +138,9 @@ Pinning what §4.2.2 leaves open, per issue #4:
 - **The server era is `format_version` 2.** No `server` field is reserved in v1,
   because a v1 client could do nothing with a server assertion it cannot check.
   The map's forward-compatibility constraint is met by intent recorded here, not
-  by a mechanism.
+  by a mechanism. *Superseded by ADR-0028*: the gateway validates the record
+  the client built and asserts nothing inside it, so the server era arrived
+  with `format_version` still 1 and no server field is needed.
 - **`client.lib` and `client.julia` are advisory** and gate nothing. Their
   job is forensic: when a fingerprint mismatch fires, the record names the
   suspect — the package name and version, and the Julia version. *Amended by
@@ -161,7 +167,10 @@ Pinning what §4.2.2 leaves open, per issue #4:
   3339 text: no formatting ambiguity, no float, no timezone spelling. `host` and
   `user` are individually suppressible by configuration, because they write
   identity into a permanently immutable object; the `client` map is always
-  present.
+  present. *Amended by ADR-0028*: `user` is the record's **author**. On a plain
+  bucket it stays advisory and suppressible; on a gateway bucket it is filled
+  from the caller's identity, verified by the gateway, and suppressing it is
+  refused.
 - **Required named test: `-0.0`.** The float-shortening path needs an explicit
   sign-bit check or `-0.0` silently encodes as `+0.0` — two lines, with
   chain-forking consequences. It is a named test, not prose. The frozen
