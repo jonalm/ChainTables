@@ -1,6 +1,6 @@
 *STATUS* this package is under development - which means that even architectural
 decisions are subject to changes. There are no data that stored with this
-package beyond testing data.
+package, beyond testing data, and none of it needs backwards compatability for now.
 
 # ChainTables
 
