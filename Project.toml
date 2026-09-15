@@ -6,10 +6,12 @@ authors = ["Jon Alm Eriksen <jon.alm.eriksen@protonmail.com>"]
 [deps]
 Downloads = "f43a241f-c20a-4ad4-852c-f6b1247861c6"
 SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
+Tables = "bd369af6-aec1-5ad0-b16a-f7cc5008161c"
 
 [compat]
 Downloads = "1.6"
 SHA = "0.7.0"
+Tables = "1.14.0"
 julia = "1.10"
 
 [extras]
