@@ -35,6 +35,7 @@ one performs no I/O.
   `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN` and errors if the
   keys are absent; a [`Credentials`](@ref) is taken as is; a callable returning one is
   called before every request, so a long-lived reader outlives an aws-vault session.
+  [`sso_credentials(profile)`](@ref) is that callable over an `aws sso login` session.
 - `endpoint`, `path_style`: the S3 client's URL. `endpoint = nothing` is AWS; an endpoint
   whose host is not `.amazonaws.com` / `.amazonaws.com.cn` warns at `open` and refuses
   at `commit!` (ADR-0016).

@@ -239,6 +239,14 @@ the plain store's behaviour is unchanged. This amends ADR-0010's retry rule.
   AWS rights), and the name in the gateway policy. Any one missing yields a
   different failure — a login refusal, `reason = "forbidden"`, or
   `reason = "not_allowed"` — and the messages name which.
+- **The one credentials helper is `sso_credentials(profile)`**, a `credentials`
+  callable over `aws configure export-credentials`, the CLI's own cache of an
+  `aws sso login` session, re-run near expiry. It is not login code: the CLI
+  logs in, the package reads what it cached, and the callable form is the one
+  ADR-0019 already admits. It lives beside `credentials_from_env` because
+  nothing about it is gateway-specific, and it is in the package rather than a
+  documented snippet because the refresh margin and the expiry's timezone are
+  what a copied snippet gets wrong, and both test without AWS.
 - **The author is only as stable as the session name.** Should AWS change what
   Identity Center puts in the role session name, both sides move together
   (they apply one rule to one ARN), but existing records would carry the old

@@ -298,6 +298,56 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
         @test_throws "credentials is a Int64, which is neither" S3T.resolve_credentials(1)
         @test sprint(show, c) == "Credentials(\"id\", <redacted>; session_token = <redacted>)"
         @test sprint(show, Credentials("id", "secret")) == "Credentials(\"id\", <redacted>)"
+    end
+
+    # ------------------------------------------------------------------------
+    # sso_credentials (ADR-0028, issue #62): the CLI's cached `aws sso login` session as a
+    # callable — parsed from `aws configure export-credentials --format env-no-export`,
+    # re-run only near expiry. The CLI is a fake here; nothing reaches AWS.
+    # ------------------------------------------------------------------------
+    @testset "sso_credentials: the export parsed, cached, refreshed near expiry, refusals" begin
+        t0 = 1255369800                                                       # 2009-10-12T17:50:00Z
+        env(id, exp) = "AWS_ACCESS_KEY_ID=$id\nAWS_SECRET_ACCESS_KEY=s3cret\nAWS_SESSION_TOKEN=tok\nAWS_CREDENTIAL_EXPIRATION=$exp\n"
+        # the parse: the four variables, the expiry as epoch seconds in Z, ±hh:mm and fractional forms
+        c, expiry = S3T.parse_export_credentials(env("AKIA1", "2009-10-12T17:50:00Z"))
+        @test c == Credentials("AKIA1", "s3cret"; session_token = "tok") && expiry == t0
+        @test S3T.parse_export_credentials(env("AKIA1", "2009-10-12T17:50:00.123Z"))[2] == t0
+        @test S3T.parse_export_credentials(env("AKIA1", "2009-10-12T19:50:00+02:00"))[2] == t0
+        @test S3T.parse_export_credentials(env("AKIA1", "2009-10-12T12:20:00-05:30"))[2] == t0
+        @test S3T.parse_export_credentials("AWS_ACCESS_KEY_ID=a\nAWS_SECRET_ACCESS_KEY=b\n") == (Credentials("a", "b"), Inf)
+        @test S3T.parse_export_credentials("AWS_ACCESS_KEY_ID=a\r\nAWS_SECRET_ACCESS_KEY=b=c\r\n")[1] == Credentials("a", "b=c")
+        @test_throws "cannot parse AWS_CREDENTIAL_EXPIRATION \"2009-10-12\"" S3T.parse_export_credentials(env("a", "2009-10-12"))
+        @test_throws "printed no AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY" S3T.parse_export_credentials("AWS_ACCESS_KEY_ID=a\n")
+        @test_throws "printed no AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY" S3T.parse_export_credentials("")
+        # the callable: the fake exporter is run once, then again only within the margin of expiry
+        runs = String[]
+        clock = Ref(0.0)
+        fake(exp) = profile -> (push!(runs, profile); exp === nothing ?
+            "AWS_ACCESS_KEY_ID=AKIA$(length(runs))\nAWS_SECRET_ACCESS_KEY=s3cret\n" : env("AKIA$(length(runs))", exp))
+        far = S3T.parse_export_credentials(env("x", "2009-10-12T17:50:00Z"))[2]
+        clock[] = far - 3600                                                  # an hour before expiry
+        get_credentials = S3T.sso_credentials("team"; exporter = fake("2009-10-12T17:50:00Z"), now = () -> clock[])
+        @test get_credentials() == Credentials("AKIA1", "s3cret"; session_token = "tok") && runs == ["team"]
+        @test get_credentials().access_key_id == "AKIA1" && length(runs) == 1  # cached: the CLI is not run again
+        clock[] = far - 299                                                   # inside the five-minute margin
+        @test get_credentials().access_key_id == "AKIA2" && length(runs) == 2  # refreshed
+        clock[] = far - 301
+        @test get_credentials().access_key_id == "AKIA2" && length(runs) == 2  # the fresh export is cached in turn
+        # no expiry printed (an IAM user's static keys): exported once, never again
+        static = S3T.sso_credentials("static"; exporter = fake(nothing), now = () -> clock[])
+        @test static().access_key_id == "AKIA3" && static().access_key_id == "AKIA3" && length(runs) == 3
+        # the callable is what Chain takes as credentials, and resolve_credentials runs it once now
+        @test S3T.resolve_credentials(get_credentials) === get_credentials
+        store = S3ObjectStore("bkt"; region = "eu-north-1", credentials = get_credentials)
+        @test S3T.current_credentials(store).access_key_id == "AKIA2"
+        # the refusals name the login command; a failed export carries the CLI's own text
+        failing = S3T.sso_credentials("team"; exporter = _ -> error("The SSO session associated with this profile has expired"))
+        @test_throws "aws sso login --profile team" failing()
+        @test_throws "--use-device-code" failing()
+        @test_throws "The SSO session associated with this profile has expired" failing()
+        @test_throws "aws configure export-credentials --profile team printed no" S3T.sso_credentials("team"; exporter = _ -> "")()
+        @test_throws ArgumentError S3T.sso_credentials("")
+        @test_throws "profile must not be empty" S3T.sso_credentials("")
         @test !occursin("secret", sprint(show, store))
     end
 

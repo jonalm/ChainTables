@@ -189,12 +189,35 @@ page (some browsers block it), `aws sso login --use-device-code` works.
 
 ## Using it from Julia
 
+A writer logs in once per session with the AWS CLI and hands the session to `Chain` as a
+`credentials` callable:
+
+```sh
+aws sso login --profile <profile>            # --use-device-code if the browser cannot reach the authorize page
+```
+
 ```julia
+credentials = ChainTables.sso_credentials("<profile>")
 chain = ChainTables.Chain(bucket, prefix; gateway = "https://<id>.lambda-url.<region>.on.aws",
                           region, credentials)
 ```
 
-The bucket is named once, the `region` must agree with the one in the URL, and `credentials`
-are the temporary credentials from `aws sso login` (or an IAM user's), exactly as for a plain
-bucket. The author is fetched from STS at the first write, and a record over 4 MiB fails at
-commit before any call is made.
+`sso_credentials` reads the CLI's own cache of the login through
+`aws configure export-credentials --profile <profile> --format env-no-export`, keeps the
+result, and runs the CLI again only within five minutes of the expiry it reported, so a
+long-lived process outlives one set of temporary credentials without a second login for as
+long as the SSO session lasts. It needs the AWS CLI v2 on `PATH`, only when called. Without
+a login, with an expired session, or with an unknown profile, `Chain` fails at construction
+(credentials resolve then, ADR-0019) with the CLI's message and the login command to run.
+
+The `profile` is an SSO profile in `~/.aws/config` (`aws configure sso` writes one) naming the
+Identity Center start URL, the account and the writer permission set; nothing about it is
+ChainTables-specific. Any other credentials the CLI can export work the same way, and so do
+the `credentials` forms a plain bucket takes: a `ChainTables.Credentials`, or `nothing` for
+the `AWS_*` environment that `aws-vault exec` injects.
+
+The bucket is named once, the `region` must agree with the one in the URL, the author is
+fetched from STS at the first write, and a record over 4 MiB fails at commit before any call
+is made. The live gateway test (`test/gateway.jl`, run line in `test/runtests.jl`) is this
+section end to end: it constructs the chain exactly like this and commits, races and is
+refused against the real bucket.

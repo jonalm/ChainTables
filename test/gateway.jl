@@ -157,56 +157,11 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
 gwtest_record(user) = GWT.CBOR.encode(Dict{String,Any}("format_version" => 1, "client" => Dict{String,Any}("user" => user), "ops" => Any[]))
 
 # ---------------------------------------------------------------------------
-# For the live test: the credentials of an `aws sso login` session as a callable (the
-# contract's §7: the client ships no SSO helper, a callable suffices), and a store wrapper
-# that runs a hook ahead of each put, so a competing commit can land between a commit's
-# preflight and its put — the race test/chain.jl injects through the double's fault hook.
+# For the live test: a store wrapper that runs a hook ahead of each put, so a competing
+# commit can land between a commit's preflight and its put — the race test/chain.jl
+# injects through the double's fault hook. The credentials of the `aws sso login` session
+# come from `ChainTables.sso_credentials` (issue #62), tested without AWS in test/s3.jl.
 # ---------------------------------------------------------------------------
-
-# `AWS_CREDENTIAL_EXPIRATION` as the CLI prints it, `YYYY-MM-DDThh:mm:ss[.fff](Z|±hh:mm)`,
-# as seconds since the epoch; anything else is refused rather than guessed.
-function sso_expiry(text::AbstractString)
-    m = match(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$", text)
-    m === nothing && error("aws configure export-credentials: cannot parse AWS_CREDENTIAL_EXPIRATION $(repr(text))")
-    utc = GWT.parse_iso_date(m.captures[1] * "Z")
-    m.captures[2] == "Z" && return utc
-    sign, hh, mm = m.captures[2][1], parse(Int, m.captures[2][2:3]), parse(Int, m.captures[2][5:6])
-    return utc - (sign == '+' ? 1 : -1) * (hh * 3600 + mm * 60)
-end
-
-"""
-    sso_credentials(profile) -> () -> Credentials
-
-A `credentials` callable for `Chain` over `aws configure export-credentials --profile
-<profile> --format env-no-export`: the CLI's own cache of the `aws sso login` session,
-re-read when the credentials it returned are within five minutes of expiring. Every call
-before that returns the same `Credentials` without running the CLI. A failure to export —
-no login, an expired session, no such profile — raises with the login command to run.
-"""
-function sso_credentials(profile::AbstractString)
-    cached = Ref{Union{Nothing,Tuple{Credentials,Float64}}}(nothing)
-    return function ()
-        c = cached[]
-        c !== nothing && c[2] - time() > 300 && return c[1]
-        out = try
-            read(`aws configure export-credentials --profile $profile --format env-no-export`, String)
-        catch e
-            error("aws configure export-credentials --profile $profile failed ($(sprint(showerror, e))): log in with " *
-                  "`aws sso login --profile $profile` (add --use-device-code if the browser cannot reach the authorize page)")
-        end
-        kv = Dict{String,String}()
-        for line in eachline(IOBuffer(out))
-            k, v = split(line, '='; limit = 2)
-            kv[String(k)] = String(v)
-        end
-        haskey(kv, "AWS_ACCESS_KEY_ID") && haskey(kv, "AWS_SECRET_ACCESS_KEY") ||
-            error("aws configure export-credentials --profile $profile printed no AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY: $(keys(kv))")
-        credentials = Credentials(kv["AWS_ACCESS_KEY_ID"], kv["AWS_SECRET_ACCESS_KEY"]; session_token = get(kv, "AWS_SESSION_TOKEN", nothing))
-        expiry = haskey(kv, "AWS_CREDENTIAL_EXPIRATION") ? Float64(sso_expiry(kv["AWS_CREDENTIAL_EXPIRATION"])) : Inf
-        cached[] = (credentials, expiry)
-        return credentials
-    end
-end
 
 mutable struct RacingGateway <: GWT.AbstractObjectStore
     const inner::GatewayObjectStore
@@ -593,7 +548,7 @@ end
             host_region = match(r"\.lambda-url\.([a-z0-9-]+)\.on\.aws", url)
             region = get(ENV, "AWS_REGION", host_region === nothing ? "" : String(host_region.captures[1]))
             isempty(region) && error("live gateway test: AWS_REGION is not set and the URL names no region")
-            credentials = sso_credentials(profile)
+            credentials = GWT.sso_credentials(profile)
             run = bytes2hex(rand(UInt8, 8))
             prefix = "$listed/$run"
             mktempdir() do dir

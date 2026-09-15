@@ -95,3 +95,27 @@ What the example does not show, and the ADRs do: the record bytes and their
 hash (ADR-0006), the two-level state fingerprint (ADR-0007), the local copy's
 files (ADR-0023), galloping head discovery (ADR-0012), the backend gate on
 non-AWS stores (ADR-0016), and the error taxonomy (ADR-0020).
+
+## Gateway buckets
+
+On a plain bucket every writer holds `PutObject`, and a record's author is
+whatever the client wrote. A **gateway bucket** ([ADR-0028](docs/adr/0028-a-gateway-bucket-verifies-the-author-and-nothing-else.md))
+has one writer, a Lambda function behind a function URL, that fills a slot only
+after checking that the caller may write under the chain's prefix and that the
+record's author *is* the caller. Reads stay direct. The chain is the same; the
+store is chosen by one keyword, and the credentials are an `aws sso login`
+session handed over as a callable:
+
+```julia
+credentials = ChainTables.sso_credentials("my-profile")   # after: aws sso login --profile my-profile
+chain = ChainTables.Chain("my-gateway-bucket", "experiments/run-7";
+                          gateway = "https://<id>.lambda-url.eu-north-1.on.aws",
+                          region = "eu-north-1", credentials)
+```
+
+Everything else in the worked example is unchanged, except that a refused
+write raises `WriteRefusedError` naming its reason, and a record is capped at
+4 MiB. Deploying the gateway, the IAM contract a writer or reader must satisfy,
+the policy config, how the author name is derived and how a writer is
+onboarded are in [`docs/gateway-setup.md`](docs/gateway-setup.md); the code is
+under [`gateway/`](gateway/README.md).

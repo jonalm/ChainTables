@@ -50,6 +50,94 @@ function credentials_from_env()
     return Credentials(id, secret; session_token = isempty(token) ? nothing : token)
 end
 
+"""
+    sso_credentials(profile) -> () -> Credentials
+
+A `credentials` callable for [`Chain`](@ref) over the AWS CLI's own cache of an `aws sso login`
+session (ADR-0028): each call that needs fresh credentials runs
+`aws configure export-credentials --profile <profile> --format env-no-export` and parses
+the `AWS_*` lines it prints; the result is cached and returned as is until it is within
+five minutes of the `AWS_CREDENTIAL_EXPIRATION` the CLI reported (forever, when it reports
+none), so the CLI runs once per session, not once per request.
+
+```julia
+credentials = ChainTables.sso_credentials("chaintables")       # after: aws sso login --profile chaintables
+chain = ChainTables.Chain(bucket, prefix; gateway = url, region, credentials)
+```
+
+Requires the AWS CLI v2 on `PATH`, and only when called. A failed export — no login, an
+expired session, an unknown profile, no CLI — raises with the CLI's own message and the
+`aws sso login` command to run (`--use-device-code` when the browser cannot reach the
+authorize page). Nothing here is Identity Center-specific: any profile the CLI can export
+credentials for works, a plain bucket as well as a gateway bucket.
+"""
+function sso_credentials(profile::AbstractString; exporter = run_export_credentials, now = time)
+    isempty(profile) && throw(ArgumentError("sso_credentials: profile must not be empty"))
+    profile = String(profile)
+    cached = Ref{Union{Nothing,Tuple{Credentials,Float64}}}(nothing)
+    return function ()
+        c = cached[]
+        c !== nothing && c[2] - now() > SSO_REFRESH_MARGIN && return c[1]
+        out = try
+            exporter(profile)
+        catch e
+            error("aws configure export-credentials --profile $profile failed: $(sprint(showerror, e))\nLog in with " *
+                  "`aws sso login --profile $profile` (add --use-device-code if the browser cannot reach the authorize page).")
+        end
+        credentials, expiry = try
+            parse_export_credentials(out)
+        catch e
+            error("aws configure export-credentials --profile $profile $(sprint(showerror, e))")
+        end
+        cached[] = (credentials, expiry)
+        return credentials
+    end
+end
+
+const SSO_REFRESH_MARGIN = 300.0          # seconds before expiry at which the CLI is run again
+
+# The default exporter: the CLI, stderr captured so a refusal carries the CLI's own text.
+function run_export_credentials(profile::AbstractString)
+    Sys.which("aws") === nothing && error("the AWS CLI (aws) is not on PATH")
+    out, err = IOBuffer(), IOBuffer()
+    cmd = pipeline(`aws configure export-credentials --profile $profile --format env-no-export`; stdout = out, stderr = err)
+    success(cmd) || error(strip(String(take!(err))))
+    return String(take!(out))
+end
+
+"""
+    parse_export_credentials(text) -> (Credentials, expiry)
+
+The `KEY=value` lines of `aws configure export-credentials --format env-no-export` as a
+[`Credentials`](@ref) and the `AWS_CREDENTIAL_EXPIRATION` as seconds since the epoch —
+`Inf` when the CLI printed none. Refuses, rather than guesses, an output without both keys
+or with an expiry it cannot parse.
+"""
+function parse_export_credentials(text::AbstractString)
+    kv = Dict{String,String}()
+    for line in eachline(IOBuffer(text))
+        k, v = split(line, '='; limit = 2)   # a value may itself contain '='
+        kv[String(k)] = String(v)
+    end
+    haskey(kv, "AWS_ACCESS_KEY_ID") && haskey(kv, "AWS_SECRET_ACCESS_KEY") ||
+        error("printed no AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, only $(sort!(collect(keys(kv))))")
+    credentials = Credentials(kv["AWS_ACCESS_KEY_ID"], kv["AWS_SECRET_ACCESS_KEY"];
+                              session_token = get(kv, "AWS_SESSION_TOKEN", nothing))
+    expiry = haskey(kv, "AWS_CREDENTIAL_EXPIRATION") ? Float64(parse_expiry(kv["AWS_CREDENTIAL_EXPIRATION"])) : Inf
+    return credentials, expiry
+end
+
+# `AWS_CREDENTIAL_EXPIRATION` as the CLI prints it, `YYYY-MM-DDThh:mm:ss[.fff](Z|±hh:mm)`,
+# as seconds since the epoch.
+function parse_expiry(text::AbstractString)
+    m = match(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$", text)
+    m === nothing && error("cannot parse AWS_CREDENTIAL_EXPIRATION $(repr(text))")
+    utc = parse_iso_date(m.captures[1] * "Z")
+    m.captures[2] == "Z" && return utc
+    sign, hh, mm = m.captures[2][1], parse(Int, m.captures[2][2:3]), parse(Int, m.captures[2][5:6])
+    return utc - (sign == '+' ? 1 : -1) * (hh * 3600 + mm * 60)
+end
+
 # A value with `access_key_id` and `secret_access_key` properties (and optionally
 # `session_token`), such as a NamedTuple, is accepted as credentials.
 Base.convert(::Type{Credentials}, x::Credentials) = x
