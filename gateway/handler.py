@@ -11,7 +11,9 @@ after checking, in this order (issue #54 §5, the first failure wins):
 4. ``client.user`` is present and non-empty text, else ``400 no_author``;
 5. ``client.user`` equals the caller's name, else ``403 author_mismatch``;
 6. the body is at most 4 MiB, else ``413 too_large``;
-7. ``put_object(IfNoneMatch="*")`` under the function's own role, mapped by HTTP status:
+7. on a locked bucket (below), the key is ``<record-class>/<customer>/<year>/…/<slot>``,
+   else ``400 not_a_record_key``;
+8. ``put_object(IfNoneMatch="*")`` under the function's own role, mapped by HTTP status:
    success → ``200 created``, 412 → ``412 slot_taken``, 409 → ``409 conflict``, anything
    else (S3 5xx, transport, or a misconfigured deployment) → ``502 s3_error``. The gateway
    never retries S3; the client's retry loop owns retries.
@@ -22,21 +24,36 @@ the ops, and it is not a ChainTables client. The caller's name is the text after
 
 Deployment contract: the Lambda environment carries ``CHAINTABLES_BUCKET`` (the bucket this
 gateway fronts) and optionally ``CHAINTABLES_POLICY`` (path of the policy file; default
-``policy.json`` beside this module). Both are read at the first request and cached for the
-life of the execution environment; a missing bucket or an unreadable policy raises on every
-request, so a misconfigured deployment fails loudly instead of serving some.
+``policy.json`` beside this module). In Lambda both are read once at startup, when this
+module is imported (the INIT phase, see the end of the file), and kept for the life of the
+execution environment; elsewhere at the first request. A missing bucket or an unreadable
+policy raises at startup, so a misconfigured deployment fails on every request instead of
+serving some.
+
+A **locked bucket** is one whose bucket policy refuses a put unless it is SSE-KMS encrypted
+with one key and carries a COMPLIANCE-mode Object Lock retention. Setting both
+``CHAINTABLES_KMS_KEY_ARN`` and ``CHAINTABLES_RETENTION_DAYS`` (a positive integer) makes
+every put carry: ``ServerSideEncryption=aws:kms`` with that key and the bucket key,
+``ObjectLockMode=COMPLIANCE`` with ``ObjectLockRetainUntilDate`` = now + the days, a SHA-256
+checksum of the body, and the tags ``record-class`` and ``customer`` (the key's first two
+segments) and ``retain-until`` (the same date, ISO 8601). Setting one variable without the
+other is a configuration error. The execution role then also needs ``s3:PutObjectRetention``,
+``s3:PutObjectTagging`` and ``kms:GenerateDataKey``.
 """
 
 from __future__ import annotations
 
 import base64
 import fnmatch
+import hashlib
 import json
 import logging
 import os
 import re
 from dataclasses import dataclass
-from urllib.parse import parse_qs
+from datetime import datetime, timedelta, timezone
+from typing import Callable
+from urllib.parse import parse_qs, urlencode
 
 import cbor2
 from botocore.exceptions import BotoCoreError, ClientError
@@ -49,6 +66,11 @@ POLICY_FORMAT_VERSION = 1
 # `<prefix>/<12 digits>` with a non-empty prefix that neither begins nor ends with '/',
 # or `<12 digits>` alone at the bucket root (ADR-0011).
 SLOT_KEY = re.compile(r"^(?:(?P<prefix>[^/](?:.*[^/])?)/)?(?P<slot>[0-9]{12})$")
+
+# On a locked bucket a slot key is `<record-class>/<customer>/<year>/…/<slot>`; the first
+# two segments become tags, so they are limited to what an S3 tag value may hold.
+RECORD_KEY = re.compile(r"^(?P<record_class>[^/]+)/(?P<customer>[^/]+)/(?P<year>[0-9]{4})/(?:[^/]+/)*[0-9]{12}$")
+TAG_VALUE = re.compile(r"^[A-Za-z0-9 _.:/=+\-@]{1,256}$")
 
 # The two principal kinds the gateway accepts. An IAM user may carry a path
 # (`user/path/name`); a role session name never contains '/'.
@@ -145,6 +167,40 @@ def chain_prefix(key: str) -> str:
     return "" if i < 0 else key[:i]
 
 
+@dataclass(frozen=True)
+class Lock:
+    """How a put to a locked bucket is dressed: the KMS key, the retention, and the clock
+    (injectable so a test can pin the retain-until date)."""
+
+    kms_key_arn: str
+    retention_days: int
+    now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
+
+    def put_kwargs(self, key: str, body: bytes) -> dict:
+        m = RECORD_KEY.match(key)
+        if m is None:
+            raise Refusal(400, "not_a_record_key",
+                          f"key {key!r} is not a record key: on a locked bucket a slot key is "
+                          "<record-class>/<customer>/<year>/…/<12 digits>, with a four-digit year")
+        tags = {"record-class": m.group("record_class"), "customer": m.group("customer")}
+        for name, value in tags.items():
+            if TAG_VALUE.match(value) is None:
+                raise Refusal(400, "not_a_record_key",
+                              f"key {key!r}: the {name} segment {value!r} is not a valid S3 tag value "
+                              "(letters, digits, space and _.:/=+-@, at most 256 characters)")
+        retain_until = self.now().astimezone(timezone.utc).replace(microsecond=0) + timedelta(days=self.retention_days)
+        tags["retain-until"] = retain_until.strftime("%Y-%m-%dT%H:%M:%SZ")
+        return {
+            "ServerSideEncryption": "aws:kms",
+            "SSEKMSKeyId": self.kms_key_arn,
+            "BucketKeyEnabled": True,
+            "ObjectLockMode": "COMPLIANCE",
+            "ObjectLockRetainUntilDate": retain_until,
+            "ChecksumSHA256": base64.b64encode(hashlib.sha256(body).digest()).decode("ascii"),
+            "Tagging": urlencode(tags),
+        }
+
+
 class Refusal(Exception):
     def __init__(self, status: int, code: str, message: str):
         super().__init__(message)
@@ -164,6 +220,7 @@ class Gateway:
     policy: Policy
     bucket: str
     s3: object  # a boto3 S3 client
+    lock: Lock | None = None  # set on a locked bucket
 
     def handle(self, event: dict) -> dict:
         try:
@@ -203,9 +260,10 @@ class Gateway:
         return self._put(key, body, name)
 
     def _put(self, key: str, body: bytes, name: str) -> dict:
+        extra = self.lock.put_kwargs(key, body) if self.lock is not None else {}
         try:
             self.s3.put_object(Bucket=self.bucket, Key=key, Body=body, IfNoneMatch="*",
-                               ContentType="application/cbor")
+                               ContentType="application/cbor", **extra)
         except ClientError as e:
             status = e.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
             code = e.response.get("Error", {}).get("Code")
@@ -281,15 +339,32 @@ def _s3_client():
 
 
 def configure(environ=os.environ, s3=None) -> Gateway:
-    """Build the gateway from the environment: `CHAINTABLES_BUCKET` (required) and
-    `CHAINTABLES_POLICY` (default `policy.json` beside this module)."""
+    """Build the gateway from the environment: `CHAINTABLES_BUCKET` (required),
+    `CHAINTABLES_POLICY` (default `policy.json` beside this module), and for a locked bucket
+    both `CHAINTABLES_KMS_KEY_ARN` and `CHAINTABLES_RETENTION_DAYS`."""
     bucket = environ.get("CHAINTABLES_BUCKET")
     if not bucket:
         raise ConfigError("CHAINTABLES_BUCKET is not set in the Lambda environment: the gateway has no bucket to write")
     path = environ.get("CHAINTABLES_POLICY") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "policy.json")
     policy = Policy.from_file(path)
-    log.info("gateway configured: bucket %s, policy %s (%d rules)", bucket, path, len(policy.rules))
-    return Gateway(policy=policy, bucket=bucket, s3=s3 if s3 is not None else _s3_client())
+    lock = lock_from_environ(environ)
+    log.info("gateway configured: bucket %s, policy %s (%d rules), %s", bucket, path, len(policy.rules),
+             "plain bucket" if lock is None else f"locked bucket: {lock.kms_key_arn}, {lock.retention_days} day(s)")
+    return Gateway(policy=policy, bucket=bucket, s3=s3 if s3 is not None else _s3_client(), lock=lock)
+
+
+def lock_from_environ(environ) -> Lock | None:
+    key_arn, days = environ.get("CHAINTABLES_KMS_KEY_ARN"), environ.get("CHAINTABLES_RETENTION_DAYS")
+    if not key_arn and not days:
+        return None
+    if not key_arn or not days:
+        raise ConfigError("a locked bucket needs both CHAINTABLES_KMS_KEY_ARN and CHAINTABLES_RETENTION_DAYS in the "
+                          f"Lambda environment; got key {key_arn!r} and days {days!r}")
+    if not key_arn.startswith("arn:"):
+        raise ConfigError(f"CHAINTABLES_KMS_KEY_ARN must be a key ARN (the bucket policy compares the ARN), not {key_arn!r}")
+    if not days.isdigit() or int(days) < 1:
+        raise ConfigError(f"CHAINTABLES_RETENTION_DAYS must be a positive integer, not {days!r}")
+    return Lock(kms_key_arn=key_arn, retention_days=int(days))
 
 
 def handler(event, context):
@@ -300,3 +375,15 @@ def handler(event, context):
     if _gateway is None:
         _gateway = configure()
     return _gateway.handle(event)
+
+
+# In Lambda, configure at import. The expensive part of a fresh execution environment is
+# not the runtime init (~0.1 s) but importing boto3 and building the S3 client, whose
+# endpoint ruleset is large: done lazily in the first request on a 256 MB function it cost
+# that request 5.1–5.4 s (six cold environments measured on 2026-09-15, against 30 ms for
+# a warm request). At import it runs in the INIT phase, which has the full vCPU and which
+# Lambda may run ahead of the first request. Outside Lambda (the tests, which inject a
+# client) nothing happens here. A configuration error then fails the init, which Lambda
+# reports on every invocation, as loud as before.
+if os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
+    _gateway = configure()

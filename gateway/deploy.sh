@@ -3,7 +3,7 @@
 #
 #   gateway/deploy.sh --bucket <name> --function <name> --region <region> --role <name> --zip <file>
 #                     [--arch arm64|x86_64] [--writer <principal ARN>]... [--reader <principal ARN>]...
-#                     [--timeout <s>] [--memory <MB>] [--log-retention <days>] [--no-smoke]
+#                     [--env KEY=VALUE]... [--timeout <s>] [--memory <MB>] [--log-retention <days>] [--no-smoke]
 #
 # Generic and idempotent: every account-specific value is an argument with no default, and
 # each step creates what is missing or updates what exists, so re-running after a rebuild
@@ -14,7 +14,8 @@
 #   1. bucket: create if absent, block all public access;
 #   2. execution role: trust lambda.amazonaws.com; inline s3:PutObject on the bucket's keys
 #      and nothing else on S3; inline logs on its own log group;
-#   3. function: python3.13, handler.handler, the zip, CHAINTABLES_BUCKET in the environment;
+#   3. function: python3.13, handler.handler, the zip, CHAINTABLES_BUCKET plus every --env in
+#      the environment (a locked bucket sets CHAINTABLES_KMS_KEY_ARN and CHAINTABLES_RETENTION_DAYS);
 #   4. function URL with AuthType=AWS_IAM; for each --writer, resource-based grants of both
 #      lambda:InvokeFunctionUrl and lambda:InvokeFunction (a same-account writer whose
 #      permission set already grants both needs no --writer; a cross-account one does);
@@ -26,7 +27,7 @@ set -euo pipefail
 
 bucket="" function="" region="" role="" zip="" arch=arm64
 timeout=30 memory=256 retention=30 smoke=1
-writers=() readers=()
+writers=() readers=() envs=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --bucket) bucket="$2"; shift 2 ;;
@@ -37,6 +38,7 @@ while [ $# -gt 0 ]; do
         --arch) arch="$2"; shift 2 ;;
         --writer) writers+=("$2"); shift 2 ;;
         --reader) readers+=("$2"); shift 2 ;;
+        --env) envs+=("$2"); shift 2 ;;
         --timeout) timeout="$2"; shift 2 ;;
         --memory) memory="$2"; shift 2 ;;
         --log-retention) retention="$2"; shift 2 ;;
@@ -57,6 +59,13 @@ command -v aws >/dev/null || die "the AWS CLI is required"
 command -v python3 >/dev/null || die "python3 is required (JSON assembly)"
 for a in ${writers[@]+"${writers[@]}"} ${readers[@]+"${readers[@]}"}; do
     case "$a" in arn:*:iam::*) ;; *) die "--writer/--reader takes an IAM principal ARN, not $a" ;; esac
+done
+for e in ${envs[@]+"${envs[@]}"}; do
+    case "$e" in
+        CHAINTABLES_BUCKET=*) die "--env may not set CHAINTABLES_BUCKET; it is --bucket" ;;
+        [A-Za-z_]*=*) case "$e" in *,*|*\}*) die "--env value may not contain ',' or '}': $e" ;; esac ;;
+        *) die "--env takes KEY=VALUE, not $e" ;;
+    esac
 done
 export AWS_DEFAULT_REGION="$region" AWS_PAGER=""
 
@@ -99,7 +108,7 @@ aws iam put-role-policy --role-name "$role" --policy-name chaintables-gateway-lo
     "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"OwnLogs\",\"Effect\":\"Allow\",\"Action\":[\"logs:CreateLogGroup\",\"logs:CreateLogStream\",\"logs:PutLogEvents\"],\"Resource\":\"arn:aws:logs:$region:$account:log-group:$log_group:*\"}]}"
 
 # 3. function
-env_vars="Variables={CHAINTABLES_BUCKET=$bucket}"
+env_vars="Variables={CHAINTABLES_BUCKET=$bucket$(for e in ${envs[@]+"${envs[@]}"}; do printf ',%s' "$e"; done)}"
 if aws lambda get-function --function-name "$function" >/dev/null 2>&1; then
     say "updating function $function"
     aws lambda update-function-configuration --function-name "$function" --runtime python3.13 \

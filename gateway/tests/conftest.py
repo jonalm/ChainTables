@@ -100,12 +100,12 @@ class StubbedS3:
         self.stubber = Stubber(self.client)
         self.stubber.activate()
 
-    def expect_put(self, key, body):
+    def expect_put(self, key, body, **extra):
         return {"Bucket": BUCKET, "Key": key, "Body": body, "IfNoneMatch": "*",
-                "ContentType": "application/cbor"}
+                "ContentType": "application/cbor", **extra}
 
-    def put_succeeds(self, key, body):
-        self.stubber.add_response("put_object", {"ETag": '"abc"'}, self.expect_put(key, body))
+    def put_succeeds(self, key, body, **extra):
+        self.stubber.add_response("put_object", {"ETag": '"abc"'}, self.expect_put(key, body, **extra))
 
     def put_fails(self, key, body, status, code, message="stubbed"):
         self.stubber.add_client_error("put_object", service_error_code=code,

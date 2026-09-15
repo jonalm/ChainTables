@@ -148,6 +148,21 @@ still delete objects, and can rewrite this policy. The trust boundary is one fac
 a record in the bucket names the principal that filled its slot and that principal was
 allowed to (ADR-0028); it is not tamper-evidence against the account's owners.
 
+## A locked bucket
+
+A gateway bucket may additionally be a **locked bucket**: Object Lock on, SSE-KMS with one
+customer-managed key, and a bucket policy that refuses a put unless it is encrypted with that
+key and carries a COMPLIANCE retention. Deploy the gateway with
+`--env CHAINTABLES_KMS_KEY_ARN=<key ARN> --env CHAINTABLES_RETENTION_DAYS=<n>` and every put
+carries SSE-KMS with that key (bucket key on), `COMPLIANCE` retention until now + n days, a
+SHA-256 checksum of the body, and the tags `record-class`, `customer` (the key's first two
+segments) and `retain-until`. Slot keys on a locked bucket must be
+`<record-class>/<customer>/<year>/…/<slot>`, else the gateway answers `400 not_a_record_key`.
+The execution role also needs `s3:PutObjectRetention`, `s3:PutObjectTagging` and
+`kms:GenerateDataKey` on the key, and every reader `kms:Decrypt`; `deploy.sh` grants none of
+those, the bucket's own setup does. COMPLIANCE retention cannot be shortened by anyone,
+including the account root, until it expires.
+
 ## Deploying
 
 Prerequisites: the AWS CLI v2, `uv`, `python3`, and administrator credentials for the

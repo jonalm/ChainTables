@@ -31,8 +31,10 @@ The Lambda environment carries:
 - `CHAINTABLES_POLICY` — path of the policy file. Default: `policy.json` beside `handler.py`,
   which is where `build.sh --policy` puts it.
 
-Both are read at the first request and cached; a missing bucket or an unreadable policy
-raises on every request rather than serving some.
+Both are read once and cached: in Lambda at startup, when `handler.py` is imported (so
+importing boto3 and building the S3 client happen in the INIT phase, not inside somebody's
+first request), elsewhere at the first request. A missing bucket or an unreadable policy
+fails the startup, so every request errors rather than some being served.
 
 ## Policy config
 
