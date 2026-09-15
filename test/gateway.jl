@@ -5,7 +5,7 @@
 using Sockets
 using SHA: sha256
 using ChainTables: Chain, Credentials, S3ObjectStore, GatewayObjectStore, PutOutcome, TransportError,
-    WriteRefusedError, WriteBuilderError, fetch_object, put_object_if_absent, stat_object, list_objects
+    WriteRefusedError, WriteBuilderError, LostRaceError, fetch_object, put_object_if_absent, stat_object, list_objects
 const GWT = ChainTables
 
 # ---------------------------------------------------------------------------
@@ -127,7 +127,8 @@ function (g::GatewayDouble)(req)
     decoded isa Dict || return gwtest_json(400, "not_cbor_map", "the body is not a CBOR map")
     user = get(get(decoded, "client", Dict()), "user", nothing)
     (user isa String && !isempty(user)) || return gwtest_json(400, "no_author", "client.user is absent")
-    user == g.caller || return gwtest_json(403, "author_mismatch", "client.user is $user, the caller is $(g.caller)")
+    user == g.caller || return gwtest_json(403, "author_mismatch", "the record names '$user' as client.user but the caller is '$(g.caller)': " *
+                                                                 "a client bug, or the credentials changed between the identity call and the commit; report it")
     length(req.body) <= 4 * 1024 * 1024 || return gwtest_json(413, "too_large", "$(length(req.body)) bytes")
     haskey(g.s3.objects, key) && return gwtest_json(412, "slot_taken", "$key exists")
     g.s3.objects[key] = copy(req.body)
@@ -154,6 +155,73 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
 
 # A CBOR map that passes the gateway's checks: a record-shaped map naming `user`.
 gwtest_record(user) = GWT.CBOR.encode(Dict{String,Any}("format_version" => 1, "client" => Dict{String,Any}("user" => user), "ops" => Any[]))
+
+# ---------------------------------------------------------------------------
+# For the live test: the credentials of an `aws sso login` session as a callable (the
+# contract's §7: the client ships no SSO helper, a callable suffices), and a store wrapper
+# that runs a hook ahead of each put, so a competing commit can land between a commit's
+# preflight and its put — the race test/chain.jl injects through the double's fault hook.
+# ---------------------------------------------------------------------------
+
+# `AWS_CREDENTIAL_EXPIRATION` as the CLI prints it, `YYYY-MM-DDThh:mm:ss[.fff](Z|±hh:mm)`,
+# as seconds since the epoch; anything else is refused rather than guessed.
+function sso_expiry(text::AbstractString)
+    m = match(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$", text)
+    m === nothing && error("aws configure export-credentials: cannot parse AWS_CREDENTIAL_EXPIRATION $(repr(text))")
+    utc = GWT.parse_iso_date(m.captures[1] * "Z")
+    m.captures[2] == "Z" && return utc
+    sign, hh, mm = m.captures[2][1], parse(Int, m.captures[2][2:3]), parse(Int, m.captures[2][5:6])
+    return utc - (sign == '+' ? 1 : -1) * (hh * 3600 + mm * 60)
+end
+
+"""
+    sso_credentials(profile) -> () -> Credentials
+
+A `credentials` callable for `Chain` over `aws configure export-credentials --profile
+<profile> --format env-no-export`: the CLI's own cache of the `aws sso login` session,
+re-read when the credentials it returned are within five minutes of expiring. Every call
+before that returns the same `Credentials` without running the CLI. A failure to export —
+no login, an expired session, no such profile — raises with the login command to run.
+"""
+function sso_credentials(profile::AbstractString)
+    cached = Ref{Union{Nothing,Tuple{Credentials,Float64}}}(nothing)
+    return function ()
+        c = cached[]
+        c !== nothing && c[2] - time() > 300 && return c[1]
+        out = try
+            read(`aws configure export-credentials --profile $profile --format env-no-export`, String)
+        catch e
+            error("aws configure export-credentials --profile $profile failed ($(sprint(showerror, e))): log in with " *
+                  "`aws sso login --profile $profile` (add --use-device-code if the browser cannot reach the authorize page)")
+        end
+        kv = Dict{String,String}()
+        for line in eachline(IOBuffer(out))
+            k, v = split(line, '='; limit = 2)
+            kv[String(k)] = String(v)
+        end
+        haskey(kv, "AWS_ACCESS_KEY_ID") && haskey(kv, "AWS_SECRET_ACCESS_KEY") ||
+            error("aws configure export-credentials --profile $profile printed no AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY: $(keys(kv))")
+        credentials = Credentials(kv["AWS_ACCESS_KEY_ID"], kv["AWS_SECRET_ACCESS_KEY"]; session_token = get(kv, "AWS_SESSION_TOKEN", nothing))
+        expiry = haskey(kv, "AWS_CREDENTIAL_EXPIRATION") ? Float64(sso_expiry(kv["AWS_CREDENTIAL_EXPIRATION"])) : Inf
+        cached[] = (credentials, expiry)
+        return credentials
+    end
+end
+
+mutable struct RacingGateway <: GWT.AbstractObjectStore
+    const inner::GatewayObjectStore
+    before_put::Any               # key -> nothing, run ahead of every put
+end
+GWT.is_aws(s::RacingGateway) = GWT.is_aws(s.inner)
+GWT.record_cap(s::RacingGateway) = GWT.record_cap(s.inner)
+GWT.record_author(s::RacingGateway) = GWT.record_author(s.inner)
+GWT.fetch_object(s::RacingGateway, key::AbstractString) = fetch_object(s.inner, key)
+GWT.stat_object(s::RacingGateway, key::AbstractString) = stat_object(s.inner, key)
+GWT.list_objects(s::RacingGateway, prefix::AbstractString; start_after = nothing) = list_objects(s.inner, prefix; start_after)
+function GWT.put_object_if_absent(s::RacingGateway, key::AbstractString, bytes)
+    s.before_put(key)
+    return put_object_if_absent(s.inner, key, bytes)
+end
 
 @testset "gateway" begin
     # ------------------------------------------------------------------------
@@ -252,13 +320,14 @@ gwtest_record(user) = GWT.CBOR.encode(Dict{String,Any}("format_version" => 1, "c
             double.caller = "alice@example.com"
             e = try put_object_if_absent(store, "p/000000000003", gwtest_record("mallory")); nothing catch e; e end
             @test e isa WriteRefusedError && e.reason == "author_mismatch"
-            @test occursin("author_mismatch: client.user is mallory, the caller is alice@example.com", sprint(showerror, e))
+            @test occursin("author_mismatch: the record names 'mallory' as client.user but the caller is 'alice@example.com'", sprint(showerror, e))
             @test occursin("report it", sprint(showerror, e))
             wrong = GatewayObjectStore("bkt", loopback_url(gw); region = "eu-north-1", credentials = Credentials("AKIATEST", "nope"; session_token = "session-token"),
                                        endpoint = s3test_endpoint(s3), path_style = true)
             e = try put_object_if_absent(wrong, "p/000000000003", record); nothing catch e; e end
             @test e isa WriteRefusedError && e.reason == "forbidden"
             @test occursin("AWS refused the invocation", sprint(showerror, e)) && occursin("lambda:InvokeFunctionUrl and lambda:InvokeFunction", sprint(showerror, e))
+            @test occursin("(HTTP 403 with no gateway code): Forbidden.", sprint(showerror, e))   # AWS's own `Message` is carried
             @test !haskey(s3.objects, "p/000000000003")
             # a client bug is a TransportError carrying the gateway's code and message, not retried
             for (k, bytes, code) in (("p/genesis", record, "not_a_slot"), ("p/000000000003", b"not cbor", "not_cbor_map"),
@@ -444,15 +513,16 @@ gwtest_record(user) = GWT.CBOR.encode(Dict{String,Any}("format_version" => 1, "c
                     GWT.insert_rows!(w, :samples, [(id = 2, note = "mismatch")])
                     e = try GWT.commit!(w); nothing catch e; e end
                     @test e isa WriteRefusedError && e.reason == "author_mismatch" && e.slot == 2 && e.caller == "alice@example.com"
-                    @test occursin("author_mismatch: client.user is alice@example.com, the caller is mallory", sprint(showerror, e))
+                    @test occursin("author_mismatch: the record names 'alice@example.com' as client.user but the caller is 'mallory'", sprint(showerror, e))
                     double.caller = "alice@example.com"
                     double.policy = ["exp" => ["alice@example.com"]]
                     # AWS refusing the invocation before the gateway ran
-                    double.respond = _ -> (403, [], Vector{UInt8}("{\"Message\":\"Forbidden\"}"))
+                    double.respond = _ -> (403, [], Vector{UInt8}("{\"Message\":\"User: arn:aws:sts::123456789012:assumed-role/x/alice is not authorized\"}"))
                     w = GWT.write_builder(copy)
                     GWT.insert_rows!(w, :samples, [(id = 2, note = "forbidden")])
                     e = try GWT.commit!(w); nothing catch e; e end
                     @test e isa WriteRefusedError && e.reason == "forbidden" && e.slot == 2
+                    @test occursin("(HTTP 403 with no gateway code): User: arn:aws:sts::123456789012:assumed-role/x/alice is not authorized", sprint(showerror, e))
                     @test occursin("ask the bucket's operator for the writer permission set", sprint(showerror, e))
                     # a lost reply: the put landed, the gateway answered 502; the read-back finds our bytes and no put is repeated
                     double.respond = req -> begin
@@ -496,6 +566,116 @@ gwtest_record(user) = GWT.CBOR.encode(Dict{String,Any}("format_version" => 1, "c
                 end
             finally
                 close(gw); close(sts); close(s3)
+            end
+        end
+    end
+
+    # ------------------------------------------------------------------------
+    # Live gateway (issue #60): the one test only AWS can answer for ADR-0028. Skipped
+    # without CHAINTABLES_GATEWAY_URL; the other variables are then required, no defaults —
+    # the run line is in test/runtests.jl. Under an `aws sso login` session it creates a
+    # chain under a fresh prefix the policy lists the caller under and commits through the
+    # gateway; a direct put to the bucket is denied; a commit racing for a slot loses; a
+    # record naming another author, and a chain under an unlisted prefix, are refused; a
+    # record over 4 MiB fails at commit before any call. Never deletes (the port has no
+    # delete verb): the bucket's operator expires `<prefix>/` objects, or keeps them.
+    # ------------------------------------------------------------------------
+    @testset "live gateway (issue #60; skipped without CHAINTABLES_GATEWAY_URL)" begin
+        url = get(ENV, "CHAINTABLES_GATEWAY_URL", "")
+        if isempty(url)
+            @test_skip haskey(ENV, "CHAINTABLES_GATEWAY_URL")      # see the run line in test/runtests.jl
+        else
+            need(name) = (v = get(ENV, name, ""); isempty(v) ? error("live gateway test: $name is not set (see test/runtests.jl)") : v)
+            bucket = need("CHAINTABLES_GATEWAY_BUCKET")
+            listed = need("CHAINTABLES_GATEWAY_PREFIX")              # a prefix the policy lists the caller under
+            unlisted = need("CHAINTABLES_GATEWAY_UNLISTED_PREFIX")   # one it does not
+            profile = need("AWS_PROFILE")
+            host_region = match(r"\.lambda-url\.([a-z0-9-]+)\.on\.aws", url)
+            region = get(ENV, "AWS_REGION", host_region === nothing ? "" : String(host_region.captures[1]))
+            isempty(region) && error("live gateway test: AWS_REGION is not set and the URL names no region")
+            credentials = sso_credentials(profile)
+            run = bytes2hex(rand(UInt8, 8))
+            prefix = "$listed/$run"
+            mktempdir() do dir
+                cache_dir = joinpath(dir, "cache")
+                chain = Chain(bucket, prefix; gateway = url, region, credentials, cache_dir)
+                @test chain isa Chain{GatewayObjectStore} && GWT.is_aws(chain.store)
+                store = chain.store
+                # the author: the session name of the SSO role from STS, under the session's own key
+                author = GWT.record_author(store)
+                @test author isa String && !isempty(author) && store.author_key == credentials().access_key_id
+                # create_chain through the gateway; the genesis carries the author; reads are direct
+                key0 = GWT.slot_key(chain, 0)
+                @test fetch_object(store, key0) === nothing && stat_object(store, key0) === nothing && isempty(list_objects(store, prefix * "/"))
+                created = GWT.create_chain(chain)
+                @test created.slot == 0
+                genesis = fetch_object(store, key0)
+                @test genesis !== nothing && GWT.Ops.decode_record(genesis; slot = 0).client.user == author
+                @test [m.key for m in list_objects(store, prefix * "/")] == [key0]
+                # the bucket policy's Deny: a direct put by the writer is refused by S3, only the gateway fills slots
+                key1 = GWT.slot_key(chain, 1)
+                e = try put_object_if_absent(store.s3, key1, genesis); nothing catch e; e end
+                @test e isa TransportError && e.status == 403 && occursin("AccessDenied", sprint(showerror, e))
+                @test stat_object(store, key1) === nothing
+                # a taken slot through the gateway is slot_taken, never an overwrite
+                @test put_object_if_absent(store, key0, gwtest_record(author)) == PutOutcome(false, 412)
+                @test fetch_object(store, key0) == genesis
+                # a commit round-trips through two local copies; the record names the author
+                a = GWT.open(chain, joinpath(dir, "a"))
+                @test GWT.sync!(a).slot == 0
+                w = GWT.write_builder(a)
+                GWT.create_table!(w, :samples) do t
+                    GWT.column!(t, :id, Int64); GWT.column!(t, :note, String); GWT.primary_key!(t, :id)
+                end
+                GWT.insert_rows!(w, :samples, [(id = 1, note = "live"), (id = 2, note = "gateway")])
+                done = GWT.commit!(w; comment = "the live gateway test")
+                @test done.slot == 1
+                @test GWT.Ops.decode_record(fetch_object(store, key1); slot = 1).client.user == author
+                b = GWT.open(chain, joinpath(dir, "b"))
+                @test GWT.sync!(b) == (; applied = 2, slot = 1, transaction_hash = done.transaction_hash)
+                @test GWT.table(b, :samples)[2].note == "gateway"
+                @test GWT.verify(b; full = true) === nothing
+                close(b)
+                # the lost race: a's record lands while c's put is in flight (after c's preflight); c
+                # gets slot_taken, reads a's record back, and loses; its head and files stand
+                racing = RacingGateway(store, _ -> nothing)
+                c = GWT.open(Chain(bucket, prefix; store = racing, cache_dir), joinpath(dir, "c"))
+                @test GWT.sync!(c).slot == 1
+                wa = GWT.write_builder(a)
+                GWT.insert_rows!(wa, :samples, [(id = 3, note = "from a")])
+                wc = GWT.write_builder(c)
+                GWT.insert_rows!(wc, :samples, [(id = 4, note = "from c")])
+                ra = Ref{Any}(nothing)
+                racing.before_put = key -> (racing.before_put = _ -> nothing; ra[] = GWT.commit!(wa); nothing)
+                e = try GWT.commit!(wc); nothing catch e; e end
+                @test ra[] !== nothing && ra[].slot == 2
+                @test e isa LostRaceError && (e.chain_id, e.slot, e.transaction_hash) == (created.chain_id, 2, ra[].transaction_hash)
+                @test GWT.head(c).slot == 1 && length(GWT.table(c, :samples)) == 2
+                @test GWT.sync!(c).slot == 2 && [r.note for r in GWT.table(c, :samples)] == ["live", "gateway", "from a"]
+                @test_throws "this builder is spent" GWT.commit!(wc)
+                # a record naming another author is refused as author_mismatch; nothing lands
+                key3 = GWT.slot_key(chain, 3)
+                e = try put_object_if_absent(store, key3, gwtest_record(author * ".impostor")); nothing catch e; e end
+                @test e isa WriteRefusedError && e.reason == "author_mismatch" && e.key == key3 && e.caller == author
+                @test occursin("author_mismatch: the record names '$author.impostor' as client.user but the caller is '$author'", sprint(showerror, e))
+                @test stat_object(store, key3) === nothing
+                # a chain under a prefix the policy does not list the caller under: not_allowed at slot 0
+                denied = Chain(bucket, "$unlisted/$run"; gateway = url, region, credentials, cache_dir)
+                e = try GWT.create_chain(denied); nothing catch e; e end
+                @test e isa WriteRefusedError && e.reason == "not_allowed" && e.slot == 0 && e.caller == author
+                @test e.key == GWT.slot_key(denied, 0) && stat_object(denied.store, e.key) === nothing
+                @test startswith(sprint(showerror, e), "WriteRefusedError: write refused for slot 0 of chain $(e.chain_id) at $bucket/$unlisted/$run: ")
+                @test occursin("not_allowed: ", sprint(showerror, e)) && occursin("ask the bucket's operator to add the name to the gateway policy", sprint(showerror, e))
+                # the cap: a record over 4 MiB is refused at commit before any put; the copy stands at its head
+                # (c's store is the wrapper, and the message names the store it was asked about)
+                puts = Ref(0)
+                racing.before_put = _ -> (puts[] += 1; nothing)
+                w = GWT.write_builder(c)
+                GWT.insert_rows!(w, :samples, [(id = 5, note = "x"^(4 * 1024 * 1024 + 100))])
+                e = try GWT.commit!(w); nothing catch e; e end
+                @test e isa WriteBuilderError && occursin("the cap on a RacingGateway is 4194304 bytes (4 MiB)", sprint(showerror, e))
+                @test puts[] == 0 && GWT.head(c).slot == 2 && stat_object(store, key3) === nothing
+                close(a); close(c)
             end
         end
     end

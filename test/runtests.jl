@@ -10,6 +10,19 @@ import ChainTables
 #     aws-vault exec chaintables-test -- \
 #         julia --project -e 'using Pkg; Pkg.test()'
 #
+# The live gateway test (ADR-0028, issue #60) lives in test/gateway.jl and runs as an
+# Identity Center writer (docs/gateway-setup.md) under an `aws sso login` session. It is
+# skipped without CHAINTABLES_GATEWAY_URL; with it, every variable below is required and
+# none has a default. The region is the function URL's unless AWS_REGION says otherwise.
+#
+#     aws sso login --profile <profile>               # --use-device-code if the browser balks
+#     CHAINTABLES_GATEWAY_URL=https://<id>.lambda-url.<region>.on.aws \
+#     CHAINTABLES_GATEWAY_BUCKET=<bucket> \
+#     CHAINTABLES_GATEWAY_PREFIX=<a prefix the gateway policy lists you under> \
+#     CHAINTABLES_GATEWAY_UNLISTED_PREFIX=<a prefix it does not> \
+#     AWS_PROFILE=<profile> \
+#         julia --project -e 'using Pkg; Pkg.test()'
+#
 # The suite resolves against the package's own environment. Its one dependency
 # of its own is Tables.jl, a test-target extra: test/views.jl proves a TableView
 # is a Tables.jl table, and nothing in the package itself depends on Tables.jl

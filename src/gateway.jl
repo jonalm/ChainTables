@@ -208,11 +208,12 @@ end
 
 # `{"code": "<code>", "message": "<text>"}` read without a JSON dependency (ADR-0027): the
 # code is a plain identifier, the message a JSON string with its escapes undone. Either
-# is `nothing` when absent — Lambda's own replies carry `Message`, never `code`.
+# is `nothing` when absent — Lambda's own replies carry `Message` (capitalised), never
+# `code`, and that text is read as the message so a bare 403 says why AWS refused.
 function gateway_reply(body::Vector{UInt8})
     text = String(copy(body))
     code = match(r"\"code\"\s*:\s*\"([A-Za-z0-9_]*)\"", text)
-    message = match(r"\"message\"\s*:\s*\"((?:[^\"\\]|\\.)*)\"", text)
+    message = match(r"\"[Mm]essage\"\s*:\s*\"((?:[^\"\\]|\\.)*)\"", text)
     return (code === nothing ? nothing : String(code.captures[1]),
             message === nothing ? nothing : json_unescape(message.captures[1]))
 end
