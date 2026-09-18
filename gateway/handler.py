@@ -11,9 +11,7 @@ after checking, in this order (issue #54 §5, the first failure wins):
 4. ``client.user`` is present and non-empty text, else ``400 no_author``;
 5. ``client.user`` equals the caller's name, else ``403 author_mismatch``;
 6. the body is at most 4 MiB, else ``413 too_large``;
-7. on a locked bucket (below), the key is ``<record-class>/<customer>/<year>/…/<slot>``,
-   else ``400 not_a_record_key``;
-8. ``put_object(IfNoneMatch="*")`` under the function's own role, mapped by HTTP status:
+7. ``put_object(IfNoneMatch="*")`` under the function's own role, mapped by HTTP status:
    success → ``200 created``, 412 → ``412 slot_taken``, 409 → ``409 conflict``, anything
    else (S3 5xx, transport, or a misconfigured deployment) → ``502 s3_error``. The gateway
    never retries S3; the client's retry loop owns retries.
@@ -35,10 +33,9 @@ with one key and carries a COMPLIANCE-mode Object Lock retention. Setting both
 ``CHAINTABLES_KMS_KEY_ARN`` and ``CHAINTABLES_RETENTION_DAYS`` (a positive integer) makes
 every put carry: ``ServerSideEncryption=aws:kms`` with that key and the bucket key,
 ``ObjectLockMode=COMPLIANCE`` with ``ObjectLockRetainUntilDate`` = now + the days, a SHA-256
-checksum of the body, and the tags ``record-class`` and ``customer`` (the key's first two
-segments) and ``retain-until`` (the same date, ISO 8601). Setting one variable without the
-other is a configuration error. The execution role then also needs ``s3:PutObjectRetention``,
-``s3:PutObjectTagging`` and ``kms:GenerateDataKey``.
+checksum of the body. Nothing is derived from the key: a locked bucket takes a slot under any
+prefix a plain one does (ADR-0031). Setting one variable without the other is a configuration
+error. The execution role then also needs ``s3:PutObjectRetention`` and ``kms:GenerateDataKey``.
 """
 
 from __future__ import annotations
@@ -53,7 +50,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Callable
-from urllib.parse import parse_qs, urlencode
+from urllib.parse import parse_qs
 
 import cbor2
 from botocore.exceptions import BotoCoreError, ClientError
@@ -66,11 +63,6 @@ POLICY_FORMAT_VERSION = 1
 # `<prefix>/<12 digits>` with a non-empty prefix that neither begins nor ends with '/',
 # or `<12 digits>` alone at the bucket root (ADR-0011).
 SLOT_KEY = re.compile(r"^(?:(?P<prefix>[^/](?:.*[^/])?)/)?(?P<slot>[0-9]{12})$")
-
-# On a locked bucket a slot key is `<record-class>/<customer>/<year>/…/<slot>`; the first
-# two segments become tags, so they are limited to what an S3 tag value may hold.
-RECORD_KEY = re.compile(r"^(?P<record_class>[^/]+)/(?P<customer>[^/]+)/(?P<year>[0-9]{4})/(?:[^/]+/)*[0-9]{12}$")
-TAG_VALUE = re.compile(r"^[A-Za-z0-9 _.:/=+\-@]{1,256}$")
 
 # The two principal kinds the gateway accepts. An IAM user may carry a path
 # (`user/path/name`); a role session name never contains '/'.
@@ -176,20 +168,8 @@ class Lock:
     retention_days: int
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
 
-    def put_kwargs(self, key: str, body: bytes) -> dict:
-        m = RECORD_KEY.match(key)
-        if m is None:
-            raise Refusal(400, "not_a_record_key",
-                          f"key {key!r} is not a record key: on a locked bucket a slot key is "
-                          "<record-class>/<customer>/<year>/…/<12 digits>, with a four-digit year")
-        tags = {"record-class": m.group("record_class"), "customer": m.group("customer")}
-        for name, value in tags.items():
-            if TAG_VALUE.match(value) is None:
-                raise Refusal(400, "not_a_record_key",
-                              f"key {key!r}: the {name} segment {value!r} is not a valid S3 tag value "
-                              "(letters, digits, space and _.:/=+-@, at most 256 characters)")
+    def put_kwargs(self, body: bytes) -> dict:
         retain_until = self.now().astimezone(timezone.utc).replace(microsecond=0) + timedelta(days=self.retention_days)
-        tags["retain-until"] = retain_until.strftime("%Y-%m-%dT%H:%M:%SZ")
         return {
             "ServerSideEncryption": "aws:kms",
             "SSEKMSKeyId": self.kms_key_arn,
@@ -197,7 +177,6 @@ class Lock:
             "ObjectLockMode": "COMPLIANCE",
             "ObjectLockRetainUntilDate": retain_until,
             "ChecksumSHA256": base64.b64encode(hashlib.sha256(body).digest()).decode("ascii"),
-            "Tagging": urlencode(tags),
         }
 
 
@@ -260,7 +239,7 @@ class Gateway:
         return self._put(key, body, name)
 
     def _put(self, key: str, body: bytes, name: str) -> dict:
-        extra = self.lock.put_kwargs(key, body) if self.lock is not None else {}
+        extra = self.lock.put_kwargs(body) if self.lock is not None else {}
         try:
             self.s3.put_object(Bucket=self.bucket, Key=key, Body=body, IfNoneMatch="*",
                                ContentType="application/cbor", **extra)

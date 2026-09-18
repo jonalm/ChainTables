@@ -29,6 +29,13 @@ copied to another bucket or prefix is still the same chain.
 _Avoid_: prefix, path, location, name, uuid
 _See_: [ADR-0011](docs/adr/0011-a-chain-is-flat-slot-keys-plus-reserved-names.md)
 
+**Prefix**:
+Where a chain lives within a bucket: `(bucket, prefix)` is a chain's full address.
+Opaque text — it may contain `/`, and the slashes mean nothing; ChainTables reads no
+structure into it. Prefixes may nest; the chains are unrelated. Empty is the one
+chain at the bucket root. Where, not which: see *chain id*.
+_Avoid_: chain name, path, folder, directory
+
 **Slot**:
 One position in the chain. At most one transaction record ever occupies a slot,
 and a record's slot never changes. The chain has no gaps — a slot is only ever

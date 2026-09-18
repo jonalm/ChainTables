@@ -155,10 +155,10 @@ customer-managed key, and a bucket policy that refuses a put unless it is encryp
 key and carries a COMPLIANCE retention. Deploy the gateway with
 `--env CHAINTABLES_KMS_KEY_ARN=<key ARN> --env CHAINTABLES_RETENTION_DAYS=<n>` and every put
 carries SSE-KMS with that key (bucket key on), `COMPLIANCE` retention until now + n days, a
-SHA-256 checksum of the body, and the tags `record-class`, `customer` (the key's first two
-segments) and `retain-until`. Slot keys on a locked bucket must be
-`<record-class>/<customer>/<year>/…/<slot>`, else the gateway answers `400 not_a_record_key`.
-The execution role also needs `s3:PutObjectRetention`, `s3:PutObjectTagging` and
+SHA-256 checksum of the body. Locking adds no rule about keys: a locked bucket takes a slot
+under any prefix a plain one does, and a deployment that wants a naming convention states it
+in the policy file's globs (ADR-0031). The gateway writes no tags; the retention date is
+S3's own (`GetObjectRetention`). The execution role also needs `s3:PutObjectRetention` and
 `kms:GenerateDataKey` on the key, and every reader `kms:Decrypt`; `deploy.sh` grants none of
 those, the bucket's own setup does. COMPLIANCE retention cannot be shortened by anyone,
 including the account root, until it expires.

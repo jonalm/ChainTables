@@ -1,4 +1,4 @@
-"""A locked bucket: every put carries SSE-KMS, COMPLIANCE retention, a checksum and tags."""
+"""A locked bucket: every put carries SSE-KMS, COMPLIANCE retention and a checksum, at any prefix."""
 
 import base64
 import hashlib
@@ -20,62 +20,43 @@ def locked(s3):
     return gw.Gateway(policy=gw.Policy.from_dict(LOCKED_POLICY), bucket=BUCKET, s3=s3.client, lock=LOCK)
 
 
-def expected_extra(body, record_class="lab-results", customer="acme"):
+def expected_extra(body):
     until = datetime(2026, 9, 16, 12, 30, 45, tzinfo=timezone.utc)
     return {
         "ServerSideEncryption": "aws:kms", "SSEKMSKeyId": KEY_ARN, "BucketKeyEnabled": True,
         "ObjectLockMode": "COMPLIANCE", "ObjectLockRetainUntilDate": until,
         "ChecksumSHA256": base64.b64encode(hashlib.sha256(body).digest()).decode("ascii"),
-        "Tagging": f"record-class={record_class}&customer={customer}&retain-until=2026-09-16T12%3A30%3A45Z",
     }
 
 
-def test_put_carries_encryption_retention_checksum_and_tags(locked, s3):
+# A locked bucket reads nothing into the prefix (ADR-0031): any slot a plain bucket takes.
+@pytest.mark.parametrize("key", [
+    "000000000003",                           # bucket root
+    "scratch_1/000000000003",                 # one segment
+    "teams/alpha/run 7/000000000003",         # nested
+])
+def test_put_at_any_prefix_carries_encryption_retention_and_checksum(locked, s3, key):
     body = record()
-    key = "lab-results/acme/2026/run-7/000000000003"
     s3.put_succeeds(key, body, **expected_extra(body))
     status, out = parse(locked.handle(event(key=key, body=body)))
     assert (status, out["code"]) == (200, "created")
 
 
 def test_retain_until_is_now_plus_the_days_at_whole_seconds():
-    kw = gw.Lock(KEY_ARN, 30, now=lambda: NOW).put_kwargs("a/b/2026/000000000000", b"x")
+    kw = gw.Lock(KEY_ARN, 30, now=lambda: NOW).put_kwargs(b"x")
     assert kw["ObjectLockRetainUntilDate"] == NOW.replace(microsecond=0) + timedelta(days=30)
-    assert kw["Tagging"].endswith("retain-until=2026-10-15T12%3A30%3A45Z")
 
 
-def test_tags_come_from_the_first_two_key_segments(locked, s3):
-    body = record()
-    key = "consent/globex corp/2026/deep/er/000000000000"
-    s3.put_succeeds(key, body, **expected_extra(body, "consent", "globex+corp"))
-    status, out = parse(locked.handle(event(key=key, body=body)))
-    assert (status, out["code"]) == (200, "created")
+def test_nothing_is_derived_from_the_key():
+    assert "Tagging" not in LOCK.put_kwargs(b"x")
 
 
-@pytest.mark.parametrize("key", [
-    "000000000003",                       # bucket root
-    "acme/000000000003",                  # one segment
-    "lab-results/acme/000000000003",      # no year
-    "lab-results/acme/26/000000000003",   # year not four digits
-])
-def test_key_without_the_record_layout_is_refused_before_any_put(locked, key):
-    status, out = parse(locked.handle(event(key=key)))
-    assert (status, out["code"]) == (400, "not_a_record_key")
-    assert "<record-class>/<customer>/<year>" in out["message"]
-
-
-def test_a_non_slot_is_still_not_a_slot_before_the_layout_check(locked):
-    status, out = parse(locked.handle(event(key="lab-results/acme/2026/000000000003x")))
+def test_a_non_slot_is_still_not_a_slot(locked):
+    status, out = parse(locked.handle(event(key="scratch_1/000000000003x")))
     assert (status, out["code"]) == (400, "not_a_slot")
 
 
-def test_segment_that_is_not_a_valid_tag_value_is_refused(locked):
-    status, out = parse(locked.handle(event(key="lab-results/acme#1/2026/000000000003")))
-    assert (status, out["code"]) == (400, "not_a_record_key")
-    assert "customer" in out["message"] and "acme#1" in out["message"]
-
-
-def test_policy_is_still_checked_before_the_key_layout(locked):
+def test_policy_is_still_checked(locked):
     status, out = parse(locked.handle(event(key="000000000003", user_arn="arn:aws:iam::111122223333:user/mallory")))
     assert (status, out["code"]) == (403, "not_allowed")
 
