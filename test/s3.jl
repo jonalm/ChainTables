@@ -686,17 +686,18 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
 
     # ------------------------------------------------------------------------
     # Live S3 (issue #6): the one test only AWS can answer. Skipped without
-    # credentials; run under `aws-vault exec chaintables-test -- julia --project -e
-    # 'using Pkg; Pkg.test()'`. Builds every chain it reads under a fresh prefix — the
+    # CHAINTABLES_TEST_BUCKET; with it, credentials and AWS_REGION are required and nothing
+    # has a default — the run line is in test/runtests.jl. Builds every chain it reads under a fresh prefix — the
     # bucket's lifecycle rule expires objects after 7 days — and never deletes: the
     # port has no delete verb.
     # ------------------------------------------------------------------------
-    @testset "live S3 (issue #6; skipped without credentials)" begin
-        if isempty(get(ENV, "AWS_ACCESS_KEY_ID", ""))
-            @test_skip haskey(ENV, "AWS_ACCESS_KEY_ID")      # run under aws-vault exec chaintables-test to enable
+    @testset "live S3 (issue #6; skipped without CHAINTABLES_TEST_BUCKET)" begin
+        if isempty(get(ENV, "CHAINTABLES_TEST_BUCKET", ""))
+            @test_skip haskey(ENV, "CHAINTABLES_TEST_BUCKET")   # see test/runtests.jl for the run line
         else
-            bucket = get(ENV, "CHAINTABLES_TEST_BUCKET", "chaintables-testbucket-319898207248-eu-north-1-an")
-            region = get(ENV, "AWS_REGION", "eu-north-1")
+            bucket = ENV["CHAINTABLES_TEST_BUCKET"]
+            region = get(ENV, "AWS_REGION", "")
+            isempty(region) && error("live S3 test: AWS_REGION is not set (see test/runtests.jl)")
             prefix = "chaintables-test/" * bytes2hex(rand(UInt8, 8))
             mktempdir() do dir
                 cache_dir = joinpath(dir, "cache")

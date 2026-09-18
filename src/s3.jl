@@ -61,7 +61,7 @@ five minutes of the `AWS_CREDENTIAL_EXPIRATION` the CLI reported (forever, when 
 none), so the CLI runs once per session, not once per request.
 
 ```julia
-credentials = ChainTables.sso_credentials("chaintables")       # after: aws sso login --profile chaintables
+credentials = ChainTables.sso_credentials("<profile>")         # after: aws sso login --profile <profile>
 chain = ChainTables.Chain(bucket, prefix; gateway = url, region, credentials)
 ```
 

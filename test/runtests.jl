@@ -7,8 +7,11 @@ import ChainTables
 # test against the real bucket (#34 §2 "Live S3", issue #6) — lives in
 # test/s3.jl and needs:
 #
-#     aws-vault exec chaintables-test -- \
+#     CHAINTABLES_TEST_BUCKET=<bucket> AWS_REGION=<region> aws-vault exec <profile> -- \
 #         julia --project -e 'using Pkg; Pkg.test()'
+#
+# It is skipped without CHAINTABLES_TEST_BUCKET; no bucket, region or profile has a default,
+# because those belong to whoever owns the deployment and never to this repository.
 #
 # The live gateway test (ADR-0028, issue #60) lives in test/gateway.jl and runs as an
 # Identity Center writer (docs/gateway-setup.md) under an `aws sso login` session. It is
