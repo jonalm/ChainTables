@@ -63,8 +63,8 @@ Anything else — the account root, a service principal — is refused as `not_a
 For an **Identity Center** session the session name is the Identity Center user name. With
 an external identity provider federated over SAML and SCIM, that is whatever the SCIM
 `userName` mapping supplies; with Entra ID mapped in the usual way it is the user principal
-name. AWS documents this nowhere; it was verified live and the live gateway test re-verifies
-it. So a writer named `alice@example.com` in the policy is the Identity Center user whose
+name. AWS documents this nowhere; it was verified live and the live gateway test
+(`test/live/run.sh gateway`) re-verifies it. So a writer named `alice@example.com` in the policy is the Identity Center user whose
 user name is exactly that.
 
 **Only grant invoke to principals whose session name is bound.** An IAM user's name is
@@ -259,6 +259,8 @@ fills the bucket of its own deployment whatever bucket the client names, so the 
 checks: after the gateway's `200` it stats the slot in the bucket it reads, and a `Bucket`
 pairing a bucket with another bucket's gateway raises `GatewayMismatchError` at the first
 `create_chain` or `commit!` instead of committing where nobody reads. The record that was
-written stays in the gateway's bucket, for its operator to look at. The live gateway test (`test/gateway.jl`, run line in `test/runtests.jl`) is this
-section end to end: it constructs the chain exactly like this and commits, races and is
-refused against the real bucket.
+written stays in the gateway's bucket, for its operator to look at. The live gateway test
+(`test/live/gateway.jl`, run with `test/live/run.sh gateway` from a git-ignored `env/live.env`;
+[ADR-0030](adr/0030-live-tests-are-a-separate-command-configured-from-outside-and-never-skip.md))
+is this section end to end: it constructs the chain exactly like this and commits, races and
+is refused against the real bucket.

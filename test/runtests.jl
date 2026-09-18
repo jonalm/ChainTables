@@ -2,29 +2,11 @@ using Test
 import ChainTables
 
 # ---------------------------------------------------------------------------
-# One test file per src file, in the build order of #34 §3. Everything before
-# step 7 runs against the double with no credentials. The live half — one
-# test against the real bucket (#34 §2 "Live S3", issue #6) — lives in
-# test/s3.jl and needs:
-#
-#     CHAINTABLES_TEST_BUCKET=<bucket> AWS_REGION=<region> aws-vault exec <profile> -- \
-#         julia --project -e 'using Pkg; Pkg.test()'
-#
-# It is skipped without CHAINTABLES_TEST_BUCKET; no bucket, region or profile has a default,
-# because those belong to whoever owns the deployment and never to this repository.
-#
-# The live gateway test (ADR-0028, issue #60) lives in test/gateway.jl and runs as an
-# Identity Center writer (docs/gateway-setup.md) under an `aws sso login` session. It is
-# skipped without CHAINTABLES_GATEWAY_URL; with it, every variable below is required and
-# none has a default. The region is the function URL's unless AWS_REGION says otherwise.
-#
-#     aws sso login --profile <profile>               # --use-device-code if the browser balks
-#     CHAINTABLES_GATEWAY_URL=https://<id>.lambda-url.<region>.on.aws \
-#     CHAINTABLES_GATEWAY_BUCKET=<bucket> \
-#     CHAINTABLES_GATEWAY_PREFIX=<a prefix the gateway policy lists you under> \
-#     CHAINTABLES_GATEWAY_UNLISTED_PREFIX=<a prefix it does not> \
-#     AWS_PROFILE=<profile> \
-#         julia --project -e 'using Pkg; Pkg.test()'
+# One test file per src file, in the build order of #34 §3. The suite is offline: it
+# runs against the doubles and loopback servers with no credentials, reads no
+# CHAINTABLES_LIVE_* variable, and makes no request to anything but 127.0.0.1, whatever
+# is exported in the shell. The tests only AWS can answer are a separate command,
+# test/live/run.sh (ADR-0030), and are never part of `Pkg.test()`.
 #
 # The suite resolves against the package's own environment. Its one dependency
 # of its own is Tables.jl, a test-target extra: test/views.jl proves a TableView
@@ -36,6 +18,9 @@ import ChainTables
     @testset "package loads" begin
         @test ChainTables isa Module
     end
+
+    include("fixtures/s3_server.jl")     # the loopback S3: s3.jl, gateway.jl
+    include("fixtures/gateway.jl")       # gwtest_record: gateway.jl, live/gateway.jl
 
     include("hashes.jl")
     include("errors.jl")
@@ -53,4 +38,5 @@ import ChainTables
     include("bucket.jl")
     include("Testing.jl")
     include("readme.jl")
+    include("tracked_values.jl")
 end

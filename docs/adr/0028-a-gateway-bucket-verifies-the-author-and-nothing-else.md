@@ -82,7 +82,7 @@ role>/<session name>`, and the session name is the Identity Center user name —
 with Entra ID federated over SAML and SCIM, the user principal name. That
 equality is **documented nowhere** by AWS and was verified live during
 provisioning (issue #58); it is the empirical fact this ADR rests on, and the
-live gateway test re-verifies it. Only the tail is compared, so the two sides
+live gateway test (`test/live/gateway.jl`, ADR-0030) re-verifies it. Only the tail is compared, so the two sides
 need not agree on whether the full ARNs are identical, which AWS also leaves
 undocumented. The gateway refuses any principal that is neither a user nor an
 assumed role (the account root, a service principal) as `not_allowed`.
