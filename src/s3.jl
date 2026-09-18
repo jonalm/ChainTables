@@ -68,10 +68,17 @@ chain = ChainTables.Chain(bucket, prefix; gateway = url, region, credentials)
 Requires the AWS CLI v2 on `PATH`, and only when called. A failed export — no login, an
 expired session, an unknown profile, no CLI — raises with the CLI's own message and the
 `aws sso login` command to run (`--use-device-code` when the browser cannot reach the
-authorize page). Nothing here is Identity Center-specific: any profile the CLI can export
-credentials for works, a plain bucket as well as a gateway bucket.
+authorize page), or [`sso_login`](@ref) from Julia. Nothing here is Identity Center-specific:
+any profile the CLI can export credentials for works, a plain bucket as well as a gateway
+bucket.
+
+No operation logs in by itself (ADR-0029). `login = true` is the opt-in: in an interactive
+session (`isinteractive()`), a failed export runs [`sso_login(profile)`](@ref sso_login) once
+and exports again, and a second failure raises as above. Outside one — a script, a job —
+`login = true` changes nothing: the failure raises rather than a browser blocking the run.
 """
-function sso_credentials(profile::AbstractString; exporter = run_export_credentials, now = time)
+function sso_credentials(profile::AbstractString; login = false, exporter = run_export_credentials, now = time,
+                         login_with = sso_login, interactive = isinteractive)
     isempty(profile) && throw(ArgumentError("sso_credentials: profile must not be empty"))
     profile = String(profile)
     cached = Ref{Union{Nothing,Tuple{Credentials,Float64}}}(nothing)
@@ -79,7 +86,13 @@ function sso_credentials(profile::AbstractString; exporter = run_export_credenti
         c = cached[]
         c !== nothing && c[2] - now() > SSO_REFRESH_MARGIN && return c[1]
         out = try
-            exporter(profile)
+            try
+                exporter(profile)
+            catch
+                (login && interactive()) || rethrow()
+                login_with(profile)
+                exporter(profile)
+            end
         catch e
             error("aws configure export-credentials --profile $profile failed: $(sprint(showerror, e))\nLog in with " *
                   "`aws sso login --profile $profile` (add --use-device-code if the browser cannot reach the authorize page).")
@@ -92,6 +105,36 @@ function sso_credentials(profile::AbstractString; exporter = run_export_credenti
         cached[] = (credentials, expiry)
         return credentials
     end
+end
+
+"""
+    sso_login(profile; device_code = false)
+
+Log in to the AWS CLI profile `profile` from Julia: runs `aws sso login --profile <profile>`
+— with `--use-device-code` when `device_code = true`, for a browser that cannot reach the
+authorize page — attached to this process's terminal, and returns `nothing` once the CLI
+succeeds. Raises when the CLI is not on `PATH` or exits non-zero. It opens a browser and
+blocks until the login completes, so it is always asked for: no ChainTables operation
+calls it, and [`sso_credentials`](@ref) does so only under `login = true` in an
+interactive session (ADR-0029).
+"""
+function sso_login(profile::AbstractString; device_code = false, runner = run_sso_login)
+    isempty(profile) && throw(ArgumentError("sso_login: profile must not be empty"))
+    cmd = device_code ? `aws sso login --profile $profile --use-device-code` : `aws sso login --profile $profile`
+    try
+        runner(cmd)
+    catch e
+        error("$(join(cmd.exec, ' ')) failed: $(sprint(showerror, e))")
+    end
+    return nothing
+end
+
+# The default runner: the CLI with this process's stdin, stdout and stderr, since the login
+# prints a URL and a code and waits.
+function run_sso_login(cmd::Cmd)
+    Sys.which("aws") === nothing && error("the AWS CLI (aws) is not on PATH")
+    run(cmd)
+    return nothing
 end
 
 const SSO_REFRESH_MARGIN = 300.0          # seconds before expiry at which the CLI is run again

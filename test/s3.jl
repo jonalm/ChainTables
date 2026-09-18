@@ -351,6 +351,54 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
         @test !occursin("secret", sprint(show, store))
     end
 
+    # ------------------------------------------------------------------------
+    # sso_login (ADR-0029, issue #63): `aws sso login` from Julia, always asked for. The
+    # runner is a fake; `sso_credentials(…; login = true)` logs in once, and only in an
+    # interactive session.
+    # ------------------------------------------------------------------------
+    @testset "sso_login: the command line, the failure; login = true retries once, interactively only" begin
+        ran = Cmd[]
+        @test S3T.sso_login("team"; runner = cmd -> push!(ran, cmd)) === nothing
+        @test S3T.sso_login("team"; device_code = true, runner = cmd -> push!(ran, cmd)) === nothing
+        @test [c.exec for c in ran] == [["aws", "sso", "login", "--profile", "team"],
+                                        ["aws", "sso", "login", "--profile", "team", "--use-device-code"]]
+        @test_throws "aws sso login --profile team failed: the AWS CLI (aws) is not on PATH" S3T.sso_login("team";
+            runner = _ -> error("the AWS CLI (aws) is not on PATH"))
+        @test_throws "aws sso login --profile team --use-device-code failed:" S3T.sso_login("team"; device_code = true,
+            runner = cmd -> run(`false`))
+        @test_throws "sso_login: profile must not be empty" S3T.sso_login("")
+        # login = true, interactive: an export failure logs in once and exports again
+        good = "AWS_ACCESS_KEY_ID=AKIA1\nAWS_SECRET_ACCESS_KEY=s3cret\n"
+        exports, logins = Ref(0), String[]
+        expired_once = _ -> (exports[] += 1) == 1 ? error("The SSO session has expired") : good
+        get_credentials = S3T.sso_credentials("team"; login = true, exporter = expired_once,
+                                              login_with = p -> push!(logins, p), interactive = () -> true)
+        @test get_credentials().access_key_id == "AKIA1" && exports[] == 2 && logins == ["team"]
+        @test get_credentials().access_key_id == "AKIA1" && exports[] == 2 && logins == ["team"]      # cached; no second login
+        # a second failure raises as without login, after exactly one login
+        empty!(logins)
+        still = S3T.sso_credentials("team"; login = true, exporter = _ -> error("The SSO session has expired"),
+                                    login_with = p -> push!(logins, p), interactive = () -> true)
+        @test_throws "aws sso login --profile team" still()
+        @test logins == ["team"]
+        # a failed login is reported, and the export is not run again
+        exports[] = 0
+        nologin = S3T.sso_credentials("team"; login = true, exporter = _ -> (exports[] += 1; error("expired")),
+                                      login_with = _ -> error("aws sso login --profile team failed: cancelled"), interactive = () -> true)
+        @test_throws "aws sso login --profile team failed: cancelled" nologin()
+        @test exports[] == 1
+        # not interactive: login = true changes nothing — it raises rather than block the run
+        empty!(logins)
+        batch = S3T.sso_credentials("team"; login = true, exporter = _ -> error("The SSO session has expired"),
+                                    login_with = p -> push!(logins, p), interactive = () -> false)
+        @test_throws "The SSO session has expired" batch()
+        @test isempty(logins)
+        # login = false, the default: never, interactive or not
+        default = S3T.sso_credentials("team"; exporter = _ -> error("expired"), login_with = p -> push!(logins, p), interactive = () -> true)
+        @test_throws "aws sso login --profile team" default()
+        @test isempty(logins)
+    end
+
     @testset "region: the keyword, else AWS_REGION, else AWS_DEFAULT_REGION, never guessed" begin
         withenv("AWS_REGION" => "us-east-1", "AWS_DEFAULT_REGION" => "us-west-2") do
             @test S3T.resolve_region("eu-north-1") == "eu-north-1"

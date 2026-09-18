@@ -204,18 +204,40 @@ page (some browsers block it), `aws sso login --use-device-code` works.
 
 ## Using it from Julia
 
-A writer logs in once per session with the AWS CLI and hands the session to `Chain` as a
-`credentials` callable:
+The bucket, its region, its gateway and the writer's profile are facts about this one
+deployment and must agree — the bucket and the gateway 1:1, the profile's permission set
+scoped to exactly that bucket and that function. Hold them as one `Bucket` value
+(ADR-0029), defined once in the package that uses the bucket, never in this repository:
+
+```julia
+const BUCKET = ChainTables.Bucket("<bucket>"; region = "<region>",
+                                  gateway = "https://<id>.lambda-url.<region>.on.aws", profile = "<profile>")
+```
+
+A writer logs in once per session, from a shell or from Julia, and builds chains from the
+value:
 
 ```sh
 aws sso login --profile <profile>            # --use-device-code if the browser cannot reach the authorize page
 ```
 
 ```julia
-credentials = ChainTables.sso_credentials("<profile>")
-chain = ChainTables.Chain(bucket, prefix; gateway = "https://<id>.lambda-url.<region>.on.aws",
-                          region, credentials)
+ChainTables.sso_login(BUCKET)                # the same command; sso_login(BUCKET; device_code = true) for the device flow
+chain = ChainTables.Chain(BUCKET, prefix)    # credentials = ChainTables.sso_credentials(BUCKET.profile)
 ```
+
+`Chain(BUCKET, prefix; kw...)` delegates to the long form,
+`Chain("<bucket>", prefix; gateway, region, credentials = ChainTables.sso_credentials("<profile>"))`,
+and passes every other `Chain` keyword through. `profile = "<mine>"` replaces the bucket's
+profile (profile names are local to each `~/.aws/config`), `credentials = …` replaces the
+profile altogether, and `region` and `gateway` are refused, being the bucket's to say. With
+a supplied `store` (`ChainTables.Testing.InMemoryObjectStore()`) the gateway is not
+forwarded, so a package's tests use its production `Bucket`.
+
+**Login is never triggered by an operation.** `sso_login` opens a browser and blocks, so it
+runs only when called. The one opt-in is `Chain(BUCKET, prefix; login = true)` (or
+`sso_credentials(profile; login = true)`): in an interactive session, an expired session
+logs in once and carries on; in a script or a job it raises as below rather than block.
 
 `sso_credentials` reads the CLI's own cache of the login through
 `aws configure export-credentials --profile <profile> --format env-no-export`, keeps the
@@ -231,8 +253,12 @@ ChainTables-specific. Any other credentials the CLI can export work the same way
 the `credentials` forms a plain bucket takes: a `ChainTables.Credentials`, or `nothing` for
 the `AWS_*` environment that `aws-vault exec` injects.
 
-The bucket is named once, the `region` must agree with the one in the URL, the author is
-fetched from STS at the first write, and a record over 4 MiB fails at commit before any call
-is made. The live gateway test (`test/gateway.jl`, run line in `test/runtests.jl`) is this
+The `region` must agree with the one in the URL, the author is fetched from STS at the
+first write, and a record over 4 MiB fails at commit before any call is made. A gateway
+fills the bucket of its own deployment whatever bucket the client names, so the client
+checks: after the gateway's `200` it stats the slot in the bucket it reads, and a `Bucket`
+pairing a bucket with another bucket's gateway raises `GatewayMismatchError` at the first
+`create_chain` or `commit!` instead of committing where nobody reads. The record that was
+written stays in the gateway's bucket, for its operator to look at. The live gateway test (`test/gateway.jl`, run line in `test/runtests.jl`) is this
 section end to end: it constructs the chain exactly like this and commits, races and is
 refused against the real bucket.

@@ -47,6 +47,7 @@ import ChainTables
     include("recovery.jl")
     include("s3.jl")
     include("gateway.jl")
+    include("bucket.jl")
     include("Testing.jl")
     include("readme.jl")
 end

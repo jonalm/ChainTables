@@ -53,14 +53,21 @@ end
 function GatewayObjectStore(bucket::AbstractString, function_url::AbstractString; region::AbstractString, credentials,
                             endpoint = nothing, path_style::Bool = false, timeout::Real = 60, sts_endpoint = nothing)
     s3 = S3ObjectStore(bucket; region, credentials, endpoint, path_style, timeout)
-    scheme, hostport = parse_endpoint(function_url; what = "gateway")
-    m = match(r"\.lambda-url\.([a-z0-9-]+)\.on\.aws$", hostport)
-    m === nothing || m.captures[1] == region || throw(ArgumentError("Chain: region $(repr(String(region))) disagrees " *
-        "with the region in the function URL host $(repr(hostport)), $(repr(m.captures[1])); SigV4 signs the region, " *
-        "so the two must agree — pass the region the gateway is deployed in"))
-    base = scheme * "://" * hostport
+    base, hostport = gateway_base(function_url, region)
     sts = sts_endpoint === nothing ? "https://sts.$region.amazonaws.com" : join(parse_endpoint(sts_endpoint; what = "sts_endpoint"), "://")
     return GatewayObjectStore(s3, base, hostport, base, sts, Float64(timeout), nothing, nothing)
+end
+
+# The function URL as `scheme://host[:port]` and its host, refused when it has any other
+# shape or when its `*.lambda-url.<region>.on.aws` host names another region than `region`
+# (`nothing`: not known yet, not checked). Shared with `Bucket` (bucket.jl, ADR-0029).
+function gateway_base(function_url::AbstractString, region)
+    scheme, hostport = parse_endpoint(function_url; what = "gateway")
+    m = match(r"\.lambda-url\.([a-z0-9-]+)\.on\.aws$", hostport)
+    (region === nothing || m === nothing || m.captures[1] == region) || throw(ArgumentError("Chain: region " *
+        "$(repr(String(region))) disagrees with the region in the function URL host $(repr(hostport)), " *
+        "$(repr(m.captures[1])); SigV4 signs the region, so the two must agree — pass the region the gateway is deployed in"))
+    return scheme * "://" * hostport, hostport
 end
 
 Base.show(io::IO, s::GatewayObjectStore) = print(io, "GatewayObjectStore(", repr(s.s3.bucket), ", ", repr(s.function_url),
@@ -150,7 +157,7 @@ as the body — the gateway adds `If-None-Match: *` under its own role. The repl
 
 | gateway / Lambda reply | result |
 |---|---|
-| `200` | `PutOutcome(true, 200)` |
+| `200` | `PutOutcome(true, 200)`, once a stat finds the key in this store's bucket; else `GatewayMismatchError` (ADR-0029) |
 | `412` (`slot_taken`) | `PutOutcome(false, 412)` — the read-back decides, as on S3 |
 | `403` with a gateway `code` | [`WriteRefusedError`](@ref) with `reason = code` |
 | `403` without one | [`WriteRefusedError`](@ref) with `reason = "forbidden"` |
@@ -170,7 +177,7 @@ function put_object_if_absent(store::GatewayObjectStore, key::AbstractString, by
     url = store.base * "/" * query_string(query)
     response = http_request(url, "PUT", headers, body, store.timeout)
     status = response.status
-    status == 200 && return PutOutcome(true, 200)
+    status == 200 && return created_in_our_bucket(store, String(key))
     status == 412 && return PutOutcome(false, 412)
     code, message = gateway_reply(response.body)
     if status == 403
@@ -179,6 +186,19 @@ function put_object_if_absent(store::GatewayObjectStore, key::AbstractString, by
     end
     detail = code === nothing ? "" : " " * code * (message === nothing ? "" : ": " * message)
     throw(TransportError("PUT $url: HTTP $status$detail"; status))     # 409, 429 and 5xx among them, which the commit layer retries
+end
+
+# A gateway's `200 created` is believed only once the bucket this store reads holds the
+# key (ADR-0029): a gateway fills the bucket of its own deployment, whatever bucket the
+# client named, so a mispaired bucket and gateway would otherwise commit into a bucket
+# nobody reads, in silence. One stat per commit; S3 is read-after-write consistent.
+function created_in_our_bucket(store::GatewayObjectStore, key)
+    stat_object(store.s3, key) === nothing || return PutOutcome(true, 200)
+    bucket = store.s3.bucket
+    throw(GatewayMismatchError("gateway mismatch: the gateway at $(store.base) answered 200 created for $key, and bucket " *
+        "$bucket does not hold it: this gateway fills another bucket than the one this chain reads. The record now sits " *
+        "in the gateway's own bucket and nothing removes it. Pair the bucket with its own gateway — one " *
+        "ChainTables.Bucket value holds both (ADR-0029) — and commit again."; key, bucket, gateway = store.base))
 end
 
 # The refusal's message (ADR-0020's three parts): what happened, the evidence, the next

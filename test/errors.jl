@@ -1,4 +1,4 @@
-# ADR-0020 — the taxonomy: fifteen types under one supertype, each with `msg` and its evidence as
+# ADR-0020 — the taxonomy: sixteen types under one supertype, each with `msg` and its evidence as
 # keyword fields defaulting to nothing. Every type is provoked, with @test_throws "<message>", in
 # the test file of the lane that raises it (localcopy.jl, ops.jl, builder.jl, chain.jl, recovery.jl,
 # gateway.jl); the one step 9 raises — UnsupportedStoreError — is checked by construction here.
@@ -9,6 +9,7 @@
         ChainTables.UnsupportedStoreError, ChainTables.RewrittenChainError, ChainTables.ChainNotFoundError,
         ChainTables.NotALocalCopyError, ChainTables.LayoutVersionError, ChainTables.WrongChainError,
         ChainTables.LocalCopyInconsistentError, ChainTables.MalformedRecordError, ChainTables.WriteRefusedError,
+        ChainTables.GatewayMismatchError,
     )
         @test T <: ChainTables.ChainTablesError
         @test ChainTables.ChainTablesError <: Exception
@@ -38,5 +39,8 @@
     @test (e.chain_id, e.slot, e.key, e.caller, e.reason) == ("A"^26, 4, "p/000000000004", "alice@example.com", "not_allowed")
     @test fieldnames(ChainTables.WriteRefusedError) == (:msg, :chain_id, :slot, :key, :caller, :reason)
     @test !ChainTables.retryable(e)
+    # a gateway filling another bucket than the chain reads (ADR-0029): the pair as evidence, never retried
+    e = ChainTables.GatewayMismatchError("gateway mismatch"; key = "p/000000000004", bucket = "bkt", gateway = "https://gw")
+    @test (e.key, e.bucket, e.gateway) == ("p/000000000004", "bkt", "https://gw") && !ChainTables.retryable(e)
     @test isabstracttype(ChainTables.AbstractObjectStore)
 end

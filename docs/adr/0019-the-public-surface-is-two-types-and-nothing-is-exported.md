@@ -32,6 +32,11 @@ behaviour. This paragraph first forwarded `DBInterface.execute` and handed out
 the plain `SQLite.DB` under `PRAGMA query_only`; both left with SQLite
 (ADR-0022).
 
+**Amended by ADR-0029**: **`Bucket`** — a bucket's name, region, gateway and
+profile as one plain value — is the fourth type, and `Chain(bucket, prefix)` is
+a method on the constructor above that delegates to it. The values that must
+agree about one deployment are what `Chain`'s loose keywords could not express.
+
 Two more types exist for values, not for behaviour: **`TransactionHash`** and
 **`StateFingerprint`**, each 32 bytes, shown as hex. They are the two things the
 glossary works hardest to keep apart and they are structurally identical, so

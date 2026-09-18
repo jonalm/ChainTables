@@ -526,6 +526,40 @@ end
     end
 
     # ------------------------------------------------------------------------
+    # A mispaired bucket and gateway (ADR-0029, issue #63): the gateway fills the bucket of
+    # its own deployment, so its 200 is believed only once the bucket this chain reads
+    # holds the slot. Without that the commit would succeed into a bucket nobody reads.
+    # ------------------------------------------------------------------------
+    @testset "a gateway that fills another bucket: GatewayMismatchError, not a silent commit" begin
+        ours = S3TestServer(; bucket = "bkt", credentials = GWTEST_CREDS)
+        theirs = S3TestServer(; bucket = "other", credentials = GWTEST_CREDS)
+        double = GatewayDouble(theirs, GWTEST_CREDS, "eu-north-1", "alice@example.com", ["exp" => ["alice@example.com"]], _ -> nothing)
+        gw = LoopbackServer(double)
+        sts = LoopbackServer(gwtest_sts(GWTEST_CREDS, "eu-north-1", GWTEST_ARN))
+        mktempdir() do dir
+            try
+                store = GatewayObjectStore("bkt", loopback_url(gw); region = "eu-north-1", credentials = GWTEST_CREDS,
+                                           endpoint = s3test_endpoint(ours), path_style = true, sts_endpoint = loopback_url(sts))
+                key = "exp/run-1/000000000000"
+                @test_throws GWT.GatewayMismatchError put_object_if_absent(store, key, gwtest_record("alice@example.com"))
+                @test haskey(theirs.objects, key) && !haskey(ours.objects, key)
+                chain = Chain("bkt", "exp/run-2"; store, cache_dir = joinpath(dir, "cache"), assume_first_writer_wins = true)
+                e = try GWT.create_chain(chain); nothing catch e; e end
+                @test e isa GWT.GatewayMismatchError && !GWT.retryable(e)
+                @test (e.slot, e.key, e.bucket, e.gateway) == (0, "exp/run-2/000000000000", "bkt", loopback_url(gw))
+                @test e.chain_id isa String
+                msg = sprint(showerror, e)
+                @test occursin("gateway mismatch for slot 0 of chain $(e.chain_id)", msg)
+                @test occursin("answered 200 created for exp/run-2/000000000000, and bucket bkt does not hold it", msg)
+                @test occursin("one ChainTables.Bucket value holds both (ADR-0029)", msg)
+                @test count(r -> r.method == "PUT", gw.requests) == 2                      # never retried
+            finally
+                close(gw); close(sts); close(ours); close(theirs)
+            end
+        end
+    end
+
+    # ------------------------------------------------------------------------
     # Live gateway (issue #60): the one test only AWS can answer for ADR-0028. Skipped
     # without CHAINTABLES_GATEWAY_URL; the other variables are then required, no defaults —
     # the run line is in test/runtests.jl. Under an `aws sso login` session it creates a

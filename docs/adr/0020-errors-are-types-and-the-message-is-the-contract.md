@@ -26,12 +26,15 @@ function to call, where there is one.
 | `LocalCopyInconsistentError` | open, load | a damaged copy — a head not self-consistent, or a table file whose bytes do not hash to its name: `repair!(copy)`; no readable head: delete the directory and sync |
 | `MalformedRecordError` | apply | none under this format version: the committer had a bug, the chain is dead beyond that slot (ADR-0025) |
 | `WriteRefusedError` | commit, create_chain | stop and have a person act: the bucket's operator adds the name to the gateway policy or grants the writer permission set, or a mismatch is reported as a bug — `reason` says which (ADR-0028) |
+| `GatewayMismatchError` | commit, create_chain | the gateway fills another bucket than the one this chain reads: pair the bucket with its own gateway, as one `Bucket` (ADR-0029) |
 
 ADR-0023 and ADR-0014 both close by saying each failure must be
 *distinguishable* and that the names were issue #16's. This is that list
 (`ForeignLibraryError`, once here, left with ADR-0022; `WriteRefusedError`
 added by ADR-0028 for a gateway bucket's refusal, one type with a `reason`
-field because the caller's branch is the same for every reason).
+field because the caller's branch is the same for every reason;
+`GatewayMismatchError` added by ADR-0029, a type of its own because nothing was
+refused and the next move is the configuration's).
 
 ## Why types at all, when the message is the target
 

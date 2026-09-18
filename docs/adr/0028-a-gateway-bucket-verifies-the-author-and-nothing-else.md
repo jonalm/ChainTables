@@ -138,7 +138,11 @@ ChainTables.Chain(bucket, prefix; gateway = function_url, region, credentials, �
 
 `Chain` builds a `GatewayObjectStore` from its own bucket, region, credentials,
 endpoint and path-style flag, so the bucket is named once and cannot mismatch
-the gateway's. `gateway` together with `store` is an `ArgumentError` (two
+the gateway's. **Amended by ADR-0029**: that holds for the store and not for the
+deployment — a gateway fills the bucket of its own environment whatever the
+client named — so a `200` is believed only after a stat finds the slot in the
+bucket the chain reads, else `GatewayMismatchError`; and the bucket, region,
+gateway and profile are held as one `Bucket` value, `Chain(bucket, prefix)`. `gateway` together with `store` is an `ArgumentError` (two
 stores), as is a `region` that disagrees with the one in the function URL's
 host. The store type exists for dispatch and tests; users do not build it.
 
@@ -247,6 +251,10 @@ the plain store's behaviour is unchanged. This amends ADR-0010's retry rule.
   nothing about it is gateway-specific, and it is in the package rather than a
   documented snippet because the refresh margin and the expiry's timezone are
   what a copied snippet gets wrong, and both test without AWS.
+- **Amended by ADR-0029**: `sso_login(profile)` runs `aws sso login` from
+  Julia, beside `sso_credentials`. The CLI still logs in; no operation ever
+  triggers it, and `sso_credentials(profile; login = true)` does so only in an
+  interactive session.
 - **The author is only as stable as the session name.** Should AWS change what
   Identity Center puts in the role session name, both sides move together
   (they apply one rule to one ARN), but existing records would carry the old

@@ -36,6 +36,7 @@ one performs no I/O.
   keys are absent; a [`Credentials`](@ref) is taken as is; a callable returning one is
   called before every request, so a long-lived reader outlives an aws-vault session.
   [`sso_credentials(profile)`](@ref) is that callable over an `aws sso login` session.
+  [`Chain(bucket::Bucket, prefix)`](@ref Bucket) builds it from the bucket's profile.
 - `endpoint`, `path_style`: the S3 client's URL. `endpoint = nothing` is AWS; an endpoint
   whose host is not `.amazonaws.com` / `.amazonaws.com.cn` warns at `open` and refuses
   at `commit!` (ADR-0016).
@@ -72,9 +73,7 @@ function Chain(bucket::AbstractString, prefix::AbstractString;
                store = nothing, gateway = nothing, region = nothing, credentials = nothing, endpoint = nothing,
                path_style = false, assume_first_writer_wins = false, read_ahead = 8, cache_dir = default_cache_dir(),
                record_host = true, record_user = true)
-    isempty(bucket) && throw(ArgumentError("Chain: the bucket name is empty"))
-    '.' in bucket && throw(ArgumentError("Chain: bucket name $(repr(bucket)) contains a dot, which breaks certificate " *
-        "matching under the virtual-hosted URL ChainTables builds (ADR-0010); use a bucket without one"))
+    check_bucket_name(bucket)
     (startswith(prefix, "/") || endswith(prefix, "/")) && throw(ArgumentError(
         "Chain: prefix $(repr(prefix)) begins or ends with '/'; a slot key is <prefix>/<12 digits>, so give the prefix without them"))
     read_ahead >= 1 || throw(ArgumentError("Chain: read_ahead is $read_ahead; at least 1 record is fetched ahead"))
@@ -97,6 +96,14 @@ function Chain(bucket::AbstractString, prefix::AbstractString;
     return Chain{typeof(store)}(String(bucket), String(prefix), region === nothing ? nothing : String(region), credentials,
                                 endpoint === nothing ? nothing : String(endpoint), path_style, assume_first_writer_wins,
                                 Int(read_ahead), RecordCache(; dir = cache_dir), store, record_host, record_user)
+end
+
+# The bucket-name rules, shared with `Bucket` (bucket.jl, ADR-0029).
+function check_bucket_name(bucket::AbstractString)
+    isempty(bucket) && throw(ArgumentError("Chain: the bucket name is empty"))
+    '.' in bucket && throw(ArgumentError("Chain: bucket name $(repr(bucket)) contains a dot, which breaks certificate " *
+        "matching under the virtual-hosted URL ChainTables builds (ADR-0010); use a bucket without one"))
+    return nothing
 end
 
 Base.show(io::IO, c::Chain) = print(io, "Chain(", repr(c.bucket), ", ", repr(c.prefix), "; store = ", nameof(typeof(c.store)), ")")
@@ -182,12 +189,19 @@ function refused_for(e::WriteRefusedError, chain::Chain, chain_id, slot)
     return WriteRefusedError(msg; chain_id, slot, key, e.caller, e.reason)
 end
 
-# `put_record!`, with a gateway's refusal enriched for the chain and the slot.
+# The same for a gateway that fills another bucket than the chain's (ADR-0029).
+function refused_for(e::GatewayMismatchError, chain::Chain, chain_id, slot)
+    key = something(e.key, slot_key(chain, slot))
+    msg = "gateway mismatch for slot $slot of chain $chain_id at $(location(chain)): " * chopprefix(e.msg, "gateway mismatch: ")
+    return GatewayMismatchError(msg; chain_id, slot, key, e.bucket, e.gateway)
+end
+
+# `put_record!`, with a gateway's refusal or mismatch enriched for the chain and the slot.
 function put_record_for!(chain::Chain, chain_id, slot, bytes)
     try
         return put_record!(chain.store, chain.cache, chain.bucket, slot_key(chain, slot), bytes)
     catch e
-        e isa WriteRefusedError ? throw(refused_for(e, chain, chain_id, slot)) : rethrow()
+        e isa Union{WriteRefusedError,GatewayMismatchError} ? throw(refused_for(e, chain, chain_id, slot)) : rethrow()
     end
 end
 

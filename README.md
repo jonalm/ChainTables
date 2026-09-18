@@ -102,20 +102,33 @@ On a plain bucket every writer holds `PutObject`, and a record's author is
 whatever the client wrote. A **gateway bucket** ([ADR-0028](docs/adr/0028-a-gateway-bucket-verifies-the-author-and-nothing-else.md))
 has one writer, a Lambda function behind a function URL, that fills a slot only
 after checking that the caller may write under the chain's prefix and that the
-record's author *is* the caller. Reads stay direct. The chain is the same; the
-store is chosen by one keyword, and the credentials are an `aws sso login`
-session handed over as a callable:
+record's author *is* the caller. Reads stay direct. The chain is the same. The
+bucket, its region, its gateway and the AWS CLI profile that reaches it are
+facts about one deployment that must agree, so they are one value, a `Bucket`
+([ADR-0029](docs/adr/0029-a-bucket-value-pairs-what-must-agree-and-login-is-always-asked-for.md)),
+and the credentials are that profile's `aws sso login` session:
 
 ```julia
-credentials = ChainTables.sso_credentials("my-profile")   # after: aws sso login --profile my-profile
-chain = ChainTables.Chain("my-gateway-bucket", "experiments/run-7";
-                          gateway = "https://<id>.lambda-url.eu-north-1.on.aws",
-                          region = "eu-north-1", credentials)
+const BUCKET = ChainTables.Bucket("<bucket>"; region = "<region>",
+                                  gateway = "https://<id>.lambda-url.<region>.on.aws",
+                                  profile = "<profile>")
+ChainTables.sso_login(BUCKET)                 # aws sso login --profile <profile>; always asked for, never implicit
+chain = ChainTables.Chain(BUCKET, "experiments/run-7")
 ```
 
+A `Bucket` is plain data: no I/O, no credentials, printable, loadable from a
+TOML file; keep the real values in your own package, not in a script. Every
+`Chain` keyword passes through (`profile` and `credentials` override the
+bucket's profile; `region` and `gateway` are the bucket's and are refused), and
+with `store = Testing.InMemoryObjectStore()` the gateway is left out, so tests
+run against the same value. The long form,
+`Chain(name, prefix; gateway, region, credentials = ChainTables.sso_credentials(profile))`,
+is what it delegates to.
+
 Everything else in the worked example is unchanged, except that a refused
-write raises `WriteRefusedError` naming its reason, and a record is capped at
-4 MiB. Deploying the gateway, the IAM contract a writer or reader must satisfy,
+write raises `WriteRefusedError` naming its reason, a gateway that fills another
+bucket than the one named raises `GatewayMismatchError` instead of committing
+out of sight, and a record is capped at 4 MiB. Deploying the gateway, the IAM contract a writer or reader must satisfy,
 the policy config, how the author name is derived and how a writer is
 onboarded are in [`docs/gateway-setup.md`](docs/gateway-setup.md); the code is
 under [`gateway/`](gateway/README.md).

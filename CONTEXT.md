@@ -223,6 +223,44 @@ chain: a chain copied to a plain bucket is the same chain.
 _Avoid_: server, proxy, API, write service, gatekeeper, authoriser
 _See_: [ADR-0028](docs/adr/0028-a-gateway-bucket-verifies-the-author-and-nothing-else.md)
 
+**Bucket**:
+Where chains live: one S3 bucket holds many chains, each under its own prefix. A
+*plain bucket* is written by its clients directly; a *gateway bucket* is written
+only by its gateway, and the two pair one to one. Also the value a client
+describes one with — the bucket's name, its region, its gateway if it has one,
+and the profile this client reaches it with — held as one value because those
+are facts about one deployment that must agree. The value is plain data: it
+holds no credentials and does no I/O, and its contents belong to whoever owns
+the deployment, never to ChainTables.
+_Avoid_: site, deployment, chain config, store (that is the object store),
+environment
+_See_: [ADR-0029](docs/adr/0029-a-bucket-value-pairs-what-must-agree-and-login-is-always-asked-for.md)
+
+**Profile**:
+The name of an AWS CLI profile, local to one user's machine, whose login yields
+the credentials a client signs with. Its rights are scoped to one bucket and, on
+a gateway bucket, to that bucket's gateway. A name and never credentials: it is
+resolved when a chain is built.
+_Avoid_: account, user, credentials, role, permission set (that is what the
+profile's login is granted, on the AWS side)
+_See_: [ADR-0029](docs/adr/0029-a-bucket-value-pairs-what-must-agree-and-login-is-always-asked-for.md)
+
+**Login**:
+Starting the AWS CLI session a profile's credentials come from. The CLI does it,
+it opens a browser and blocks, and it is always asked for: no sync, commit or
+read ever triggers one, and an expired session raises instead.
+_Avoid_: sign-in (that is the identity provider's gate), authentication,
+refresh (that is re-reading a live session's credentials, which needs no login)
+_See_: [ADR-0029](docs/adr/0029-a-bucket-value-pairs-what-must-agree-and-login-is-always-asked-for.md)
+
+**Gateway mismatch**:
+A bucket described with another bucket's gateway: the gateway fills its own
+bucket and the client reads the one it named. It is a mistake in the description,
+never in the chain, and it is raised at the first write rather than committed
+out of sight.
+_Avoid_: misconfiguration, wrong bucket, split write
+_See_: [ADR-0029](docs/adr/0029-a-bucket-value-pairs-what-must-agree-and-login-is-always-asked-for.md)
+
 **Assumed guarantee**:
 A promise about the environment that ChainTables cannot check, which a user makes on
 its behalf by setting a named field. It lets a client commit where the software

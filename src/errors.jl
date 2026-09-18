@@ -266,6 +266,26 @@ end
 WriteRefusedError(msg; chain_id = nothing, slot = nothing, key = nothing, caller = nothing, reason = nothing) =
     WriteRefusedError(msg, chain_id, slot, key, caller, reason)
 
+"""
+    GatewayMismatchError(msg; chain_id, slot, key, bucket, gateway)
+
+Raised by `commit!` and `create_chain` on a gateway bucket: the gateway answered
+`200 created` and the bucket this chain reads does not hold the slot — the gateway fills
+another bucket than the one named (ADR-0029). Nothing is retried, and the record now sits
+in the gateway's own bucket, where no delete can reach it. The next move is the
+configuration's: pair the bucket with its own gateway, as one [`Bucket`](@ref) value.
+"""
+struct GatewayMismatchError <: ChainTablesError
+    msg::String
+    chain_id::MaybeString
+    slot::MaybeInt
+    key::MaybeString
+    bucket::MaybeString
+    gateway::MaybeString
+end
+GatewayMismatchError(msg; chain_id = nothing, slot = nothing, key = nothing, bucket = nothing, gateway = nothing) =
+    GatewayMismatchError(msg, chain_id, slot, key, bucket, gateway)
+
 # The message is the contract (ADR-0020): every type shows as its message, so a
 # `@test_throws "…"` matches the text a user reads.
 Base.showerror(io::IO, e::ChainTablesError) = print(io, nameof(typeof(e)), ": ", e.msg)
