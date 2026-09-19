@@ -160,7 +160,23 @@ under any prefix a plain one does, and a deployment that wants a naming conventi
 in the policy file's globs (ADR-0031). The gateway writes no tags; the retention date is
 S3's own (`GetObjectRetention`). The execution role also needs `s3:PutObjectRetention` and
 `kms:GenerateDataKey` on the key, and every reader `kms:Decrypt`; `deploy.sh` grants none of
-those, the bucket's own setup does. COMPLIANCE retention cannot be shortened by anyone,
+those.
+
+`gateway/setup-locked-bucket.sh` establishes all of it, and is as generic and idempotent as
+`deploy.sh`, which it runs: the key and its policy, the bucket with Object Lock and default
+SSE-KMS, the gateway with the two variables, the role's extra grants, and the deny statements
+merged into the bucket policy by `Sid`. It then reads the configuration back and proves a
+bare `PutObject` is denied. `--print-policies` shows the three policies without an AWS call.
+
+```sh
+AWS_PROFILE=<admin profile> gateway/setup-locked-bucket.sh \
+    --account <id> --region <region> --bucket <bucket> --function <function> --role <role> \
+    --alias alias/<key alias> --retention-days <n> --policy <private dir>/policy.json \
+    --permission-set <readers' permission set> --out <private dir>/<bucket>.env
+```
+
+Object Lock can only be enabled when a bucket is created, so the script refuses an existing
+bucket without it. COMPLIANCE retention cannot be shortened by anyone,
 including the account root, until it expires.
 
 ## Deploying

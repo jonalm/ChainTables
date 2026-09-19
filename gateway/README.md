@@ -16,6 +16,7 @@ the checks and status codes are listed at the top of [`handler.py`](handler.py).
 | `pyproject.toml`, `uv.lock` | dependencies, pinned exactly (`cbor2`, `boto3`) |
 | `build.sh` | produces the deployment zip |
 | `deploy.sh` | creates or updates the bucket, execution role, function, URL and bucket policy |
+| `setup-locked-bucket.sh` | a locked bucket around `build.sh` + `deploy.sh`: KMS key, Object Lock, the deny statements, the role's extra grants |
 
 ## Tests
 
