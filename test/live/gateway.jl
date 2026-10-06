@@ -33,15 +33,15 @@ end
 
 @testset "live gateway" begin
     config = LIVE_CONFIG[:gateway]
-    b = Bucket(config.bucket; config.region, gateway = config.url, config.profile)
-    bucket = b.name
+    gwbucket = Bucket(config.bucket; config.region, gateway = config.url, config.profile)
+    bucket = gwbucket.name
     listed = config.prefix                       # a prefix the policy lists the caller under
     unlisted = config.unlisted_prefix            # one it does not
     run = bytes2hex(rand(UInt8, 8))
     prefix = "$listed/$run"
     mktempdir() do dir
         cache_dir = joinpath(dir, "cache")
-        chain = Chain(b, prefix; cache_dir)
+        chain = Chain(gwbucket, prefix; cache_dir)
         @test chain isa Chain{GatewayObjectStore} && GWT.is_aws(chain.store)
         store = chain.store
         # the author: the session name of the SSO role from STS, under the session's own key
@@ -82,7 +82,7 @@ end
         # the lost race: a's record lands while c's put is in flight (after c's preflight); c
         # gets slot_taken, reads a's record back, and loses; its head and files stand
         racing = RacingGateway(store, _ -> nothing)
-        c = GWT.open(Chain(b, prefix; store = racing, cache_dir), joinpath(dir, "c"))
+        c = GWT.open(Chain(gwbucket, prefix; store = racing, cache_dir), joinpath(dir, "c"))
         @test GWT.sync!(c).slot == 1
         wa = GWT.write_builder(a)
         GWT.insert_rows!(wa, :samples, [(id = 3, note = "from a")])
@@ -103,7 +103,7 @@ end
         @test occursin("author_mismatch: the record names '$author.impostor' as client.user but the caller is '$author'", sprint(showerror, e))
         @test stat_object(store, key3) === nothing
         # a chain under a prefix the policy does not list the caller under: not_allowed at slot 0
-        denied = Chain(b, "$unlisted/$run"; cache_dir)
+        denied = Chain(gwbucket, "$unlisted/$run"; cache_dir)
         e = try GWT.create_chain(denied); nothing catch e; e end
         @test e isa WriteRefusedError && e.reason == "not_allowed" && e.slot == 0 && e.caller == author
         @test e.key == GWT.slot_key(denied, 0) && stat_object(denied.store, e.key) === nothing
