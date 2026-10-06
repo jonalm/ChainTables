@@ -42,3 +42,6 @@ examples/tmpdata/*
 /gateway/policy.json
 /gateway/.pytest_cache/
 __pycache__/
+
+# local, deployment-specific examples and tutorials
+examples/
