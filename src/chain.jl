@@ -250,6 +250,21 @@ function create_chain(chain::Chain)
     return (; chain_id = cid, slot = 0, transaction_hash = TransactionHash(Ops.transaction_hash(bytes)))
 end
 
+
+"""
+    try_create_chain(chain) -> (; chain_id, slot, transaction_hash)
+
+runs `create_chain(chain)`, returns `nothing` if chain already created
+"""
+function try_create_chain(chain::Chain)
+    try 
+        create_chain(chain)  
+    catch e
+        isa(e, LostRaceError) || rethrow(e)
+    end
+end
+
+
 # ---------------------------------------------------------------------------
 # sync! (ADR-0013, ADR-0012, ADR-0014)
 # ---------------------------------------------------------------------------
