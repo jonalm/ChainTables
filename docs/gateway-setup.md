@@ -182,15 +182,19 @@ carries SSE-KMS with that key (bucket key on), `COMPLIANCE` retention until now 
 SHA-256 checksum of the body. Locking adds no rule about keys: a locked bucket takes a slot
 under any prefix a plain one does, and a deployment that wants a naming convention states it
 in the policy file's globs (ADR-0031). The gateway writes no tags; the retention date is
-S3's own (`GetObjectRetention`). The execution role also needs `s3:PutObjectRetention` and
-`kms:GenerateDataKey` on the key, and every reader `kms:Decrypt`; `deploy.sh` grants none of
-those.
+S3's own (`GetObjectRetention`). Nobody may call `DeleteObject`: Object Lock allows one
+without a version id, which adds a delete marker, and the slot would then read as absent and
+be filled again. Break glass by editing the bucket policy. For the same reason a locked
+bucket must have no lifecycle rule that expires current versions (ADR-0038). The execution
+role also needs `s3:PutObjectRetention` and `kms:GenerateDataKey` on the key, and every reader
+`kms:Decrypt`; `deploy.sh` grants none of those.
 
 `gateway/setup-locked-bucket.sh` establishes all of it, and is as generic and idempotent as
 `deploy.sh`, which it runs: the key and its policy, the bucket with Object Lock and default
 SSE-KMS, the gateway with the two variables, the role's extra grants, and the deny statements
 merged into the bucket policy by `Sid`. It then reads the configuration back, compares
-every bucket policy statement with what it put, and proves a bare `PutObject` is denied.
+every bucket policy statement with what it put, refuses a lifecycle rule that expires
+current versions, and proves a bare `PutObject` and a `DeleteObject` are denied.
 Re-run it, not `deploy.sh`, to redeploy a locked bucket's gateway. `--print-policies` shows
 the three policies without an AWS call.
 

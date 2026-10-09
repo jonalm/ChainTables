@@ -50,8 +50,14 @@
 #        DenyWrongKey / DenyNoKeyHeader      PutObject unless ...-aws-kms-key-id = the key ARN
 #        DenyNoRetainUntil                   PutObject unless x-amz-object-lock-retain-until-date is set
 #        DenyNotCompliance / DenyNoLockMode  PutObject unless x-amz-object-lock-mode = COMPLIANCE
+#        DenyDeleteMarkers                   DeleteObject, for every principal
 #      (StringNotEquals and Null are separate statements on purpose: a missing header
 #      must be denied under either evaluation rule, and two keys in one Null block AND.)
+#      A DeleteObject without a version id is allowed by Object Lock: it adds a delete
+#      marker, after which the slot reads as absent and the gateway fills it again. The
+#      deny has no exception; break glass by editing the bucket policy (ADR-0038). For the
+#      same reason the verification refuses a lifecycle rule that expires current
+#      versions, which adds the same markers and which no bucket policy can deny.
 #
 # Per-object contract the writer (the gateway, the bucket's only PutObject principal)
 # satisfies in its locked-bucket mode; a put without it is refused by S3 (502 s3_refused):
@@ -151,8 +157,9 @@ bucket_policy() {  # $1 key ARN, $2 existing bucket policy JSON (statements kept
 import json, sys
 bucket_arn, key_arn, existing = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])
 objects = f"{bucket_arn}/*"
-def deny(sid, action, resource, condition):
-    return {"Sid": sid, "Effect": "Deny", "Principal": "*", "Action": action, "Resource": resource, "Condition": condition}
+def deny(sid, action, resource, condition=None):
+    st = {"Sid": sid, "Effect": "Deny", "Principal": "*", "Action": action, "Resource": resource}
+    return st if condition is None else {**st, "Condition": condition}
 ours = [
     deny("DenyInsecureTransport", "s3:*", [bucket_arn, objects], {"Bool": {"aws:SecureTransport": "false"}}),
     deny("DenyNotKms", "s3:PutObject", objects, {"StringNotEquals": {"s3:x-amz-server-side-encryption": "aws:kms"}}),
@@ -162,6 +169,7 @@ ours = [
     deny("DenyNoRetainUntil", "s3:PutObject", objects, {"Null": {"s3:object-lock-retain-until-date": "true"}}),
     deny("DenyNotCompliance", "s3:PutObject", objects, {"StringNotEquals": {"s3:object-lock-mode": "COMPLIANCE"}}),
     deny("DenyNoLockMode", "s3:PutObject", objects, {"Null": {"s3:object-lock-mode": "true"}}),
+    deny("DenyDeleteMarkers", "s3:DeleteObject", objects),
 ]
 mine = {s["Sid"] for s in ours}
 kept = [s for s in existing.get("Statement", []) if s.get("Sid") not in mine]
@@ -303,7 +311,8 @@ expect("bucket key", enc.get("BucketKeyEnabled"), True)
 policy = json.loads(get("get-bucket-policy")["Policy"])
 statements = {s.get("Sid"): s for s in policy["Statement"]}
 for sid in ("GatewayPuts", "OnlyTheGatewayPuts", "DenyInsecureTransport", "DenyNotKms", "DenyNoSseHeader",
-            "DenyWrongKey", "DenyNoKeyHeader", "DenyNoRetainUntil", "DenyNotCompliance", "DenyNoLockMode"):
+            "DenyWrongKey", "DenyNoKeyHeader", "DenyNoRetainUntil", "DenyNotCompliance", "DenyNoLockMode",
+            "DenyDeleteMarkers"):
     if sid not in statements:
         problems.append(f"bucket policy lacks statement {sid}")
 # Content, not only presence: every statement just put must read back as it was sent.
@@ -312,9 +321,20 @@ for s in desired["Statement"]:
         expect(f"bucket policy statement {s['Sid']}", statements[s["Sid"]], s)
 if "GatewayPuts" in statements:
     expect("GatewayPuts principal", statements["GatewayPuts"]["Principal"].get("AWS"), role_arn)
+# A lifecycle rule that expires current versions adds delete markers, which the bucket
+# policy cannot deny (ADR-0038); expiring noncurrent versions or old markers is harmless.
+lc = subprocess.run(["aws", "s3api", "get-bucket-lifecycle-configuration", "--bucket", bucket, "--output", "json"],
+                    capture_output=True, text=True)
+if lc.returncode == 0:
+    for rule in json.loads(lc.stdout).get("Rules", []):
+        exp = rule.get("Expiration", {})
+        if rule.get("Status") == "Enabled" and ("Days" in exp or "Date" in exp):
+            problems.append(f"lifecycle rule {rule.get('ID')!r} expires current versions, which hides slots behind delete markers")
+elif "NoSuchLifecycleConfiguration" not in lc.stderr:
+    problems.append(f"reading the lifecycle configuration failed: {lc.stderr.strip()}")
 if problems:
     sys.exit("setup-locked-bucket.sh: configuration drifts from the spec:\n  " + "\n  ".join(problems))
-print("   ok: public access, ownership, versioning, Object Lock, SSE-KMS, bucket policy")
+print("   ok: public access, ownership, versioning, Object Lock, SSE-KMS, bucket policy, lifecycle")
 PY
 say "probing: a bare PutObject as $caller_arn must be denied"
 probe_body="$(mktemp)"
@@ -327,6 +347,14 @@ else
     die "the probe failed for a reason other than AccessDenied: $probe"
 fi
 rm -f "$probe_body"
+say "probing: a DeleteObject as $caller_arn must be denied (it would add a delete marker)"
+if probe="$(aws s3api delete-object --bucket "$bucket" --key "probe/$(date -u +%s)" 2>&1)"; then
+    die "a DeleteObject succeeded; DenyDeleteMarkers is not in force: $probe"
+elif echo "$probe" | grep -q AccessDenied; then
+    echo "   ok: AccessDenied"
+else
+    die "the delete probe failed for a reason other than AccessDenied: $probe"
+fi
 
 # ---------------------------------------------------------------------------- 7. facts
 facts() {

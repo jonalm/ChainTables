@@ -62,11 +62,15 @@ def test_role_policy_grants_retention_on_the_bucket(policies):
 def test_bucket_policy_refuses_every_put_but_the_gateways_locked_kms_put(policies):
     s = by_sid(policies["bucket policy (bkt), merged onto what gateway/deploy.sh writes"])
     assert set(s) == {"GatewayPuts", "OnlyTheGatewayPuts", "DenyInsecureTransport", "DenyNotKms", "DenyNoSseHeader",
-                      "DenyWrongKey", "DenyNoKeyHeader", "DenyNoRetainUntil", "DenyNotCompliance", "DenyNoLockMode"}
+                      "DenyWrongKey", "DenyNoKeyHeader", "DenyNoRetainUntil", "DenyNotCompliance", "DenyNoLockMode",
+                      "DenyDeleteMarkers"}
     assert s["GatewayPuts"]["Principal"]["AWS"] == "arn:aws:iam::111122223333:role/gw-role"
     assert s["OnlyTheGatewayPuts"]["Condition"] == {"ArnNotEquals": {"aws:PrincipalArn": "arn:aws:iam::111122223333:role/gw-role"}}
     assert s["DenyInsecureTransport"]["Condition"] == {"Bool": {"aws:SecureTransport": "false"}}
     assert s["DenyNotCompliance"]["Condition"] == {"StringNotEquals": {"s3:object-lock-mode": "COMPLIANCE"}}
+    # a delete marker would hide a locked slot and let the gateway fill it again (#74)
+    assert s["DenyDeleteMarkers"] == {"Sid": "DenyDeleteMarkers", "Effect": "Deny", "Principal": "*",
+                                      "Action": "s3:DeleteObject", "Resource": "arn:aws:s3:::bkt/*"}
     assert all(s[sid]["Effect"] == "Deny" for sid in s if sid != "GatewayPuts")
 
 
@@ -162,7 +166,7 @@ def test_deploy_keeps_every_statement_it_does_not_own(tmp_path):
     assert r.returncode == 0, r.stderr
     after = by_sid(put_policy(calls))
     lock_denies = {sid: st for sid, st in by_sid(before).items() if sid.startswith("Deny") and sid != "DenyInsecureTransport"}
-    assert len(lock_denies) == 7
+    assert len(lock_denies) == 8
     for sid, st in lock_denies.items():
         assert after[sid] == st
     # its own statements are rewritten from the arguments: the stale Read3 is gone
