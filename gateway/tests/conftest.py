@@ -35,7 +35,7 @@ def record(user="alice@example.com", **extra):
     client = {"lib": "ChainTables 0.1.0", "julia": "1.11.0", "time_ms": 0}
     if user is not None:
         client["user"] = user
-    return cbor2.dumps({"format_version": 1, "slot": 3, "client": client, **extra})
+    return cbor2.dumps({"format_version": 1, "slot": 3, "client": client, **extra}, canonical=True)
 
 
 def event(

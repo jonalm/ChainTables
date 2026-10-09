@@ -38,7 +38,8 @@ is git-ignored). It says which caller names may fill slots under which chain pre
 
 - `prefix` is a glob matched case-sensitively against the whole chain prefix, which is the
   slot key up to its last `/` (`""` is the bucket root). `*` matches any run of characters,
-  `/` included.
+  `/` included. `*` is the only wildcard: a prefix holding `?`, `[` or `]` is refused when the
+  gateway loads the policy.
 - `writers` are caller names (next section), matched exactly and case-sensitively.
 - A caller is allowed when any matching rule lists its name. Creating a chain under an
   allowed prefix needs no separate right.
@@ -72,6 +73,13 @@ fixed, and Identity Center sets the session name itself. A plain IAM role that a
 assume with `sts:AssumeRole` lets the caller *choose* the session name, and with it the
 author: never list such a role among the writers. Cross-account writers are fine as long as
 the same holds on their side.
+
+**A name is unique only within one account.** The policy lists names, not accounts, so every
+account whose principals may invoke the function shares one namespace. An administrator of
+any such account can create an IAM user, or provision an Identity Center user, named
+`alice@example.com`, and the gateway takes that principal for alice. Grant invoke
+(`--writer`) only to accounts whose administrators you would trust to write as any listed
+name.
 
 ## The IAM contract
 
@@ -138,6 +146,9 @@ naming a role that does not.
   {"Sid": "OnlyTheGatewayPuts", "Effect": "Deny", "Principal": "*",
    "Action": "s3:PutObject", "Resource": "arn:aws:s3:::<bucket>/*",
    "Condition": {"ArnNotEquals": {"aws:PrincipalArn": "arn:aws:iam::<account>:role/<role>"}}},
+  {"Sid": "DenyInsecureTransport", "Effect": "Deny", "Principal": "*",
+   "Action": "s3:*", "Resource": ["arn:aws:s3:::<bucket>", "arn:aws:s3:::<bucket>/*"],
+   "Condition": {"Bool": {"aws:SecureTransport": "false"}}},
   {"Sid": "Read1", "Effect": "Allow", "Principal": {"AWS": "<each --reader and --writer ARN>"},
    "Action": ["s3:GetObject", "s3:ListBucket"], "Resource": ["arn:aws:s3:::<bucket>", "arn:aws:s3:::<bucket>/*"]}]}
 ```

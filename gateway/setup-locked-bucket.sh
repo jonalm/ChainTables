@@ -54,7 +54,7 @@
 #      must be denied under either evaluation rule, and two keys in one Null block AND.)
 #
 # Per-object contract the writer (the gateway, the bucket's only PutObject principal)
-# satisfies in its locked-bucket mode; a put without it is refused by S3 (502 s3_error):
+# satisfies in its locked-bucket mode; a put without it is refused by S3 (502 s3_refused):
 #   x-amz-server-side-encryption: aws:kms
 #   x-amz-server-side-encryption-aws-kms-key-id: <KMS_KEY_ARN>
 #   x-amz-object-lock-mode: COMPLIANCE
@@ -215,8 +215,12 @@ if aws s3api head-bucket --bucket "$bucket" >/dev/null 2>&1; then
     [ "$lock" = Enabled ] || die "bucket $bucket exists without Object Lock, which can only be enabled at creation: delete it (or pick another --bucket) and re-run"
 else
     say "creating bucket $bucket with Object Lock in $region"
-    aws s3api create-bucket --bucket "$bucket" --object-lock-enabled-for-bucket \
-        --create-bucket-configuration "LocationConstraint=$region" >/dev/null
+    if [ "$region" = us-east-1 ]; then  # S3 refuses a LocationConstraint naming us-east-1
+        aws s3api create-bucket --bucket "$bucket" --object-lock-enabled-for-bucket >/dev/null
+    else
+        aws s3api create-bucket --bucket "$bucket" --object-lock-enabled-for-bucket \
+            --create-bucket-configuration "LocationConstraint=$region" >/dev/null
+    fi
     aws s3api wait bucket-exists --bucket "$bucket"
 fi
 say "bucket: public access blocked, BucketOwnerEnforced, versioning, Object Lock (no default retention), SSE-KMS + Bucket Key"
@@ -310,6 +314,7 @@ print("   ok: public access, ownership, versioning, Object Lock, SSE-KMS, bucket
 PY
 say "probing: a bare PutObject as $caller_arn must be denied"
 probe_body="$(mktemp)"
+trap 'rm -f "$probe_body"' EXIT
 if probe="$(aws s3api put-object --bucket "$bucket" --key "probe/$(date -u +%s)" --body "$probe_body" 2>&1)"; then
     die "a bare PutObject succeeded; the bucket policy is not in force: $probe"
 elif echo "$probe" | grep -q AccessDenied; then

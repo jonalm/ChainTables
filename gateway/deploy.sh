@@ -3,7 +3,8 @@
 #
 #   gateway/deploy.sh --bucket <name> --function <name> --region <region> --role <name> --zip <file>
 #                     [--arch arm64|x86_64] [--writer <principal ARN>]... [--reader <principal ARN>]...
-#                     [--env KEY=VALUE]... [--timeout <s>] [--memory <MB>] [--log-retention <days>] [--no-smoke]
+#                     [--env KEY=VALUE]... [--timeout <s>] [--memory <MB>] [--log-retention <days>]
+#                     [--reserved-concurrency <n>] [--no-smoke]
 #
 # Generic and idempotent: every account-specific value is an argument with no default, and
 # each step creates what is missing or updates what exists, so re-running after a rebuild
@@ -16,17 +17,20 @@
 #      and nothing else on S3; inline logs on its own log group;
 #   3. function: python3.13, handler.handler, the zip, CHAINTABLES_BUCKET plus every --env in
 #      the environment (a locked bucket sets CHAINTABLES_KMS_KEY_ARN and CHAINTABLES_RETENTION_DAYS);
+#      with --reserved-concurrency, that many concurrent executions reserved, which also caps
+#      them (left as it is otherwise: an account with the minimum quota cannot reserve any);
 #   4. function URL with AuthType=AWS_IAM; for each --writer, resource-based grants of both
 #      lambda:InvokeFunctionUrl and lambda:InvokeFunction (a same-account writer whose
 #      permission set already grants both needs no --writer; a cross-account one does);
 #   5. bucket policy: the execution role may PutObject; every other principal is denied
-#      PutObject; each --reader and --writer may GetObject and ListBucket;
+#      PutObject; each --reader and --writer may GetObject and ListBucket; every request
+#      without TLS is denied (DenyInsecureTransport, the same statement a locked bucket has);
 #   6. log retention, then a smoke invocation that proves the zip runs in the Lambda runtime
 #      (the handler boots, loads its policy, and refuses an unauthenticated PUT as 403 not_allowed).
 set -euo pipefail
 
 bucket="" function="" region="" role="" zip="" arch=arm64
-timeout=30 memory=256 retention=30 smoke=1
+timeout=30 memory=256 retention=30 smoke=1 concurrency=""
 writers=() readers=() envs=()
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -42,8 +46,9 @@ while [ $# -gt 0 ]; do
         --timeout) timeout="$2"; shift 2 ;;
         --memory) memory="$2"; shift 2 ;;
         --log-retention) retention="$2"; shift 2 ;;
+        --reserved-concurrency) concurrency="$2"; shift 2 ;;
         --no-smoke) smoke=0; shift ;;
-        -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
         *) echo "deploy.sh: unknown argument $1" >&2; exit 2 ;;
     esac
 done
@@ -54,6 +59,7 @@ for v in bucket function region role zip; do
     [ -n "${!v}" ] || die "--$v is required (no defaults: every account-specific value is an argument)"
 done
 case "$arch" in arm64|x86_64) ;; *) die "--arch must be arm64 or x86_64, not $arch" ;; esac
+case "$concurrency" in "") ;; *[!0-9]*|0) die "--reserved-concurrency must be a positive integer, not $concurrency" ;; esac
 [ -f "$zip" ] || die "zip $zip not found; build it with gateway/build.sh --arch $arch --policy <private policy file>"
 command -v aws >/dev/null || die "the AWS CLI is required"
 command -v python3 >/dev/null || die "python3 is required (JSON assembly)"
@@ -136,6 +142,11 @@ else
     done
     aws lambda wait function-active-v2 --function-name "$function"
 fi
+if [ -n "$concurrency" ]; then
+    say "reserving $concurrency concurrent executions"
+    aws lambda put-function-concurrency --function-name "$function" \
+        --reserved-concurrent-executions "$concurrency" >/dev/null
+fi
 
 # 4. function URL and the writers' invoke grants
 if url="$(aws lambda get-function-url-config --function-name "$function" --query FunctionUrl --output text 2>/dev/null)"; then
@@ -164,7 +175,7 @@ for w in ${writers[@]+"${writers[@]}"}; do
 done
 
 # 5. bucket policy
-say "putting bucket policy: PutObject for $role only; reads for ${#readers[@]} reader(s) and ${#writers[@]} writer(s)"
+say "putting bucket policy: PutObject for $role only; reads for ${#readers[@]} reader(s) and ${#writers[@]} writer(s); TLS only"
 policy="$(python3 - "$bucket_arn" "$role_arn" "$(json_array ${readers[@]+"${readers[@]}"} ${writers[@]+"${writers[@]}"})" <<'EOF'
 import json, sys
 bucket_arn, role_arn, principals = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])
@@ -174,6 +185,9 @@ statements = [
     {"Sid": "OnlyTheGatewayPuts", "Effect": "Deny", "Principal": "*",
      "Action": "s3:PutObject", "Resource": f"{bucket_arn}/*",
      "Condition": {"ArnNotEquals": {"aws:PrincipalArn": role_arn}}},
+    {"Sid": "DenyInsecureTransport", "Effect": "Deny", "Principal": "*",
+     "Action": "s3:*", "Resource": [bucket_arn, f"{bucket_arn}/*"],
+     "Condition": {"Bool": {"aws:SecureTransport": "false"}}},
 ]
 for n, arn in enumerate(principals, 1):
     statements.append({"Sid": f"Read{n}", "Effect": "Allow", "Principal": {"AWS": arn},
@@ -190,6 +204,7 @@ aws logs put-retention-policy --log-group-name "$log_group" --retention-in-days 
 if [ "$smoke" = 1 ]; then
     say "smoke invocation: an unauthenticated PUT must be refused as 403 not_allowed"
     out="$(mktemp)"
+    trap 'rm -f "$out"' EXIT
     event='{"requestContext":{"http":{"method":"PUT","path":"/"}},"rawQueryString":"key=000000000000","body":"","isBase64Encoded":false}'
     result="$(aws lambda invoke --function-name "$function" --payload "$event" --cli-binary-format raw-in-base64-out "$out")"
     if echo "$result" | grep -q FunctionError; then

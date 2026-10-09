@@ -59,5 +59,5 @@ find "$pkg" -name '__pycache__' -type d -prune -exec rm -rf {} +
 find "$pkg" -exec touch -t 200001010000 {} +
 
 rm -f "$out"
-(cd "$pkg" && find . -type f | sort | TZ=UTC zip -X -q -@ "$out")
+(cd "$pkg" && find . -type f | LC_ALL=C sort | TZ=UTC zip -X -q -@ "$out")  # C collation: the same order everywhere
 echo "built $out ($(du -h "$out" | cut -f1)) for $arch / python$python$([ -n "$policy" ] && echo " with policy.json" || echo ", no policy.json")"

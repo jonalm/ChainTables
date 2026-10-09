@@ -168,10 +168,12 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
         @test chain isa Chain{GatewayObjectStore}
         @test sprint(show, chain) == "Chain(\"bkt\", \"p\"; store = GatewayObjectStore)"
         store = chain.store
-        @test store.function_url == url && store.base == url && store.host == "abc123.lambda-url.eu-north-1.on.aws"
+        @test store.function_url == url && store.host == "abc123.lambda-url.eu-north-1.on.aws"
         @test store.s3 isa S3ObjectStore && store.s3.bucket == "bkt" && store.s3.region == "eu-north-1"
         @test store.s3.credentials === creds && GWT.is_aws(store) && chain.record_user
         @test store.sts_endpoint == "https://sts.eu-north-1.amazonaws.com"
+        @test Chain("bkt", "p"; gateway = "https://abc.lambda-url.cn-north-1.on.aws", region = "cn-north-1",
+                    credentials = creds).store.sts_endpoint == "https://sts.cn-north-1.amazonaws.com.cn"   # the China partition
         @test sprint(show, store) == "GatewayObjectStore(\"bkt\", \"$url\"; region = \"eu-north-1\")"
         @test !occursin("topsecret", sprint(show, store))
         # the function URL's region is checked against the chain's when the host carries one
@@ -261,6 +263,19 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             @test e isa WriteRefusedError && e.reason == "forbidden"
             @test occursin("AWS refused the invocation", sprint(showerror, e)) && occursin("lambda:InvokeFunctionUrl and lambda:InvokeFunction", sprint(showerror, e))
             @test occursin("(HTTP 403 with no gateway code): Forbidden.", sprint(showerror, e))   # AWS's own `Message` is carried
+            # an expired token is also AWS's bare 403: the message names that cause as well as the permission
+            double.respond = req -> (403, [], Vector{UInt8}("{\"message\":\"The security token included in the request is expired\"}"))
+            e = try put_object_if_absent(store, "p/000000000003", record); nothing catch e; e end
+            @test e isa WriteRefusedError && e.reason == "forbidden" && !GWT.retryable(e)
+            @test occursin("(HTTP 403 with no gateway code): The security token included in the request is expired.", sprint(showerror, e))
+            @test occursin("expired or revoked credentials (refresh them, e.g. aws sso login)", sprint(showerror, e))
+            # S3 refusing the gateway's own put is the deployment's fault: refused, never retried
+            double.respond = req -> gwtest_json(502, "s3_refused", "S3 answered 403 AccessDenied")
+            e = try put_object_if_absent(store, "p/000000000003", record); nothing catch e; e end
+            @test e isa WriteRefusedError && e.reason == "s3_refused" && !GWT.retryable(e)
+            @test occursin("s3_refused: S3 answered 403 AccessDenied. S3 refused the gateway's own put", sprint(showerror, e))
+            @test occursin("report it to the bucket's operator", sprint(showerror, e))
+            double.respond = _ -> nothing
             @test !haskey(s3.objects, "p/000000000003")
             # a client bug is a TransportError carrying the gateway's code and message, not retried
             for (k, bytes, code) in (("p/genesis", record, "not_a_slot"), ("p/000000000003", b"not cbor", "not_cbor_map"),
@@ -372,6 +387,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                 @test_throws WriteRefusedError GWT.author_from_arn(arn)
             end
             @test_throws "sts:GetCallerIdentity returned no Arn" GWT.author_from_sts_response(b"<x/>")
+            @test_throws WriteRefusedError GWT.author_from_arn("arn:aws:iam::123456789012:user/erin\n")   # `\z`, not `\$`
         finally
             close(sts)
         end
@@ -531,9 +547,31 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                 @test occursin("answered 200 created for exp/run-2/000000000000, and bucket bkt does not hold it", msg)
                 @test occursin("one ChainTables.Bucket value holds both (ADR-0029)", msg)
                 @test count(r -> r.method == "PUT", gw.requests) == 2                      # never retried
+                # our bucket holding another record at the key is a mismatch too, not a success
+                key = "exp/run-3/000000000000"
+                ours.objects[key], ours.modified[key] = b"someone else's record", floor(Int64, time())
+                @test_throws "and bucket bkt holds another record there (21 bytes" put_object_if_absent(store, key,
+                                                                                                   gwtest_record("alice@example.com"))
             finally
                 close(gw); close(sts); close(ours); close(theirs)
             end
         end
+    end
+
+    # ------------------------------------------------------------------------
+    # The reply's message (issue #75): Python's json.dumps writes a character outside the BMP
+    # as a surrogate pair; a malformed escape is kept, never raised over the real error.
+    # ------------------------------------------------------------------------
+    @testset "json_unescape: surrogate pairs joined, malformed escapes kept" begin
+        @test GWT.json_unescape("a\\ud83d\\ude00b") == "a😀b"
+        @test GWT.json_unescape("\\u00e9\\n\\\"") == "é\n\""
+        @test GWT.json_unescape("x\\uZZZZ y") == "x\\uZZZZ y"
+        @test GWT.json_unescape("lone \\ud83d end") == "lone \\ud83d end"
+        @test GWT.json_unescape("\\ude00 low first") == "\\ude00 low first"
+        @test GWT.json_unescape("tail\\u12") == "tail\\u12"
+        @test GWT.json_unescape("\\ud83dé") == "\\ud83dé"
+        @test all(isvalid, GWT.json_unescape.(["a\\ud83d\\ude00b", "lone \\ud83d end", "\\ud83dé"]))
+        code, message = GWT.gateway_reply(Vector{UInt8}("{\"code\": \"not_allowed\", \"message\": \"\\ud83d\\ude00 may not \\uZZ\"}"))
+        @test (code, message) == ("not_allowed", "😀 may not \\uZZ")
     end
 end

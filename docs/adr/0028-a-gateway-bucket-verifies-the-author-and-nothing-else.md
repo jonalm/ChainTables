@@ -47,14 +47,17 @@ body `{"code", "message"}` (the wire contract is issue #54 §5 and the top of
 2. The key is a slot — `<prefix>/<12 digits>`, or `<12 digits>` at the bucket
    root — and never a reserved name (ADR-0011) → else `400 not_a_slot`.
 3. The body decodes, under a strict CBOR decoder, as a map → else
-   `400 not_cbor_map`.
+   `400 not_cbor_map`. (*Amended by ADR-0035*: "strict" means the record
+   format the Julia reader accepts, checked by domain and by a canonical
+   re-encode.)
 4. `client.user` is present and non-empty text → else `400 no_author`.
 5. `client.user` equals the caller's name → else `403 author_mismatch`.
 6. The body is at most **4 MiB** → else `413 too_large`.
 7. `PutObject` with `If-None-Match: *` under the gateway's own role, mapped by
    HTTP status alone: `200 created`, `412 slot_taken`, `409 conflict`, and
    anything else — an S3 5xx, a transport failure, a misconfigured deployment —
-   `502 s3_error`. The gateway never retries S3; ADR-0010's rule that the commit
+   `502 s3_error`. (*Amended by ADR-0035*: an S3 4xx is `502 s3_refused`,
+   which the client does not retry.) The gateway never retries S3; ADR-0010's rule that the commit
    layer owns the whole retry budget holds across the extra hop.
 
 **Deliberately not checked**: `prev_hash`, `chain_id`, the ops, and

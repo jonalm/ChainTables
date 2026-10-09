@@ -7,14 +7,19 @@ after checking, in this order (issue #54 §5, the first failure wins):
    prefix, else ``403 not_allowed``;
 2. the key is a slot, ``<prefix>/<12 digits>`` or ``<12 digits>`` at the bucket root, never
    a reserved name, else ``400 not_a_slot``;
-3. the body decodes (``cbor2``) as a map, else ``400 not_cbor_map``;
+3. the body is a CBOR map in the record format the Julia reader accepts (``src/cbor.jl``,
+   ADR-0006): text keys, no tags, int64 integers, at most 64 levels deep, and the
+   deterministic encoding — no duplicate or unsorted keys, no indefinite lengths, no
+   non-shortest heads or floats, no trailing bytes — else ``400 not_cbor_map``. A record the
+   gateway accepts but clients refuse would break the chain for every reader;
 4. ``client.user`` is present and non-empty text, else ``400 no_author``;
 5. ``client.user`` equals the caller's name, else ``403 author_mismatch``;
 6. the body is at most 4 MiB, else ``413 too_large``;
 7. ``put_object(IfNoneMatch="*")`` under the function's own role, mapped by HTTP status:
-   success → ``200 created``, 412 → ``412 slot_taken``, 409 → ``409 conflict``, anything
-   else (S3 5xx, transport, or a misconfigured deployment) → ``502 s3_error``. The gateway
-   never retries S3; the client's retry loop owns retries.
+   success → ``200 created``, 412 → ``412 slot_taken``, 409 → ``409 conflict``, any other
+   S3 4xx (a misconfigured deployment: the role, the bucket, the lock) → ``502 s3_refused``,
+   which the client does not retry, and an S3 5xx or a transport failure → ``502 s3_error``,
+   which it does. The gateway never retries S3; the client's retry loop owns retries.
 
 The gateway validates and never authors: it does not read ``prev_hash``, ``chain_id`` or
 the ops, and it is not a ChainTables client. The caller's name is the text after the last
@@ -62,13 +67,17 @@ POLICY_FORMAT_VERSION = 1
 
 # `<prefix>/<12 digits>` with a non-empty prefix that neither begins nor ends with '/',
 # or `<12 digits>` alone at the bucket root (ADR-0011).
-SLOT_KEY = re.compile(r"^(?:(?P<prefix>[^/](?:.*[^/])?)/)?(?P<slot>[0-9]{12})$")
+SLOT_KEY = re.compile(r"(?:(?P<prefix>[^/](?:.*[^/])?)/)?(?P<slot>[0-9]{12})")
 
 # The two principal kinds the gateway accepts. An IAM user may carry a path
-# (`user/path/name`); a role session name never contains '/'.
+# (`user/path/name`); a role session name never contains '/'; neither contains whitespace.
 PRINCIPAL_ARN = re.compile(
-    r"^arn:[^:]+:(?:iam|sts)::[0-9]{12}:(?:assumed-role/[^/]+/(?P<session>[^/]+)|user/(?:[^/]+/)*(?P<user>[^/]+))$"
+    r"arn:[^:\s]+:(?:iam|sts)::[0-9]{12}:(?:assumed-role/[^/\s]+/(?P<session>[^/\s]+)|user/(?:[^/\s]+/)*(?P<user>[^/\s]+))"
 )
+
+# The record format's bounds (src/cbor.jl): integers are int64, nesting is at most 64 levels.
+INT64_MIN, INT64_MAX = -(2**63), 2**63 - 1
+MAX_DEPTH = 64
 
 
 class ConfigError(ValueError):
@@ -98,7 +107,8 @@ class Policy:
 
     ``prefix`` is a glob matched case-sensitively against the whole chain prefix (the key
     up to its last ``/``; ``""`` is the bucket root), where ``*`` matches any run of
-    characters including ``/``. A caller is allowed when any matching rule lists its name;
+    characters including ``/``; ``*`` is the only wildcard, and a prefix holding ``?``,
+    ``[`` or ``]`` is refused at load, since no chain prefix contains them (ADR-0034). A caller is allowed when any matching rule lists its name;
     names match exactly and case-sensitively. Creating a chain under an allowed prefix needs
     no separate right.
     """
@@ -123,6 +133,9 @@ class Policy:
                 raise PolicyError(f"policy rule {i} must be an object with exactly 'prefix' and 'writers'")
             if not isinstance(r["prefix"], str):
                 raise PolicyError(f"policy rule {i}: 'prefix' is not text")
+            if any(c in r["prefix"] for c in "?[]"):
+                raise PolicyError(f"policy rule {i}: prefix {r['prefix']!r} holds '?', '[' or ']'; '*' is the only "
+                                  "wildcard, and no chain prefix contains those characters (ADR-0034)")
             if not isinstance(r["writers"], list) or not all(isinstance(w, str) and w for w in r["writers"]):
                 raise PolicyError(f"policy rule {i}: 'writers' is not a list of non-empty names")
             out.append(Rule(r["prefix"], frozenset(r["writers"])))
@@ -140,6 +153,7 @@ class Policy:
         return cls.from_dict(doc)
 
     def allows(self, name: str, prefix: str) -> bool:
+        # fnmatch's other wildcards, '?' and '[...]', are refused at load, so '*' is the only one here.
         return any(name in r.writers for r in self.rules if fnmatch.fnmatchcase(prefix, r.prefix))
 
 
@@ -147,7 +161,7 @@ def caller_name(user_arn) -> str | None:
     """The text after the last '/' of an IAM-user or assumed-role ARN; None for any other principal."""
     if not isinstance(user_arn, str):
         return None
-    m = PRINCIPAL_ARN.match(user_arn)
+    m = PRINCIPAL_ARN.fullmatch(user_arn)
     if m is None:
         return None
     return m.group("session") or m.group("user")
@@ -222,7 +236,7 @@ class Gateway:
             raise Refusal(403, "not_allowed",
                           f"{who} may not write under prefix {prefix!r}: "
                           "ask the bucket's operator to add the name to the gateway policy")
-        if SLOT_KEY.match(key) is None:
+        if SLOT_KEY.fullmatch(key) is None:
             raise Refusal(400, "not_a_slot",
                           f"key {key!r} is not a slot: a slot key is <prefix>/<12 digits>, or <12 digits> at the "
                           "bucket root, and the gateway never writes a reserved name")
@@ -251,9 +265,11 @@ class Gateway:
             if status == 409:
                 raise Refusal(409, "conflict", f"a concurrent conditional write to {key!r} is in progress; retry")
             log.error("S3 put_object %s failed: %s %s", key, status, code)
-            raise Refusal(502, "s3_error", f"S3 answered {status} {code} to the put of {key!r}: "
-                                           "a 5xx is transient and may be retried; anything else is the "
-                                           "gateway's deployment, report it to the bucket's operator")
+            if isinstance(status, int) and 400 <= status < 500:
+                raise Refusal(502, "s3_refused", f"S3 answered {status} {code} to the put of {key!r}: the gateway's "
+                                                 "deployment (its role, its bucket or the lock) is wrong; report it to "
+                                                 "the bucket's operator")
+            raise Refusal(502, "s3_error", f"S3 answered {status} {code} to the put of {key!r}: transient, retry")
         except BotoCoreError as e:
             log.error("S3 put_object %s: transport failure: %s", key, e)
             raise Refusal(502, "s3_error", f"the gateway could not reach S3 for {key!r}: {e}")
@@ -275,12 +291,60 @@ def request_body(event: dict) -> bytes:
     return body.encode("utf-8")
 
 
-def record_author(body: bytes) -> str:
-    """`client.user` of the CBOR map in `body`; refuses a non-map body and a missing or empty author."""
+def decode_record(body: bytes):
+    """The CBOR item in `body`, refused unless the Julia reader would accept it (``src/cbor.jl``):
+    `cbor2` is lenient (it takes duplicate keys, trailing bytes, indefinite lengths, tags), so
+    the item is checked against the format's domain and then re-encoded canonically, which must
+    give back `body` byte for byte. `cbor2`'s canonical encoder matched the Julia encoder on the
+    whole conformance corpus (``test/conformance``)."""
     try:
         doc = cbor2.loads(body)
     except (cbor2.CBORDecodeError, TypeError, RecursionError) as e:
         raise Refusal(400, "not_cbor_map", f"the body does not decode as CBOR: {e}") from e
+    try:
+        problem = format_problem(doc, 0)
+    except RecursionError:  # a cycle, which only a shared-reference tag builds
+        problem = "a shared reference (tag 28/29); tags are not in the record format"
+    if problem is not None:
+        raise Refusal(400, "not_cbor_map", f"the body is CBOR but not in the record format: {problem}")
+    canonical = cbor2.dumps(doc, canonical=True)
+    if canonical != body:
+        at = next((i for i, (a, b) in enumerate(zip(canonical, body)) if a != b), min(len(canonical), len(body)))
+        raise Refusal(400, "not_cbor_map",
+                      f"the body is CBOR but not in the record format's deterministic encoding (RFC 8949 §4.2.1), from "
+                      f"byte {at}: a duplicate or unsorted map key, an indefinite length, a tag, a non-shortest integer "
+                      f"or float, a non-canonical NaN, or trailing bytes ({len(body)} bytes sent, {len(canonical)} "
+                      "canonical)")
+    return doc
+
+
+def format_problem(x, depth: int) -> str | None:
+    """What puts `x` outside the record format's domain (``src/cbor.jl``), or None."""
+    if depth > MAX_DEPTH:
+        return f"nesting deeper than {MAX_DEPTH} levels"
+    if x is None or isinstance(x, (bool, float, bytes)):
+        return None
+    if isinstance(x, int):
+        return None if INT64_MIN <= x <= INT64_MAX else f"integer {x} is outside the int64 domain"
+    if isinstance(x, str):
+        return "text contains U+0000" if "\x00" in x else None
+    if isinstance(x, list):
+        return next((p for v in x if (p := format_problem(v, depth + 1)) is not None), None)
+    if isinstance(x, dict):
+        for k, v in x.items():
+            if not isinstance(k, str):
+                return f"map key {k!r} is {type(k).__name__}, not text"
+            p = format_problem(k, depth + 1) or format_problem(v, depth + 1)
+            if p is not None:
+                return p
+        return None
+    return f"{type(x).__name__} {x!r} (a tag or simple value) is not a value of the format"
+
+
+def record_author(body: bytes) -> str:
+    """`client.user` of the CBOR map in `body`; refuses a body outside the record format, a
+    non-map body, and a missing or empty author."""
+    doc = decode_record(body)
     if not isinstance(doc, dict):
         raise Refusal(400, "not_cbor_map", f"the body decodes as CBOR {type(doc).__name__}, not a map")
     client = doc.get("client")

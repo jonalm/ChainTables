@@ -50,7 +50,8 @@ JSON, one file per gateway, its *contents* private (never committed; `policy.jso
 ```
 
 - `prefix` is a glob matched case-sensitively against the whole chain prefix (the key up to
-  its last `/`; `""` is the bucket root). `*` matches any run of characters, `/` included.
+  its last `/`; `""` is the bucket root). `*` matches any run of characters, `/` included;
+  it is the only wildcard, and a prefix holding `?`, `[` or `]` is refused at load.
 - `writers` are caller names: the text after the last `/` of the caller ARN. For an Identity
   Center session that is the role session name, which is the Identity Center user name.
   Matched exactly and case-sensitively.
@@ -75,6 +76,8 @@ AWS_PROFILE=<admin profile> gateway/deploy.sh --bucket <bucket> --function <func
     --region <region> --role <execution role> --zip gateway/build/gateway-arm64.zip
 ```
 
-Generic and idempotent; every account-specific value is an argument with no default. What it
+Generic and idempotent; every account-specific value is an argument with no default. `--reserved-concurrency <n>`
+reserves (and so caps) the function's concurrent executions; it is off by default because an
+account at the minimum concurrency quota cannot reserve any. What it
 creates, the IAM contract a writer or reader must satisfy, the bucket policy, and how a
 writer is onboarded are in [`docs/gateway-setup.md`](../docs/gateway-setup.md).

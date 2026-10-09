@@ -51,6 +51,9 @@ def test_file_round_trip(tmp_path):
     ({"format_version": 1, "rules": [{"prefix": 1, "writers": []}]}, "'prefix' is not text"),
     ({"format_version": 1, "rules": [{"prefix": "a", "writers": [""]}]}, "non-empty names"),
     ({"format_version": 1, "rules": [{"prefix": "a", "writers": "alice"}]}, "list of non-empty names"),
+    ({"format_version": 1, "rules": [{"prefix": "teams/?", "writers": ["a"]}]}, "'*' is the only wildcard"),
+    ({"format_version": 1, "rules": [{"prefix": "teams/[ab]", "writers": ["a"]}]}, "'*' is the only wildcard"),
+    ({"format_version": 1, "rules": [{"prefix": "teams]", "writers": ["a"]}]}, "'*' is the only wildcard"),
 ])
 def test_malformed_policy_raises_policy_error(doc, needle):
     with pytest.raises(gw.PolicyError, match=needle.replace("[", r"\[").replace("]", r"\]")):

@@ -1,5 +1,7 @@
 """The gateway's checks, in contract order, and the S3 outcome mapping (issue #54 §5)."""
 
+import pytest
+
 from tests.conftest import ACCOUNT, event, parse, record
 
 
@@ -36,6 +38,11 @@ def test_reserved_name_under_an_allowed_prefix_is_not_a_slot(gateway):
     assert body["code"] == "not_a_slot"
     assert "teams/alpha/_snapshots" in body["message"]
     assert "12" in body["message"]
+
+
+def test_slot_key_with_a_trailing_newline_is_not_a_slot(gateway):
+    status, body = parse(gateway.handle(event(key="teams/alpha/000000000003\n")))
+    assert (status, body["code"]) == (400, "not_a_slot")
 
 
 # --- 3–5. body and author ----------------------------------------------------------------
@@ -137,8 +144,8 @@ def test_s3_refusing_the_gateway_role_is_502_naming_the_cause(gateway, s3):
     body = record()
     s3.put_fails("teams/alpha/000000000003", body, 403, "AccessDenied")
     status, out = parse(gateway.handle(event(body=body)))
-    assert (status, out["code"]) == (502, "s3_error")
-    assert "AccessDenied" in out["message"]
+    assert (status, out["code"]) == (502, "s3_refused")
+    assert "AccessDenied" in out["message"] and "operator" in out["message"]
 
 
 def test_transport_failure_to_s3_is_502():
@@ -209,3 +216,40 @@ def test_iam_user_with_a_path_is_named_by_its_last_segment(gateway, s3):
     arn = f"arn:aws:iam::{ACCOUNT}:user/engineering/alice@example.com"
     status, out = parse(gateway.handle(event(body=body, user_arn=arn)))
     assert (status, out["code"]) == (200, "created")
+
+
+def test_parsed_query_map_takes_precedence_over_the_raw_query_string(gateway, s3):
+    body = record()
+    s3.put_succeeds("teams/alpha/000000000003", body)
+    ev = event(body=body, raw_query="key=teams%2Falpha%2F000000000004", query={"key": "teams/alpha/000000000003"})
+    status, out = parse(gateway.handle(ev))
+    assert (status, out["code"]) == (200, "created")
+
+
+def test_unexpected_exception_propagates_as_a_function_error():
+    # Anything but a contract refusal must surface in CloudWatch, never as a quiet response.
+    import handler as gw
+    from tests.conftest import BUCKET, POLICY
+
+    class Broken:
+        def put_object(self, **kw):
+            raise RuntimeError("boom")
+
+    g = gw.Gateway(policy=gw.Policy.from_dict(POLICY), bucket=BUCKET, s3=Broken())
+    with pytest.raises(RuntimeError, match="boom"):
+        g.handle(event())
+
+
+@pytest.mark.parametrize("arn, name", [
+    (f"arn:aws:iam::{ACCOUNT}:user/alice@example.com", "alice@example.com"),
+    (f"arn:aws:iam::{ACCOUNT}:user/a/path/alice@example.com", "alice@example.com"),
+    (f"arn:aws-us-gov:sts::{ACCOUNT}:assumed-role/r/alice@example.com", "alice@example.com"),
+    (f"arn:aws-cn:iam::{ACCOUNT}:user/alice@example.com", "alice@example.com"),
+    (f"arn:aws:sts::{ACCOUNT}:federated-user/alice@example.com", None),
+    (f"arn:aws:iam::{ACCOUNT}:role/r", None),
+    (f"arn:aws:sts::{ACCOUNT}:assumed-role/r/alice@example.com\n", None),
+    (None, None),
+])
+def test_caller_name_by_arn_form(arn, name):
+    import handler as gw
+    assert gw.caller_name(arn) == name
