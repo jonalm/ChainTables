@@ -52,8 +52,11 @@ one performs no I/O.
 A bucket name containing a dot is refused: it breaks certificate matching under
 virtual-hosted URLs (ADR-0010). A prefix beginning or ending in `/` is refused, because
 the slot key is `<prefix>/<12 digits>` (ADR-0011); an empty prefix puts the slots at the
-bucket root. A prefix with an empty (`a//b`), `.` or `..` segment is refused, because
-each segment of a slot key is a record-cache directory (ADR-0031).
+bucket root. Each `/`-separated segment of the prefix, and the bucket name, is a
+record-cache directory, so it must be portable to every filesystem: lowercase `a-z`,
+`0-9`, `.`, `_`, `-`; not `.` or `..`; not ending in `.`; not a Windows device name such
+as `con` or `nul`. The prefix is at most 100 characters, and the longest record-cache path
+for the chain, `cache_dir` included, at most 259: Windows' `MAX_PATH` (ADR-0034).
 """
 struct Chain{S<:AbstractObjectStore}
     bucket::String
@@ -76,6 +79,8 @@ function Chain(bucket::AbstractString, prefix::AbstractString;
                record_host = true, record_user = true)
     check_bucket_name(bucket)
     check_prefix(prefix)
+    cache = RecordCache(; dir = cache_dir)
+    record_path(cache, bucket, isempty(prefix) ? head_filename(0) : prefix * "/" * head_filename(0))   # every slot's path is as long (ADR-0034)
     read_ahead >= 1 || throw(ArgumentError("Chain: read_ahead is $read_ahead; at least 1 record is fetched ahead"))
     if gateway !== nothing                   # the gateway store (gateway.jl, ADR-0028): the S3 client plus a function URL
         store === nothing || throw(ArgumentError("Chain: gateway and store were both given; a chain has one store, and " *
@@ -95,7 +100,7 @@ function Chain(bucket::AbstractString, prefix::AbstractString;
         "store: the gateway refuses a record with no author (ADR-0028), so this chain could never commit; leave record_user = true"))
     return Chain{typeof(store)}(String(bucket), String(prefix), region === nothing ? nothing : String(region), credentials,
                                 endpoint === nothing ? nothing : String(endpoint), path_style, assume_first_writer_wins,
-                                Int(read_ahead), RecordCache(; dir = cache_dir), store, record_host, record_user)
+                                Int(read_ahead), cache, store, record_host, record_user)
 end
 
 # The bucket-name rules, shared with `Bucket` (bucket.jl, ADR-0029).
@@ -103,21 +108,31 @@ function check_bucket_name(bucket::AbstractString)
     isempty(bucket) && throw(ArgumentError("Chain: the bucket name is empty"))
     '.' in bucket && throw(ArgumentError("Chain: bucket name $(repr(bucket)) contains a dot, which breaks certificate " *
         "matching under the virtual-hosted URL ChainTables builds (ADR-0010); use a bucket without one"))
+    problem = portable_segment_problem(bucket)
+    problem === nothing || throw(ArgumentError("Chain: bucket name $(repr(bucket)) $problem; it is a record-cache " *
+        "directory, and must be portable to every filesystem (ADR-0034)"))
     return nothing
 end
 
-# The prefix is opaque (ADR-0031), but a slot key's `/`-separated segments become cache
-# directories (`record_path`), which refuses an empty, `.` or `..` one. Refusing them here,
-# before any I/O, keeps `create_chain` from writing a slot 0 no client could cache.
+# The prefix is opaque (ADR-0031), but each `/`-separated segment of a slot key becomes a
+# record-cache directory, so it must be portable to every filesystem (ADR-0034). Refusing a
+# bad one here, before any I/O, keeps `create_chain` from writing a slot 0 no client could cache.
+# With a 63-character bucket (S3's longest), the cache path below `cache_dir` is at most
+# 63 + 1 + 100 + 1 + 20 = 185 characters, leaving 74 of MAX_PORTABLE_PATH for `cache_dir`.
+const MAX_PREFIX_LENGTH = 100
+
 function check_prefix(prefix::AbstractString)
     (startswith(prefix, "/") || endswith(prefix, "/")) && throw(ArgumentError(
         "Chain: prefix $(repr(prefix)) begins or ends with '/'; a slot key is <prefix>/<12 digits>, so give the prefix without them"))
     isempty(prefix) && return nothing
+    length(prefix) <= MAX_PREFIX_LENGTH || throw(ArgumentError("Chain: prefix $(repr(prefix)) is $(length(prefix)) " *
+        "characters, over $MAX_PREFIX_LENGTH; the record cache's paths must fit Windows' $MAX_PORTABLE_PATH under any " *
+        "reasonable cache_dir (ADR-0034)"))
     for s in split(prefix, '/')
-        isempty(s) && throw(ArgumentError("Chain: prefix $(repr(prefix)) has an empty segment ('//'); " *
-            "each '/'-separated segment of a slot key is a record-cache directory, so remove it"))
-        s in (".", "..") && throw(ArgumentError("Chain: prefix $(repr(prefix)) has the segment $(repr(s)); " *
-            "each '/'-separated segment of a slot key is a record-cache directory, which cannot be $(repr(s))"))
+        problem = portable_segment_problem(s)
+        problem === nothing || throw(ArgumentError("Chain: prefix $(repr(prefix)) has the segment $(repr(s)), which " *
+            "$problem; each '/'-separated segment of a slot key is a record-cache directory, and must be portable to " *
+            "every filesystem (ADR-0034)"))
     end
     return nothing
 end

@@ -80,12 +80,42 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
         @test_throws "the bucket name is empty" Chain("", "p"; store)
         @test_throws "prefix \"/p\" begins or ends with '/'" Chain("bkt", "/p"; store)
         @test_throws "prefix \"p/\" begins or ends with '/'" Chain("bkt", "p/"; store)
-        @test_throws "prefix \"a//b\" has an empty segment" Chain("bkt", "a//b"; store)
-        @test_throws "prefix \".\" has the segment \".\"" Chain("bkt", "."; store)
-        @test_throws "prefix \"a/./b\" has the segment \".\"" Chain("bkt", "a/./b"; store)
-        @test_throws "prefix \"..\" has the segment \"..\"" Chain("bkt", ".."; store)
-        @test_throws "prefix \"a/../b\" has the segment \"..\"" Chain("bkt", "a/../b"; store)
-        @test Chain("bkt", "a/.b/c..d/..."; store).prefix == "a/.b/c..d/..."     # dots inside a segment are fine
+        segment_error(prefix, seg, why) =
+            "Chain: prefix $(repr(prefix)) has the segment $(repr(seg)), which $why; each '/'-separated segment"
+        @test_throws segment_error("a//b", "", "is empty") Chain("bkt", "a//b"; store)
+        for bad in (".", "..", "a/./b", "a/../b")
+            seg = only(filter(in((".", "..")), split(bad, '/')))
+            @test_throws segment_error(bad, seg, "names a directory relative to its parent") Chain("bkt", bad; store)
+        end
+        for (bad, c) in (("a\\b", '\\'), ("c:", ':'), ("a/c:x", ':'), ("Exp", 'E'), ("a b", ' '), ("a*", '*'),
+                         ("a?", '?'), ("a|b", '|'), ("a<b>", '<'), ("a\"b", '"'), ("é", 'é'), ("a\0", '\0'))
+            seg = only(filter(s -> c in s, split(bad, '/')))
+            @test_throws segment_error(bad, seg, "contains $(repr(c)); only a-z, 0-9, '.', '_' and '-' are portable to every filesystem") Chain("bkt", bad; store)
+        end
+        for bad in ("a.", "a/b./c", "...")
+            seg = only(filter(s -> endswith(s, '.'), split(bad, '/')))
+            @test_throws segment_error(bad, seg, "ends with '.', which Windows strips") Chain("bkt", bad; store)
+        end
+        for bad in ("con", "nul", "a/aux/b", "prn.txt", "com1", "lpt9.x.y", "com0")
+            seg = only(filter(s -> first(split(s, '.')) in CT.WINDOWS_DEVICE_NAMES, split(bad, '/')))
+            @test_throws segment_error(bad, seg, "is a Windows device name") Chain("bkt", bad; store)
+        end
+        for ok in ("a/.b/c..d/x-1_2", "console", "com10", "nul_", "con-x", ".hidden")
+            @test Chain("bkt", ok; store).prefix == ok
+        end
+        @test_throws "bucket name \"Bkt\" contains 'B'" Chain("Bkt", "p"; store)
+        @test_throws "bucket name \"nul\" is a Windows device name" Chain("nul", "p"; store)
+        # path length (ADR-0034): the prefix is at most 100 characters, and the longest cache path at most 259
+        # UTF-16 code units — the directory, then the longer of the 12-digit name and the 20-character temporary file
+        @test Chain("bkt", "a"^100; store).prefix == "a"^100
+        @test_throws "prefix $(repr("a"^101)) is 101 characters, over 100" Chain("bkt", "a"^101; store)
+        root = abspath("/")
+        fits = 259 - length(root) - length("/bkt") - 1 - 20                 # the longest cache_dir name for prefix ""
+        @test Chain("bkt", ""; store, cache_dir = root * "c"^fits).cache.dir == root * "c"^fits
+        @test_throws "is 260 characters long with its temporary file, over the 259 Windows allows" Chain("bkt", "";
+            store, cache_dir = root * "c"^(fits + 1))
+        @test_throws "is 260 characters long" Chain("bkt", ""; store, cache_dir = root * "c"^(fits - 1) * "😀")  # UTF-16: 2
+        @test_throws "is 261 characters long" Chain("bkt", "p"; store, cache_dir = root * "c"^fits)
         @test_throws "read_ahead is 0" Chain("bkt", "p"; store, read_ahead = 0)
         withenv("AWS_ACCESS_KEY_ID" => nothing, "AWS_SECRET_ACCESS_KEY" => nothing) do   # store = nothing is the S3 client (test/s3.jl)
             @test_throws "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY is not set" Chain("bkt", "p"; region = "eu-north-1")

@@ -33,8 +33,9 @@ _See_: [ADR-0011](docs/adr/0011-a-chain-is-flat-slot-keys-plus-reserved-names.md
 Where a chain lives within a bucket: `(bucket, prefix)` is a chain's full address.
 Opaque text — it may contain `/`, and the slashes mean nothing; ChainTables reads no
 structure into it. Prefixes may nest; the chains are unrelated. Empty is the one
-chain at the bucket root. It may not begin or end with `/`, nor have an empty, `.`
-or `..` segment, since slot keys map to record-cache paths. Where, not which: see *chain id*.
+chain at the bucket root. It may not begin or end with `/`, and each `/`-separated
+segment must be portable to every filesystem (lowercase `a-z`, `0-9`, `.`, `_`, `-`;
+at most 100 characters in all; see ADR-0034), since slot keys map to record-cache paths. Where, not which: see *chain id*.
 _Avoid_: chain name, path, folder, directory
 
 **Slot**:

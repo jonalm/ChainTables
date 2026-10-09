@@ -39,12 +39,12 @@ from the first two segments, plus `retain-until`.
   execution role no longer needs `s3:PutObjectTagging`.
 - **A locked put carries** SSE-KMS with the configured key and the bucket key,
   COMPLIANCE retention until now + n days, and the SHA-256 checksum.
-- **Opaque, within what a key can name.** `Chain` refuses a prefix that begins
-  or ends with `/` (ADR-0011) or has an empty, `.` or `..` segment, because the
-  record cache maps each `/`-separated segment of a slot key to a directory and
-  refuses those. Before issue #71 only the first was checked, so `create_chain`
-  put slot 0 and then failed caching it, leaving a chain no client could read.
-  This is the client's path mapping, not a layout: no segment means anything.
+- **Opaque, within a portable alphabet.** Amended by ADR-0034: each
+  `/`-separated segment of the prefix is a record-cache directory, so it must be
+  valid on every filesystem: lowercase `a-z`, `0-9`, `.`, `_`, `-`, and no `.`,
+  `..`, trailing `.` or Windows device name. The prefix is at most 100
+  characters. This is the client's path mapping,
+  not a layout: no segment means anything.
 - **Prefixes may nest.** Chains at `a` and `a/b` are unrelated. Their slot keys
   cannot collide (a slot is the prefix plus exactly twelve digits), and no
   client lists a chain — head discovery asks for slot keys by name — so neither

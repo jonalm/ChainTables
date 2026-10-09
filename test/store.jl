@@ -62,10 +62,14 @@ ChainTables.fetch_object(s::StoreTestInterrupted, key) =
         # keyed by bucket and key; the key's slashes are directories
         cache = RecordCache(; dir = "/c")
         @test record_path(cache, "bkt", "p/000000000001") == joinpath("/c", "bkt", "p", "000000000001")
-        @test_throws "empty segment" record_path(cache, "bkt", "p//1")
-        @test_throws "empty segment" record_path(cache, "bkt", "/p")
-        @test_throws "empty segment" record_path(cache, "", "p")
-        @test_throws ".." record_path(cache, "bkt", "../p")
+        @test_throws "segment \"\" of bucket \"bkt\", key \"p//1\" is empty" record_path(cache, "bkt", "p//1")
+        @test_throws "segment \"\" of bucket \"bkt\", key \"/p\" is empty" record_path(cache, "bkt", "/p")
+        @test_throws "segment \"\" of bucket \"\", key \"p\" is empty" record_path(cache, "", "p")
+        @test_throws "segment \"..\" of bucket \"bkt\", key \"../p\" names a directory" record_path(cache, "bkt", "../p")
+        @test_throws "segment \"C:\" of bucket \"bkt\", key \"C:/p\" contains 'C'" record_path(cache, "bkt", "C:/p")
+        @test_throws "segment \"a\\\\b\" of bucket \"bkt\", key \"a\\\\b/1\" contains '\\\\'" record_path(cache, "bkt", "a\\b/1")
+        @test_throws "segment \"con\" of bucket \"bkt\", key \"con/1\" is a Windows device name" record_path(cache, "bkt", "con/1")
+        @test_throws "is 260 characters long with its temporary file" record_path(RecordCache(; dir = "/" * "c"^234), "bkt", "000000000001")
     end
 
     @testset "record cache: fetch to temp then rename; misses are never memoized" begin

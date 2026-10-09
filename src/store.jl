@@ -156,21 +156,67 @@ struct RecordCache
 end
 RecordCache(; dir = default_cache_dir()) = RecordCache(String(dir))
 
+# Windows' MAX_PATH less the terminating NUL, in UTF-16 code units: the longest path that
+# opens on every platform without opting in to long paths (ADR-0034).
+const MAX_PORTABLE_PATH = 259
+# A record is written to `<16 hex digits>.tmp` beside its final name, then renamed (`cache_record!`).
+const CACHE_TEMP_NAME_LENGTH = 20
+
+"""
+    longest_cache_path(path) -> Int
+
+The length, in UTF-16 code units (Windows' measure), of the longest path the cache writes
+for the record at `path`: its absolute directory plus the longer of its name and the
+temporary file's.
+"""
+longest_cache_path(path::AbstractString) =
+    length(transcode(UInt16, abspath(dirname(path)))) + 1 + max(length(basename(path)), CACHE_TEMP_NAME_LENGTH)
+
+# Windows reserves these names, with or without an extension, in every directory.
+const WINDOWS_DEVICE_NAMES = Set(["con", "prn", "aux", "nul", ("com$i" for i in 0:9)..., ("lpt$i" for i in 0:9)...])
+
+"""
+    portable_segment_problem(s) -> String | nothing
+
+Why `s` cannot be one segment of a record-cache path on every platform, or `nothing` if
+it can (ADR-0034). A segment is lowercase ASCII letters, digits, `.`, `_` and `-`, is not
+`.` or `..`, does not end in `.`, and is not a Windows device name (`con`, `nul.txt`, …).
+Narrower than any one filesystem needs, so a key that maps on one platform maps on all:
+no separator, no drive colon, no case pair a case-insensitive filesystem folds together.
+"""
+function portable_segment_problem(s::AbstractString)
+    isempty(s) && return "is empty"
+    s in (".", "..") && return "names a directory relative to its parent"
+    for c in s
+        ('a' <= c <= 'z' || '0' <= c <= '9' || c in ('.', '_', '-')) ||
+            return "contains $(repr(c)); only a-z, 0-9, '.', '_' and '-' are portable to every filesystem"
+    end
+    endswith(s, '.') && return "ends with '.', which Windows strips"
+    first(split(s, '.')) in WINDOWS_DEVICE_NAMES && return "is a Windows device name"
+    return nothing
+end
+
 """
     record_path(cache, bucket, key) -> String
 
 The file a record is cached at: `cache.dir/bucket/key`, with each `/`-separated segment
-of `key` a directory (ADR-0011: the mapping from keys to paths is local and ours). A
-bucket or a segment that is empty, `.` or `..` is refused, since it would name a path
-outside the cache.
+of `key` a directory (ADR-0011: the mapping from keys to paths is local and ours). The
+bucket and every segment must pass [`portable_segment_problem`](@ref), and the
+[`longest_cache_path`](@ref) is at most $MAX_PORTABLE_PATH, so the path stays inside the
+cache and opens on every platform (ADR-0034).
 """
 function record_path(cache::RecordCache, bucket::AbstractString, key::AbstractString)
     segments = split(key, '/')
     for s in (bucket, segments...)
-        isempty(s) && throw(ArgumentError("record_path: empty segment in bucket $(repr(bucket)), key $(repr(key))"))
-        s in (".", "..") && throw(ArgumentError("record_path: segment $(repr(s)) in bucket $(repr(bucket)), key $(repr(key)) would leave the cache"))
+        problem = portable_segment_problem(s)
+        problem === nothing || throw(ArgumentError(
+            "record_path: segment $(repr(s)) of bucket $(repr(bucket)), key $(repr(key)) $problem (ADR-0034)"))
     end
-    return joinpath(cache.dir, bucket, segments...)
+    path = joinpath(cache.dir, bucket, segments...)
+    n = longest_cache_path(path)
+    n <= MAX_PORTABLE_PATH || throw(ArgumentError("record_path: the record cache path $(repr(path)) is $n characters " *
+        "long with its temporary file, over the $MAX_PORTABLE_PATH Windows allows (ADR-0034); use a shorter cache_dir or prefix"))
+    return path
 end
 
 """
@@ -210,7 +256,7 @@ function cache_record!(cache::RecordCache, bucket::AbstractString, key::Abstract
     path = record_path(cache, bucket, key)
     dir = dirname(path)
     mkpath(dir)
-    tmp = tempname(dir; cleanup = false)
+    tmp = joinpath(dir, bytes2hex(rand(UInt8, 8)) * ".tmp")    # CACHE_TEMP_NAME_LENGTH characters
     try
         Base.open(tmp, "w") do io
             write(io, bytes)
