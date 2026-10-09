@@ -5,7 +5,7 @@
 # none. Outside a git checkout (a registry install) there is no tracked tree and nothing
 # is checked.
 
-const TRACKED_FAKE_ACCOUNTS = ("123456789012", "111122223333")     # the ones AWS's own docs use
+const TRACKED_FAKE_ACCOUNTS = ("123456789012", "111122223333", "444455556666")  # the ones AWS's own docs use
 const TRACKED_NOT_ACCOUNTS = ("200001010000",)                     # gateway/build.sh: the zip's fixed mtime
 const TRACKED_SKIPPED = r"^(docs/research/|test/tracked_values\.jl$)|(^|/)(Manifest\.toml|[^/]*\.lock)$"
 
