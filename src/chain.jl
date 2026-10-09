@@ -513,7 +513,7 @@ function commit!(w::WriteBuilder; comment = nothing)
         load_tables!(copy, unique(op.table for op in w.ops))
         for (i, op) in enumerate(w.ops)              # the state gate, through apply's own checks (ADR-0025)
             try
-                Ops.apply!(copy.content, op)
+                Ops.apply!(copy.content, op, slot)   # the target slot; a lost race never re-applies, the builder is spent
             catch e
                 e isa ModelError || rethrow()
                 throw(WriteBuilderError("commit!(w): op $i ($(Ops.op_name(op)) on $(repr(op.table))): $(e.msg)"))

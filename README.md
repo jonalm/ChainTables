@@ -73,6 +73,9 @@ w2 = ChainTables.write_builder(copy2)
 ChainTables.update_rows!(w2, :samples, [(id = 2, mass = 2.5)])
 ChainTables.commit!(w2)                  # slot = 2
 v[2].mass                                # still missing: a view never moves (ADR-0024)
+# Every row carries its row slot: the slot of the last record that changed
+# its cells. Opt in to read it; the view's own columns stay content (ADR-0032).
+ChainTables.table_with_slots(ChainTables.table(copy2, :samples))._slot   # [1, 2]
 
 # The first client is now behind. Commit does not sync; it raises.
 w3 = ChainTables.write_builder(copy)

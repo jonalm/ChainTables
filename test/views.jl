@@ -213,4 +213,67 @@ using ChainTables.Testing: InMemoryObjectStore
             close(copy)
         end
     end
+
+    # ------------------------------------------------------------------------
+    # Row slots (ADR-0032): every row carries the slot of the last record that
+    # changed its cells, read through table_with_slots; the view's own
+    # Tables.columns stays pure content.
+    # ------------------------------------------------------------------------
+    @testset "row slots" begin
+        mktempdir() do dir
+            store, chain, copy, r = fixture(dir)
+            v = CT.table(copy, :samples)
+            s = CT.table_with_slots(v)
+            @test s._slot == [1, 1]
+            @test s.id == [1, 2] && s.label === v.columns.label               # the view's own vectors, not copies
+            @test keys(s) == (:id, :label, :mass, :_slot)
+            @test !haskey(Tables.columns(v), :_slot) && keys(Tables.columntable(v)) == (:id, :label, :mass)
+            slots(name) = CT.table_with_slots(CT.table(copy, name))._slot
+            commit(f) = (w = CT.write_builder(copy); f(w); CT.commit!(w))
+
+            # slot 2: an update stamps only the rows it names, even when it writes the
+            # same value; an insert stamps its new row; ops in one record share the slot
+            commit() do w
+                CT.update_rows!(w, :samples, [(id = 2, mass = missing)])            # unchanged value
+                CT.insert_rows!(w, :samples, [(id = 3, label = "c", mass = 3.0)])
+            end
+            @test slots(:samples) == [1, 2, 2]
+            @test slots(:pairs) == [1, 1, 1] && slots(:blobs) == [1, 1]          # tables the record does not touch
+            # slot 3: a delete takes the row's slot with it, and stamps nothing else
+            commit(w -> CT.delete_rows!(w, :samples, [(id = 2,)]))
+            v3 = CT.table(copy, :samples)
+            @test keys(v3) == [1, 3] && CT.table_with_slots(v3)._slot == [1, 2]
+            # slot 4: add_column stamps every row of its table; slot 5: drop_column too
+            commit(w -> CT.add_column!(w, :pairs, :note, String; nullable = true, fill = missing))
+            @test slots(:pairs) == [4, 4, 4] && slots(:samples) == [1, 2]
+            commit(w -> CT.drop_column!(w, :samples, :label))
+            @test slots(:samples) == [5, 5]
+            # slot 6: a later record stamps only what it touches
+            commit(w -> CT.update_rows!(w, :pairs, [(a = 1, b = "x", n = 9.0)]))
+            p = CT.table(copy, :pairs)
+            @test keys(p) == [(1, "w"), (1, "x"), (2, "y")] && CT.table_with_slots(p)._slot == [4, 6, 4]
+            @test all(≤(p.slot), CT.table_with_slots(p)._slot)                 # a row slot never exceeds the head's
+
+            # a view and its slots are fixed at its head: a sync! that moves the copy leaves them
+            other = CT.open(chain, joinpath(dir, "other"))
+            CT.sync!(other)
+            before = CT.table(other, :pairs)
+            commit(w -> CT.insert_rows!(w, :pairs, [(a = 3, b = "z", n = 1.0, note = "new")]))
+            @test CT.sync!(other).slot == 7
+            @test CT.table_with_slots(before)._slot == [4, 6, 4] && length(before) == 3
+            @test CT.table_with_slots(CT.table(other, :pairs))._slot == [4, 6, 4, 7]
+            # a fresh replay stamps exactly what the committing copy stamped
+            @test CT.table_with_slots(CT.table(other, :samples))._slot == slots(:samples)
+
+            # as_of shows the slots as of that point
+            old = CT.as_of(chain, 2)
+            @test CT.table_with_slots(CT.table(old, :samples))._slot == [1, 2, 2]
+            @test CT.table_with_slots(CT.table(old, :pairs))._slot == [1, 1, 1]
+
+            # the plain view is content only, so its rows go straight back into the builder
+            commit(w -> CT.update_rows!(w, :pairs, Tables.rows(CT.table(copy, :pairs))))
+            @test slots(:pairs) == [8, 8, 8, 8]
+            close(old); close(other); close(copy)
+        end
+    end
 end

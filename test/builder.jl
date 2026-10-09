@@ -21,7 +21,7 @@ Base.getproperty(r::BuilderTestRow, n::Symbol) = getfield(r, :fields)[n]
     samples = Shape([Column("id", "int64", false), Column("label", "text", false), Column("mass", "float64", true)], ["id"])
     signbit_nan = reinterpret(Float64, 0xfff8000000000000)
     fresh() = WriteBuilder(Content())
-    seeded() = WriteBuilder(Content("samples" => Table(samples, [Any[1, "a", 1.5], Any[2, "b", missing]])))
+    seeded() = WriteBuilder(Content("samples" => Table(samples, [Any[1, "a", 1.5], Any[2, "b", missing]], 1)))
     declare!(w, name = :samples) = CT.create_table!(w, name) do t
         CT.column!(t, :id, Int64)
         CT.column!(t, :label, String)
@@ -30,7 +30,7 @@ Base.getproperty(r::BuilderTestRow, n::Symbol) = getfield(r, :fields)[n]
     end
     # the WriteBuilderError a call raises, as its message; anything else is a bug
     refused(f) = try f(); "no error" catch e; e isa WriteBuilderError ? e.msg : rethrow() end
-    applied(ops) = (c = Content(); for op in ops; Ops.apply!(c, op); end; c)
+    applied(ops) = (c = Content(); for op in ops; Ops.apply!(c, op, 1); end; c)
 
     # ------------------------------------------------------------------------
     # The README sequence, at the builder's level: every op function, in the
@@ -47,6 +47,7 @@ Base.getproperty(r::BuilderTestRow, n::Symbol) = getfield(r, :fields)[n]
         @test isequal(Model.getrow(c["samples"], (2,)), Any[2, "b", missing])
 
         w2 = WriteBuilder(c)
+        @test w2.head === nothing                     # no head: the column ops stamp a placeholder, never a head's slot
         @test CT.update_rows!(w2, :samples, [(id = 2, mass = 2.5)]) === nothing
         @test CT.delete_rows!(w2, :samples, [(id = 1,)]) === nothing
         @test CT.add_column!(w2, :samples, :note, String; nullable = true, fill = missing) === nothing
@@ -68,10 +69,15 @@ Base.getproperty(r::BuilderTestRow, n::Symbol) = getfield(r, :fields)[n]
             Insert("tags", [Any[UInt8[]], Any[UInt8[1]]]),
             DropTable("tags"),
         ])
+        # a scratch table holds a shape and never rows, so the placeholder slot its
+        # column ops pass stamps nothing; one that held rows is a bug, and fails fast
+        w3 = WriteBuilder(c)
+        Model.insert_rows!(w3.scratch["samples"], [Any[9, "z", 1.0]], 1)
+        @test_throws "scratch table holds 1 rows; it holds a shape and never rows" CT.drop_column!(w3, :samples, :label)
         # the content the builder was taken over is untouched: the state gate is commit!'s
         @test Model.nrows(c["samples"]) == 2 && c["samples"].shape == samples && collect(keys(c)) == ["samples"]
         for op in w2.ops
-            Ops.apply!(c, op)
+            Ops.apply!(c, op, 2)                     # the record after seeded()'s slot 1
         end
         @test c["samples"].shape == Shape([Column("id", "int64", false), Column("mass", "float64", true),
                                            Column("note", "text", true), Column("weight", "float64", false)], ["id"])
@@ -97,8 +103,8 @@ Base.getproperty(r::BuilderTestRow, n::Symbol) = getfield(r, :fields)[n]
 
         # the ops travel as a record: what the builder produced, a second client applies
         client = Client(nothing, nothing, "L", "J", 1)
-        r = Record(UInt8.(0:15), 0, nothing, Model.state_fingerprint(applied(w.ops)), client, nothing, w.ops)
-        back = Ops.decode_record(Ops.encode_record(r); slot = 0)
+        r = Record(UInt8.(0:15), 1, UInt8.(0:31), Model.state_fingerprint(applied(w.ops)), client, nothing, w.ops)
+        back = Ops.decode_record(Ops.encode_record(r); slot = 1)
         @test isequal(back.ops, w.ops)
         @test Model.state_fingerprint(applied(back.ops)) == r.state_fingerprint
 
@@ -253,7 +259,14 @@ Base.getproperty(r::BuilderTestRow, n::Symbol) = getfield(r, :fields)[n]
         # bad identifier
         @test_throws "create_table!(w, :Samples): table name \"Samples\" is not an identifier ([a-z_][a-z0-9_]*)" declare!(w, :Samples)
         @test_throws "create_table!(w, \"1x\"): table name \"1x\" is not an identifier" declare!(w, "1x")
-        @test_throws "column!(t, :Id, Int64): column name \"Id\" is not an identifier ([a-z_][a-z0-9_]*)" CT.create_table!(t -> CT.column!(t, :Id, Int64), w, :t)
+        @test_throws "column!(t, :Id, Int64): column name \"Id\" is not an identifier ([a-z][a-z0-9_]*: a column name starts with a letter)" CT.create_table!(t -> CT.column!(t, :Id, Int64), w, :t)
+        # a column name may not start with _, so the _slot of table_with_slots never collides (ADR-0032)
+        @test_throws "column!(t, :_slot, Int64): column name \"_slot\" is not an identifier ([a-z][a-z0-9_]*: a column name starts with a letter)" CT.create_table!(t -> CT.column!(t, :_slot, Int64), w, :t)
+        @test_throws "add_column!(w, :samples, :_note, String): column name \"_note\" is not an identifier" CT.add_column!(w, :samples, :_note, String; fill = "")
+        # and a table name still may
+        wp = fresh()
+        declare!(wp, :_private)
+        @test wp.ops[end] isa Ops.CreateTable && wp.ops[end].table == "_private"
         @test_throws "column!(t, :é, Int64): column name \"é\" is not an identifier" CT.create_table!(t -> CT.column!(t, :é, Int64), w, :t)
         @test_throws "add_column!(w, :samples, :Colour, String): column name \"Colour\" is not an identifier" CT.add_column!(w, :samples, :Colour, String; fill = "")
         # missing primary key; nullable key column; the other key rules

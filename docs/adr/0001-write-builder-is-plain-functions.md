@@ -36,7 +36,9 @@ data, so the choice was purely about how the calling code reads (issue #7, branc
   behaviour lives: value type (no `Bool`, no `DateTime`, no U+0000 in text —
   *amended by ADR-0025*: `NaN` and `±Inf` are `float64` values and are admitted,
   NaN canonicalised by the builder), identifiers restricted to
-  `[a-z_][a-z0-9_]*` (on ADR-0025's three reasons), an explicit primary key
+  `[a-z_][a-z0-9_]*` (on ADR-0025's three reasons) — *amended by ADR-0032*: a
+  column name starts with a letter, `[a-z][a-z0-9_]*`, so it never collides with
+  the `_slot` of `table_with_slots` — an explicit primary key
   on every table, uniform
   column order within an op, and a fill value on `add_column` rather than any
   default (ADR-0025).

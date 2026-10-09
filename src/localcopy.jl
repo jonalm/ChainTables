@@ -571,8 +571,9 @@ end
 The table `name`, read whole from its file on first touch and resident until
 close (ADR-0023). The file is hashed and the hash compared with its name before
 any byte of it reaches the model; a mismatch, or a file that hashes to its name
-but is not a canonical table file, is a damaged copy —
-`LocalCopyInconsistentError` naming `repair!(copy)`. An unknown name raises
+but is not a canonical table file, or one holding a row slot above the head's
+slot (ADR-0032), is a damaged copy — `LocalCopyInconsistentError` naming
+`repair!(copy)`. An unknown name raises
 `Model.ModelError`.
 """
 function load_table!(copy::LocalCopy, name::AbstractString)
@@ -590,6 +591,10 @@ function load_table!(copy::LocalCopy, name::AbstractString)
         e isa ModelError || e isa CBOR.DecodeError || rethrow()
         throw(damaged(copy, name, hash, "hashes to its name but is not a canonical table file ($(sprint(showerror, e)))"))
     end
+    # a cheap consistency check (ADR-0032): the hash and the head's fingerprint already
+    # held, so only a fabricated or wrongly written head gets a row slot past it here
+    top = isempty(t.slots) ? 0 : maximum(t.slots)
+    top <= copy.head.slot || throw(damaged(copy, name, hash, "holds a row slot $top, above the head's slot $(copy.head.slot)"))
     copy.content[name] = t
     push!(copy.loaded, name)
     return t

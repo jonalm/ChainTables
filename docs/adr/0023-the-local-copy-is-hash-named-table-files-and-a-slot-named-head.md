@@ -35,7 +35,9 @@ magic, and a CBOR tool that wants the item skips the prefix. Lowercase hex, not
 base32: a hash is compared against `sha256sum`, never spoken; a chain id is
 base32 because humans read it in messages. A table file has no name inside it.
 Two tables with identical shape and rows share one file. A table with zero rows
-still has a file, since its shape is hashed.
+still has a file, since its shape is hashed. *Amended by ADR-0032*: each row is
+`[cells…, slot]`, its row slot last, so the stream stays single-pass; two tables
+share a file only if their row slots agree too.
 
 Consequences the fingerprint buys for free: verification of a table is hashing a
 file, an untouched table's file is shared across slots, and a future
@@ -112,6 +114,10 @@ Tables load **lazily, one whole table on first touch**, resident until close. A
 table file is hashed as it is read and the hash compared with its name **before
 any byte of it reaches the model**, so no content is ever used unverified and a
 wrong-content file is caught at load as a *damaged copy* naming `repair!`.
+*Amended by ADR-0032*: so is a file holding a row slot above the head's slot. That
+is a cheap consistency check, not the main defence — the hash and the head's own
+fingerprint come first — and only a fabricated or wrongly written head reaches
+it.
 Untouched tables keep the head's `table_hash`, which the committer uses as is:
 that skip trusts the head, and the head is content-addressed, so the logical
 fingerprint it produces is right even if a local file has since been damaged —

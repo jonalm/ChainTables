@@ -73,7 +73,7 @@ using SHA: sha256
         records = Vector{UInt8}[]
         for s in 0:last
             ops = s == 0 ? Ops.Op[] : s == 1 ? [CreateTable("samples", shape)] : [Insert("samples", [Any[s, string(s)]])]
-            foreach(op -> Ops.apply!(content, op), ops)
+            foreach(op -> Ops.apply!(content, op, s), ops)   # the slot of the record built below
             fp = Model.state_fingerprint(content)
             push!(fps, fp)
             bytes = Ops.encode_record(Record(cidb, s, prev, s in liars ? fill(UInt8(s), 32) : fp,

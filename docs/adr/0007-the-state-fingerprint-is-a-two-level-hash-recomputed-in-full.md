@@ -15,7 +15,8 @@ state_fingerprint
 
 where `cbor` is ADR-0006's frozen §4.2.1 encoder, `shape` is the table's shape
 in ADR-0025's wire form, `rows` is every row of the table as ADR-0025's arrays,
-and the outer array is sorted by table name. Both domain separators are part of
+each row `[cells…, slot]` with its row slot last (*amended by ADR-0032*), and the
+outer array is sorted by table name. Both domain separators are part of
 the format.
 
 **A table file holds exactly the `table_hash` byte stream, separator included**
@@ -24,7 +25,8 @@ file, and the outer hash is over the head file's `tables` list.
 
 **What is inside.** Every table the chain created, and its shape: table name,
 column names, value types, nullability, primary-key position — the shape as the
-model holds it, in ADR-0025's wire form. **Nothing is outside.** The local copy
+model holds it, in ADR-0025's wire form — and every row with its row slot
+(ADR-0032). **Nothing is outside.** The local copy
 holds table files and a head file and nothing else (ADR-0023), a client's own
 state lives in the head and not in a table, and every table file is inside the
 fingerprint. (This ADR first read the shape from a database catalog and excluded

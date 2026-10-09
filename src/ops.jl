@@ -328,11 +328,12 @@ end
 
 One transaction record (ADR-0006): the envelope's fields as Julia values, with
 `prev_hash === nothing` at slot 0 and nowhere else, `comment === nothing` when
-absent, and `ops` a vector of [`Op`](@ref) — empty only at slot 0, the zero-op
-genesis `create_chain` writes (ADR-0019). `format_version` is not a
+absent, and `ops` a vector of [`Op`](@ref) — empty exactly at slot 0, the zero-op
+genesis `create_chain` writes, and non-empty everywhere else (ADR-0019, ADR-0032). `format_version` is not a
 field: a `Record` is always [`FORMAT_VERSION`](@ref). The constructor holds
 every envelope rule — 16-byte chain id, 32-byte hashes, a non-negative slot,
-`prev_hash` present exactly after genesis, at least one op after genesis, a comment of
+`prev_hash` present exactly after genesis, no op at genesis and at least one after
+it (so every row slot is at least 1), a comment of
 well-formed UTF-8 without U+0000 — raising `Model.ModelError`, so the builder
 and [`decode_record`](@ref) share one check. A record never holds its own
 `transaction_hash`: that is a function of its stored bytes.
@@ -351,6 +352,8 @@ struct Record
         slot < 0 && fail("slot $slot is negative")
         if slot == 0
             prev_hash === nothing || fail("slot 0 carries a prev_hash; genesis has no parent (ADR-0002)")
+            n = length(ops)
+            n == 0 || fail("slot 0 carries $n op$(n == 1 ? "" : "s"); genesis carries none, so no row is ever stamped 0 (ADR-0032)")
         else
             prev_hash === nothing && fail("slot $slot has no prev_hash; every slot after genesis names its parent")
             length(prev_hash) == 32 || fail("prev_hash is $(length(prev_hash)) bytes; a SHA-256 is 32")
@@ -527,7 +530,7 @@ duplicate key is not an error here: apply and the builder refuse it.
 sort_rows(rows, keyof) = sort(collect(rows); by = keyof)
 
 """
-    apply!(content, op::Op) -> nothing
+    apply!(content, op::Op, slot) -> nothing
     apply!(content, record::Record) -> nothing
 
 Apply one op, or every op of a record in order, to a `Model.Content`. Each op
@@ -539,24 +542,30 @@ in typed key order, update columns in declaration order, and the state gate of
 ADR-0001. Apply never computes and never sorts: nothing is checked here that
 the model does not check itself.
 
+Each op that changes a row's cells stamps the row with the slot (ADR-0032):
+`insert` and `update` the rows they name, `add_column` and `drop_column` every
+row of the table. The op form takes the slot as a required argument; the
+record form copies it from the envelope's `slot`, which is copying a value, not
+computing one.
+
 The op form raises `Model.ModelError` for the builder to fold into
 `WriteBuilderError`; the record form folds it into `MalformedRecordError`
 naming the slot, the op index and the rule (ADR-0020), and applies nothing
 after the op that failed — the content is then partially applied and the
 caller discards it; the local copy's files are untouched (ADR-0013).
 """
-apply!(c::Content, op::CreateTable) = (Model.create_table!(c, op.table, op.shape); nothing)
-apply!(c::Content, op::AddColumn) = (Model.add_column!(Model.table(c, op.table), op.column, op.fill); nothing)
-apply!(c::Content, op::DropColumn) = (Model.drop_column!(Model.table(c, op.table), op.column); nothing)
-apply!(c::Content, op::DropTable) = (Model.drop_table!(c, op.table); nothing)
-apply!(c::Content, op::Insert) = (Model.insert_rows!(Model.table(c, op.table), op.rows); nothing)
-apply!(c::Content, op::Update) = (Model.update_rows!(Model.table(c, op.table), op.columns, op.rows); nothing)
-apply!(c::Content, op::Delete) = (Model.delete_rows!(Model.table(c, op.table), op.keys); nothing)
+apply!(c::Content, op::CreateTable, slot) = (Model.create_table!(c, op.table, op.shape); nothing)
+apply!(c::Content, op::AddColumn, slot) = (Model.add_column!(Model.table(c, op.table), op.column, op.fill, slot); nothing)
+apply!(c::Content, op::DropColumn, slot) = (Model.drop_column!(Model.table(c, op.table), op.column, slot); nothing)
+apply!(c::Content, op::DropTable, slot) = (Model.drop_table!(c, op.table); nothing)
+apply!(c::Content, op::Insert, slot) = (Model.insert_rows!(Model.table(c, op.table), op.rows, slot); nothing)
+apply!(c::Content, op::Update, slot) = (Model.update_rows!(Model.table(c, op.table), op.columns, op.rows, slot); nothing)
+apply!(c::Content, op::Delete, slot) = (Model.delete_rows!(Model.table(c, op.table), op.keys); nothing)
 
 function apply!(c::Content, r::Record)
     for (i, op) in enumerate(r.ops)
         try
-            apply!(c, op)
+            apply!(c, op, r.slot)
         catch e
             e isa ModelError || rethrow()
             throw(malformed(r.slot, r.chain_id, "op $i ($(op_name(op)) on $(repr(op.table))): $(e.msg)"; op = i))

@@ -111,9 +111,21 @@ value_type(::Any) = nothing
 """
     is_identifier(s) -> Bool
 
-The identifier charset for table and column names: `[a-z_][a-z0-9_]*` (ADR-0025).
+The identifier charset for table names: `[a-z_][a-z0-9_]*` (ADR-0025).
 """
 is_identifier(s::AbstractString) = occursin(r"^[a-z_][a-z0-9_]*$", s)
+
+"""
+    is_column_name(s) -> Bool
+
+The identifier charset for column names: `[a-z][a-z0-9_]*`, a letter first, so a
+column never collides with the `_slot` of `table_with_slots` (ADR-0032).
+"""
+is_column_name(s::AbstractString) = occursin(r"^[a-z][a-z0-9_]*$", s)
+
+# The column-name rule, as every refusal of one words it.
+check_column_name(name) = is_column_name(name) ||
+    fail("column name $(repr(name)) is not an identifier ([a-z][a-z0-9_]*: a column name starts with a letter)")
 
 # ---------------------------------------------------------------------------
 # Shape (ADR-0003, ADR-0025)
@@ -153,7 +165,7 @@ struct Shape
         isempty(columns) && fail("table has no columns")
         names = String[]
         for c in columns
-            is_identifier(c.name) || fail("column name $(repr(c.name)) is not an identifier ([a-z_][a-z0-9_]*)")
+            check_column_name(c.name)
             c.name in names && fail("duplicate column name $(repr(c.name))")
             c.type in VALUE_TYPES || fail("unknown value type $(repr(c.type)); a column holds int64, float64, text or bytes")
             push!(names, c.name)
@@ -361,26 +373,29 @@ end
 
 """
     Table(shape)
-    Table(shape, rows)
+    Table(shape, rows, slot)
 
-One table of the model: its [`Shape`](@ref), columnar storage and a `Dict` from
-key tuple to row index. `rows` are vectors of cells in declaration order, checked
-like an insert (types, nullability, typed key order, no duplicate key): the
-canonical payload, as an op or a table file carries it.
+One table of the model: its [`Shape`](@ref), columnar storage, each row's row
+slot (ADR-0032) and a `Dict` from key tuple to row index. `rows` are vectors of
+cells in declaration order, checked like an insert (types, nullability, typed
+key order, no duplicate key): the canonical payload, as an op carries it; every
+row is stamped with `slot`. `Table(shape)` is the empty table, which holds no
+row and so no slot.
 """
 mutable struct Table
     shape::Shape
     columns::Vector{Vector}
+    slots::Vector{Int64}         # row slot of each row, aligned with the columns
     index::Dict{Any,Int}
 end
 
 column_storage(c::Column) = c.nullable ? Vector{Union{Missing,julia_type(c.type)}}() : Vector{julia_type(c.type)}()
 
-Table(s::Shape) = Table(s, Vector[column_storage(c) for c in s.columns], Dict{Any,Int}())
+Table(s::Shape) = Table(s, Vector[column_storage(c) for c in s.columns], Int64[], Dict{Any,Int}())
 
-function Table(s::Shape, rows)
+function Table(s::Shape, rows, slot)
     t = Table(s)
-    insert_rows!(t, rows)
+    insert_rows!(t, rows, slot)
     return t
 end
 
@@ -417,46 +432,51 @@ rows_in_key_order(t::Table) = (row_at(t, i) for i in sortperm(key_vector(t)))
 
 # ---------------------------------------------------------------------------
 # The primitives the seven ops reduce to (ADR-0022). Each checks its whole op,
-# then mutates.
+# then mutates. Each that changes a row's cells stamps that row with `slot`, the
+# slot of the record the op is in (ADR-0032): apply copies it from the
+# envelope, and no primitive has a default for it.
 # ---------------------------------------------------------------------------
 
 """
-    insert_rows!(table, rows) -> nothing
+    insert_rows!(table, rows, slot) -> nothing
 
 Insert rows (vectors of cells in declaration order, in typed key order):
 [`check_insert`](@ref), then the state gate of ADR-0001 — every key absent
-from the table; nothing is written if any check fails.
+from the table; nothing is written if any check fails. Each new row is stamped
+with `slot`.
 """
-function insert_rows!(t::Table, rows)
+function insert_rows!(t::Table, rows, slot)
     check_insert(t.shape, rows)
     for row in rows
         k = key_of(t.shape, row)
         haskey(t.index, k) && fail("insert names a key that is present: $(repr(k))")
     end
     for row in rows
-        push_row!(t, row)
+        push_row!(t, row, slot)
     end
     return nothing
 end
 
-function push_row!(t::Table, row)
+function push_row!(t::Table, row, slot)
     for (col, x) in zip(t.columns, row)
         push!(col, own(x))
     end
+    push!(t.slots, slot)
     t.index[key_at(t, nrows(t))] = nrows(t)
     return nothing
 end
 
 """
-    update_rows!(table, names, rows) -> nothing
+    update_rows!(table, names, rows, slot) -> nothing
 
 Update the non-key columns `names` (in declaration order) of the rows named by
 their key. Each row is `[key…, values…]`: the full key in key declaration order
 followed by one value per name, and the rows are in typed key order (ADR-0005,
 ADR-0025). [`check_update`](@ref), then the state gate — every key present in
-the table; nothing is written if any check fails.
+the table; nothing is written if any check fails. Each named row is stamped
+with `slot`, whether or not its values change: apply never compares them.
 """
-function update_rows!(t::Table, names, rows)
+function update_rows!(t::Table, names, rows, slot)
     cols = check_update(t.shape, names, rows)
     nk = length(t.shape.keyidx)
     for row in rows
@@ -468,6 +488,7 @@ function update_rows!(t::Table, names, rows)
         for (p, j) in enumerate(cols)
             t.columns[j][i] = own(row[nk+p])
         end
+        t.slots[i] = slot
     end
     return nothing
 end
@@ -477,7 +498,7 @@ end
 
 Delete the rows at `keys` (tuples in key declaration order, in typed key
 order): [`check_delete`](@ref), then the state gate — every key present in the
-table; nothing is written if any check fails.
+table; nothing is written if any check fails. A deleted row's slot goes with it.
 """
 function delete_rows!(t::Table, ks)
     check_delete(t.shape, ks)
@@ -493,6 +514,7 @@ function delete_rows!(t::Table, ks)
     for j in eachindex(t.columns)
         t.columns[j] = t.columns[j][keep]
     end
+    t.slots = t.slots[keep]
     reindex!(t)
     return nothing
 end
@@ -506,12 +528,13 @@ function reindex!(t::Table)
 end
 
 """
-    add_column!(table, column, fill) -> nothing
+    add_column!(table, column, fill, slot) -> nothing
 
 Append a column to the shape and give every row the typed value `fill`, checked
-against the column: null only if it is nullable (ADR-0025).
+against the column: null only if it is nullable (ADR-0025). Every row's cells
+changed, so every row is stamped with `slot`.
 """
-function add_column!(t::Table, c::Column, fillvalue)
+function add_column!(t::Table, c::Column, fillvalue, slot)
     any(x -> x.name == c.name, t.shape.columns) && fail("column $(repr(c.name)) already exists")
     check_cell(c, fillvalue)
     shape = Shape(vcat(t.shape.columns, c), t.shape.key)   # re-validates the name and type
@@ -521,21 +544,24 @@ function add_column!(t::Table, c::Column, fillvalue)
     end
     push!(t.columns, col)
     t.shape = shape
+    fill!(t.slots, slot)
     return nothing
 end
 
 """
-    drop_column!(table, name) -> nothing
+    drop_column!(table, name, slot) -> nothing
 
 Remove a non-key column from the shape and from every row. Refuses a key column
-and nothing else (ADR-0025).
+and nothing else (ADR-0025). Every row's cells changed, so every row is stamped
+with `slot`.
 """
-function drop_column!(t::Table, name::AbstractString)
+function drop_column!(t::Table, name::AbstractString, slot)
     j = column_index(t.shape, name)
     j in t.shape.keyidx && fail("column $(repr(name)) is a key column and cannot be dropped")
     shape = Shape(deleteat!(copy(t.shape.columns), j), t.shape.key)
     deleteat!(t.columns, j)
     t.shape = shape
+    fill!(t.slots, slot)
     return nothing
 end
 
@@ -607,7 +633,8 @@ end
     write_table(io, table) -> Vector{UInt8}
 
 Stream the table's file to `io` — `"chaintables/v1/fp-table" ‖ cbor([shape, rows])`
-with rows in typed key order — and return its SHA-256, which is the
+with rows in typed key order, each row `[cells…, slot]`: its cells in declaration
+order, then its row slot (ADR-0032) — and return its SHA-256, which is the
 [`table_hash`](@ref) and the file's name (ADR-0007, ADR-0023).
 """
 function write_table(io::IO, t::Table)
@@ -616,8 +643,12 @@ function write_table(io::IO, t::Table)
     CBOR.write_array_header(h, 2)
     CBOR.encode(h, wire(t.shape))
     CBOR.write_array_header(h, nrows(t))
-    for row in rows_in_key_order(t)
-        CBOR.encode(h, row)
+    for i in sortperm(key_vector(t))
+        CBOR.write_array_header(h, length(t.columns) + 1)
+        for col in t.columns
+            CBOR.encode(h, col[i])
+        end
+        CBOR.encode(h, t.slots[i])
     end
     return SHA.digest!(h.ctx)
 end
@@ -625,8 +656,8 @@ end
 """
     table_hash(table) -> Vector{UInt8}
 
-`SHA-256("chaintables/v1/fp-table" ‖ cbor([shape, rows]))`, 32 bytes: the
-first level of the state fingerprint and the name of the table's file.
+`SHA-256("chaintables/v1/fp-table" ‖ cbor([shape, rows]))`, each row
+`[cells…, slot]`, 32 bytes: the first level of the state fingerprint and the name of the table's file.
 """
 table_hash(t::Table) = write_table(devnull, t)
 
@@ -635,7 +666,8 @@ table_hash(t::Table) = write_table(devnull, t)
 
 Read one table file stream as [`write_table`](@ref) wrote it. Refuses anything
 but the canonical form — a wrong separator, a wrong outer arity, a malformed
-shape, a cell off its value type, rows out of key order or duplicated — with a
+shape, a cell off its value type, a row slot that is not an int64 ≥ 1 (slot 0
+carries no ops, so no row is stamped 0), rows out of key order or duplicated — with a
 [`ModelError`](@ref), and malformed CBOR with `CBOR.DecodeError`. Hashing the
 bytes against the file's name is the caller's (ADR-0023, hash before use).
 """
@@ -648,11 +680,18 @@ function read_table(io::IO)
     shape = Shape(CBOR.decode(io))
     t = Table(shape)
     nr = CBOR.read_array_header(io)
+    nc = ncols(shape)
     for i in 1:nr
         row = CBOR.decode(io)
         row isa AbstractVector || fail("row $i is not an array")
-        check_row(shape, row)
-        push_row!(t, row)
+        length(row) == nc + 1 ||
+            fail("row $i has $(length(row)) entries; a table file row is [cells…, slot], $nc cells and its row slot")
+        slot = row[end]
+        slot isa Int64 || fail("row $i's slot is not an int64, got a value of type $(typeof(slot))")
+        slot >= 1 || fail("row $i's slot is $slot; a row slot is at least 1")
+        cells = @view row[1:nc]
+        check_row(shape, cells)
+        push_row!(t, cells, slot)
     end
     check_key_order((key_at(t, i) for i in 1:nr); context = "in a table file")
     return t

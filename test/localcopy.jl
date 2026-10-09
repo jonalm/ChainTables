@@ -39,11 +39,11 @@ ChainTables.expected_chain_id(c::LocalCopyTestBoundChain) = c.chain_id
     function two_checkpoints!(copy)
         CT.checkpoint!(copy, chain_id, 0, txn(0), Model.state_fingerprint(copy.content))
         for name in ("t", "u")
-            Ops.apply!(copy.content, CreateTable(name, shape))
-            Ops.apply!(copy.content, Insert(name, rows))
+            Ops.apply!(copy.content, CreateTable(name, shape), 1)
+            Ops.apply!(copy.content, Insert(name, rows), 1)
         end
-        Ops.apply!(copy.content, CreateTable("w", shape))
-        Ops.apply!(copy.content, Insert("w", [Any[7, "z"]]))
+        Ops.apply!(copy.content, CreateTable("w", shape), 1)
+        Ops.apply!(copy.content, Insert("w", [Any[7, "z"]]), 1)
         CT.checkpoint!(copy, chain_id, 1, txn(1), Model.state_fingerprint(copy.content))
         return copy
     end
@@ -179,7 +179,7 @@ ChainTables.expected_chain_id(c::LocalCopyTestBoundChain) = c.chain_id
             @test isequal(CT.decode_head(bytes), h)
             @test CT.encode_head(h) == bytes
             # a zero-row table still has a file, since its shape is hashed
-            Ops.apply!(copy.content, CreateTable("empty", shape))
+            Ops.apply!(copy.content, CreateTable("empty", shape), 2)
             CT.checkpoint!(copy, chain_id, 2, txn(2), Model.state_fingerprint(copy.content))
             @test length(tabs(path)) == 3
             @test CT.tables(copy) == ["empty", "t", "u", "w"]
@@ -195,11 +195,11 @@ ChainTables.expected_chain_id(c::LocalCopyTestBoundChain) = c.chain_id
     @testset "lazy load" begin
         mktempdir() do path
             copy = CT.open(LocalCopyTestChain(), path)
-            Ops.apply!(copy.content, CreateTable("t", shape))
-            Ops.apply!(copy.content, AddColumn("t", Column("mass", "float64", true), missing))
-            Ops.apply!(copy.content, DropColumn("t", "v"))
-            Ops.apply!(copy.content, Insert("t", [Any[1, 1.5], Any[2, missing]]))
-            CT.checkpoint!(copy, chain_id, 0, txn(0), Model.state_fingerprint(copy.content))
+            Ops.apply!(copy.content, CreateTable("t", shape), 1)
+            Ops.apply!(copy.content, AddColumn("t", Column("mass", "float64", true), missing), 1)
+            Ops.apply!(copy.content, DropColumn("t", "v"), 1)
+            Ops.apply!(copy.content, Insert("t", [Any[1, 1.5], Any[2, missing]]), 1)
+            CT.checkpoint!(copy, chain_id, 1, txn(1), Model.state_fingerprint(copy.content))
             close(copy)
 
             again = CT.open(LocalCopyTestChain(), path)
@@ -215,7 +215,7 @@ ChainTables.expected_chain_id(c::LocalCopyTestBoundChain) = c.chain_id
             # sees the real state (create_table on a name the head already has fails)
             close(again)
             again = CT.open(LocalCopyTestChain(), path)
-            rec = Record(chain_id, 1, txn(0), txn(9), Client(nothing, nothing, "L", "J", 1), nothing,
+            rec = Record(chain_id, 2, txn(1), txn(9), Client(nothing, nothing, "L", "J", 1), nothing,
                          [CreateTable("t", shape)])
             CT.load_tables!(again, rec)
             @test haskey(again.content, "t")
@@ -238,7 +238,7 @@ ChainTables.expected_chain_id(c::LocalCopyTestBoundChain) = c.chain_id
                 e
             end
             @test err isa LocalCopyInconsistentError
-            @test occursin("damaged copy: table file tables/$f (table \"t\" at slot 0, chain $cid) hashes to $(hex(sha256(bad)))", sprint(showerror, err))
+            @test occursin("damaged copy: table file tables/$f (table \"t\" at slot 1, chain $cid) hashes to $(hex(sha256(bad)))", sprint(showerror, err))
             @test occursin("repair!(copy)", sprint(showerror, err))
             @test isempty(damaged.content)
             close(damaged)
@@ -249,6 +249,29 @@ ChainTables.expected_chain_id(c::LocalCopyTestBoundChain) = c.chain_id
             @test_throws "delete the directory and sync!(copy) again" CT.open(LocalCopyTestChain(), path)
             write(joinpath(path, "tables", f), good)
             close(CT.open(LocalCopyTestChain(), path))
+        end
+    end
+
+    # ------------------------------------------------------------------------
+    # The load check (ADR-0032, ADR-0023): no row slot above the head's slot. The
+    # file hashes to its name and the head's fingerprint matches its tables, so
+    # only a wrongly written head reaches this — made here by applying at slot 2
+    # and checkpointing at slot 1.
+    # ------------------------------------------------------------------------
+    @testset "a row slot above the head's is a damaged copy" begin
+        mktempdir() do path
+            copy = CT.open(LocalCopyTestChain(), path)
+            Ops.apply!(copy.content, CreateTable("t", shape), 1)
+            Ops.apply!(copy.content, Insert("t", [Any[1, "a"]]), 1)
+            Ops.apply!(copy.content, Insert("t", [Any[2, "b"]]), 2)
+            CT.checkpoint!(copy, chain_id, 1, txn(1), Model.state_fingerprint(copy.content))
+            close(copy)
+            again = CT.open(LocalCopyTestChain(), path)
+            f = only(tabs(path))
+            @test_throws LocalCopyInconsistentError CT.load_table!(again, "t")
+            @test_throws "damaged copy: table file tables/$f (table \"t\" at slot 1, chain $cid) holds a row slot 2, above the head's slot 1. repair!(copy) rewrites it from the record cache." CT.load_table!(again, "t")
+            @test isempty(again.content) && isempty(again.loaded)
+            close(again)
         end
     end
 
@@ -269,7 +292,7 @@ ChainTables.expected_chain_id(c::LocalCopyTestBoundChain) = c.chain_id
             two_checkpoints!(copy)
             litter(path)
             named = tabs(path)
-            Ops.apply!(copy.content, Insert("w", [Any[8, "y"]]))
+            Ops.apply!(copy.content, Insert("w", [Any[8, "y"]]), 2)
             CT.checkpoint!(copy, chain_id, 2, txn(2), Model.state_fingerprint(copy.content))
             @test heads(path) == ["000000000002"]
             @test !any(endswith(".tmp"), tabs(path)) && !(orphan in tabs(path))
@@ -292,7 +315,7 @@ ChainTables.expected_chain_id(c::LocalCopyTestBoundChain) = c.chain_id
             copy = two_checkpoints!(CT.open(LocalCopyTestChain(), path))
             head1 = read(headfile(path, 1))
             files1 = Dict(f => read(joinpath(path, "tables", f)) for f in tabs(path))
-            Ops.apply!(copy.content, Update("w", ["v"], [Any[7, "changed"]]))
+            Ops.apply!(copy.content, Update("w", ["v"], [Any[7, "changed"]]), 2)
             CT.checkpoint!(copy, chain_id, 2, txn(2), Model.state_fingerprint(copy.content))
             close(copy)
             # both heads present, all files present: the higher wins, the lower is swept
@@ -398,7 +421,7 @@ ChainTables.expected_chain_id(c::LocalCopyTestBoundChain) = c.chain_id
         mktempdir() do path
             copy = two_checkpoints!(CT.open(LocalCopyTestChain(), path))
             before = (heads(path), tabs(path), CT.head(copy))
-            Ops.apply!(copy.content, Insert("w", [Any[8, "y"]]))
+            Ops.apply!(copy.content, Insert("w", [Any[8, "y"]]), 2)
             wrong = txn(0xdd)
             err = try
                 CT.checkpoint!(copy, chain_id, 2, txn(2), wrong; client = Client(nothing, nothing, "ChainTables 9.9.9", "1.99.0", 1))
@@ -417,14 +440,14 @@ ChainTables.expected_chain_id(c::LocalCopyTestBoundChain) = c.chain_id
             @test collect(Model.rows_in_key_order(CT.load_table!(copy, "w"))) == [Any[7, "z"]]
             # a mismatch without a client still names both fingerprints
             CT.load_tables!(copy, ["t", "u", "w"])
-            Ops.apply!(copy.content, Insert("w", [Any[8, "y"]]))
+            Ops.apply!(copy.content, Insert("w", [Any[8, "y"]]), 2)
             computed = hex(Model.state_fingerprint(copy.content))   # before checkpoint! drops the model
             @test_throws "this client computed $computed" CT.checkpoint!(copy, chain_id, 2, txn(2), wrong)
 
             # stage!, then discard! (a 412 or a crash before the head): the old head
             # and its files stay, the staged file is swept, the model reloads
             CT.load_tables!(copy, ["t", "u", "w"])
-            Ops.apply!(copy.content, Insert("w", [Any[8, "y"]]))
+            Ops.apply!(copy.content, Insert("w", [Any[8, "y"]]), 2)
             staged = CT.stage!(copy)
             @test staged.state_fingerprint == Model.state_fingerprint(copy.content)
             @test first.(staged.tables) == ["t", "u", "w"]
@@ -435,7 +458,7 @@ ChainTables.expected_chain_id(c::LocalCopyTestBoundChain) = c.chain_id
             @test isempty(copy.content)
             # stage!, then write_head! (after rc = 0): the head is the local commit point
             CT.load_tables!(copy, ["t", "u", "w"])
-            Ops.apply!(copy.content, Insert("w", [Any[8, "y"]]))
+            Ops.apply!(copy.content, Insert("w", [Any[8, "y"]]), 2)
             staged = CT.stage!(copy)
             CT.write_head!(copy, chain_id, 2, txn(2), staged)
             @test heads(path) == ["000000000002"] && length(tabs(path)) == 2
@@ -446,14 +469,14 @@ ChainTables.expected_chain_id(c::LocalCopyTestBoundChain) = c.chain_id
             close(copy)
             again = CT.open(LocalCopyTestChain(), path)
             CT.load_table!(again, "w")
-            Ops.apply!(again.content, Insert("w", [Any[9, "x"]]))
+            Ops.apply!(again.content, Insert("w", [Any[9, "x"]]), 3)
             staged = CT.stage!(again)
             @test staged.tables[1].second == again.head.tables[1].second
             @test !haskey(again.content, "t")
             # a dropped table leaves the list; a created one joins it
             CT.load_tables!(again, ["t", "u"])
-            Ops.apply!(again.content, Ops.DropTable("u"))
-            Ops.apply!(again.content, CreateTable("new", shape))
+            Ops.apply!(again.content, Ops.DropTable("u"), 3)
+            Ops.apply!(again.content, CreateTable("new", shape), 3)
             CT.checkpoint!(again, chain_id, 3, txn(3), Model.state_fingerprint(again.content))
             @test first.(again.head.tables) == ["new", "t", "w"]
             @test CT.tables(again) == ["new", "t", "w"]

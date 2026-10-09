@@ -85,6 +85,9 @@ parsed, or arithmetically touched. A new op is checked against this. An op that
 evaluated anything would reintroduce, in Julia, the class of hazard SQLite was
 removed for.
 
+*Amended by ADR-0032*: apply copies the envelope's `slot` into each row an op
+changes, as its row slot. Copying a value is not computing one.
+
 ## The determinism vector
 
 Successor to ADR-0018's regression net; the argument carries the claim and CI

@@ -60,7 +60,8 @@ is an error naming both possibilities, rather than ADR-0013's ordinary
 Returning no local copy keeps one rule with no exception: **every local copy is
 built by replay**. The user opens and syncs like anyone else. A zero-op record is
 therefore legal at slot 0 and nowhere else — an empty commit elsewhere is a
-caller mistake, and is rejected.
+caller mistake, and is rejected. *Amended by ADR-0032*: the converse holds too —
+slot 0 carries exactly zero ops, so no row is ever stamped with slot 0.
 
 ## The write builder is a single-use value
 

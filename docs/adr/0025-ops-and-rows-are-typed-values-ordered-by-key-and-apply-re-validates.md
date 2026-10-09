@@ -82,7 +82,9 @@ byte-identical to what `create_table` would carry for that table after its
 
 **Row.** A CBOR array of typed values in declaration order, key columns
 included; column names are stated once, in the shape. The table file is
-`cbor([shape, rows])` with rows in key order (ADR-0007).
+`cbor([shape, rows])` with rows in key order (ADR-0007). *Amended by ADR-0032*:
+in a table file each row is `[cells…, slot]`, its row slot an int64 ≥ 1 last; an
+op's rows carry no slot, since apply copies it from the envelope.
 
 **Ops.** Seven, each a map with an `"op"` discriminator and a `"table"`:
 
@@ -156,6 +158,11 @@ live ones replace it: a future read engine folds ASCII case in identifiers
 (issue #25), names become `Symbol`s and NamedTuple fields on the read surface
 (ADR-0024), and a Unicode name would import the normalisation question the
 encoder deliberately refuses (ADR-0006).
+
+*Amended by ADR-0032*: a column name is `[a-z][a-z0-9_]*`, a letter first — the
+one reserved prefix, so the `_slot` of `table_with_slots` never collides with a
+column. Table names keep the charset above, and there is still no reserved
+table-name prefix.
 
 ## The resident representation is the build's
 

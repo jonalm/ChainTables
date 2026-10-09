@@ -39,6 +39,7 @@ struct TableView{C<:NamedTuple}
     transaction_hash::TransactionHash
     shape::Shape
     columns::C
+    slots::Vector{Int64}          # row slot of each row, in the view's order (ADR-0032)
     index::Dict{Any,Int}          # key tuple => row, in the view's order
     nrows::Int
 end
@@ -58,8 +59,26 @@ function TableView(name::AbstractString, h::Head, t::Model.Table)
     for (i, p) in enumerate(perm)
         index[Model.key_at(t, p)] = i
     end
-    return TableView(String(name), h.chain_id, h.slot, TransactionHash(h.transaction_hash), t.shape, columns, index, length(perm))
+    return TableView(String(name), h.chain_id, h.slot, TransactionHash(h.transaction_hash), t.shape, columns, t.slots[perm],
+                     index, length(perm))
 end
+
+"""
+    ChainTables.table_with_slots(v::TableView) -> NamedTuple
+
+The view's columns plus a `_slot` column: `(; v.columns..., _slot)`, a `NamedTuple` of
+vectors in the view's key order, so a Tables.jl table (ADR-0032). `_slot[i]` is the
+**row slot** of row `i`: the slot of the last transaction record that changed its
+cells — an `insert` or `update` naming it, or an `add_column`/`drop_column` on its
+table. It is per row and always ≤ `v.slot`, which is the head the view was taken at.
+The rows changed after slot `s` are exactly those with `_slot > s`.
+
+The vectors are the view's own, not copies (ADR-0024). `Tables.columns(v)` stays pure
+content, so a row set read from a view goes back into the write builder unchanged; this
+is the opt-in read that carries the slots. No column name starts with `_`, so `_slot`
+never collides (ADR-0025).
+"""
+table_with_slots(v::TableView) = (; v.columns..., _slot = v.slots)
 
 Base.eltype(::Type{TableView{C}}) where {C} = NamedTuple{fieldnames(C),Tuple{map(eltype, fieldtypes(C))...}}
 Base.length(v::TableView) = v.nrows

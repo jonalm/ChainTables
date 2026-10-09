@@ -19,9 +19,12 @@ payload blob.
   "state_fingerprint": h'<32>',           ; content after this record is applied
   "client": { "host": tstr?, "user": tstr?, "lib": tstr, "julia": tstr, "time_ms": int },
   "comment":           "…",               ; optional free text, no semantics
-  "ops":               [ … ]              ; at least one op, per issue #9; op encoding in ADR-0025
+  "ops":               [ … ]              ; none at slot 0, at least one after it (ADR-0032); op encoding in ADR-0025
 }
 ```
+
+*Amended by ADR-0032*: genesis carries exactly zero ops and every later record
+at least one, so every row slot is at least 1.
 
 Text keys, named from `CONTEXT.md`. Keys are sorted by the encoder per §4.2.1, so
 the order above is expository only. The field is `slot`, not `seq` — **this

@@ -75,23 +75,27 @@ using SHA: sha256
     fp = fill(0xaa, 32)
     prev = fill(0xbb, 32)
     client = Client(nothing, nothing, "L", "J", 1)
-    genesis = Record(chain_id, 0, nothing, fp, client, nothing, [DropTable("t")])
+    genesis = Record(chain_id, 0, nothing, fp, client, nothing, Ops.Op[])     # genesis carries no ops (ADR-0032)
+    prev0 = UInt8.(0:31)
+    rec1 = Record(chain_id, 1, prev0, fp, client, nothing, [DropTable("t")])
 
     @testset "record envelope" begin
         # the bytes by hand: keys sort bytewise on their encoded form, so by length
-        # first — ops, slot, client, chain_id, format_version, state_fingerprint —
-        # and inside client: lib, julia, time_ms. prev_hash and comment absent.
+        # first — ops, slot, client, chain_id, prev_hash, format_version,
+        # state_fingerprint — and inside client: lib, julia, time_ms. comment absent.
         op_hex = "a2 62 6f70 6a 64726f705f7461626c65 65 7461626c65 61 74"
-        genesis_hex = replace(
-            "a6 63 6f7073 81 $op_hex 64 736c6f74 00 66 636c69656e74 a3 63 6c6962 61 4c 65 6a756c6961 61 4a 67 74696d655f6d73 01" *
-            " 68 636861696e5f6964 50 000102030405060708090a0b0c0d0e0f 6e 666f726d61745f76657273696f6e 01" *
-            " 71 73746174655f66696e6765727072696e74 5820 " * "aa"^32, " " => "")
-        bytes = Ops.encode_record(genesis)
-        @test hex(bytes) == genesis_hex
+        first_hex = replace(
+            "a7 63 6f7073 81 $op_hex 64 736c6f74 01 66 636c69656e74 a3 63 6c6962 61 4c 65 6a756c6961 61 4a 67 74696d655f6d73 01" *
+            " 68 636861696e5f6964 50 000102030405060708090a0b0c0d0e0f 69 707265765f68617368 5820 " * bytes2hex(prev0) *
+            " 6e 666f726d61745f76657273696f6e 01 71 73746174655f66696e6765727072696e74 5820 " * "aa"^32, " " => "")
+        bytes = Ops.encode_record(rec1)
+        @test hex(bytes) == first_hex
         @test Ops.transaction_hash(bytes) == sha256(vcat(codeunits("chaintables/v1/txn"), bytes))
         @test length(Ops.transaction_hash(bytes)) == 32
-        @test isequal(Ops.decode_record(bytes), genesis)
-        @test isequal(Ops.decode_record(bytes; slot = 0), genesis)
+        @test isequal(Ops.decode_record(bytes), rec1)
+        @test isequal(Ops.decode_record(bytes; slot = 1), rec1)
+        # and the genesis create_chain writes: zero ops, no prev_hash
+        @test isequal(Ops.decode_record(Ops.encode_record(genesis); slot = 0), genesis)
 
         # every optional field present: prev_hash at slot 1, host, user, comment
         full = Record(chain_id, 1, prev, fp, Client("h", "u", "L", "J", 2), "why", [DropTable("t"), DropTable("u")])
@@ -104,25 +108,28 @@ using SHA: sha256
 
         # the constructor holds the envelope rules, so the builder and the decoder
         # share them
-        @test_throws "chain_id is 15 bytes; a chain id is 16" Record(chain_id[1:15], 0, nothing, fp, client, nothing, [DropTable("t")])
-        @test_throws "state_fingerprint is 31 bytes; a SHA-256 is 32" Record(chain_id, 0, nothing, fp[1:31], client, nothing, [DropTable("t")])
+        @test_throws "chain_id is 15 bytes; a chain id is 16" Record(chain_id[1:15], 1, prev, fp, client, nothing, [DropTable("t")])
+        @test_throws "state_fingerprint is 31 bytes; a SHA-256 is 32" Record(chain_id, 1, prev, fp[1:31], client, nothing, [DropTable("t")])
         @test_throws "prev_hash is 1 bytes; a SHA-256 is 32" Record(chain_id, 1, UInt8[0], fp, client, nothing, [DropTable("t")])
         @test_throws "slot 0 carries a prev_hash; genesis has no parent" Record(chain_id, 0, prev, fp, client, nothing, [DropTable("t")])
         @test_throws "slot 1 has no prev_hash; every slot after genesis names its parent" Record(chain_id, 1, nothing, fp, client, nothing, [DropTable("t")])
         @test_throws "slot -1 is negative" Record(chain_id, -1, nothing, fp, client, nothing, [DropTable("t")])
-        # zero ops is legal at slot 0 — the genesis create_chain writes — and nowhere else (ADR-0019)
+        # zero ops exactly at slot 0 — the genesis create_chain writes — and at least
+        # one everywhere else (ADR-0019, ADR-0032): so every row slot is at least 1
         @test isempty(Record(chain_id, 0, nothing, fp, client, nothing, Ops.Op[]).ops)
         @test_throws "record has no ops; a record after genesis carries at least one" Record(chain_id, 1, prev, fp, client, nothing, Ops.Op[])
-        @test_throws "comment contains U+0000" Record(chain_id, 0, nothing, fp, client, "a\0b", [DropTable("t")])
-        @test_throws "comment is not well-formed UTF-8" Record(chain_id, 0, nothing, fp, client, "\xff", [DropTable("t")])
+        @test_throws Model.ModelError Record(chain_id, 0, nothing, fp, client, nothing, [DropTable("t")])
+        @test_throws "slot 0 carries 1 op; genesis carries none" Record(chain_id, 0, nothing, fp, client, nothing, [DropTable("t")])
+        @test_throws "comment contains U+0000" Record(chain_id, 1, prev, fp, client, "a\0b", [DropTable("t")])
+        @test_throws "comment is not well-formed UTF-8" Record(chain_id, 1, prev, fp, client, "\xff", [DropTable("t")])
         @test_throws "client.host contains U+0000" Client("\0", nothing, "L", "J", 1)
 
         # reading is strict: every envelope violation is a malformed record naming the slot
         bad(w; slot = nothing) = Ops.decode_record(CBOR.encode(w); slot)
-        w0 = Ops.wire(genesis)
+        w0 = Ops.wire(rec1)
         with(w; kw...) = (d = copy(w); for (k, v) in kw; v === nothing ? delete!(d, string(k)) : (d[string(k)] = v); end; d)
         @test_throws MalformedRecordError bad(with(w0; extra = 1))
-        @test_throws "malformed record at slot 0" bad(with(w0; extra = 1))
+        @test_throws "malformed record at slot 1" bad(with(w0; extra = 1))
         @test_throws "unknown envelope field \"extra\"" bad(with(w0; extra = 1))
         @test_throws "format_version 2 is above this client's maximum, 1; a newer client wrote it: upgrade ChainTables" bad(with(w0; format_version = 2))
         @test_throws "format_version 0 is not a version this client reads" bad(with(w0; format_version = 0))
@@ -132,11 +139,12 @@ using SHA: sha256
         @test_throws "chain_id is not bytes" bad(with(w0; chain_id = "x"))
         @test_throws "chain_id is 2 bytes; a chain id is 16" bad(with(w0; chain_id = UInt8[1, 2]))
         @test_throws "slot is not an integer" bad(with(w0; slot = 1.0))
-        @test_throws "slot 0 carries a prev_hash" bad(with(w0; prev_hash = prev))
+        @test_throws "slot 0 carries a prev_hash" bad(with(w0; slot = 0))
         @test_throws "comment is not text" bad(with(w0; comment = 1))
         @test_throws "ops is not an array" bad(with(w0; ops = 1))
-        @test isempty(bad(with(w0; ops = Any[])).ops)
-        @test_throws "record has no ops" bad(with(w0; slot = 1, prev_hash = prev, ops = Any[]); slot = 1)
+        @test isempty(bad(with(w0; slot = 0, prev_hash = nothing, ops = Any[])).ops)
+        @test_throws "record has no ops" bad(with(w0; ops = Any[]); slot = 1)
+        @test_throws "malformed record at slot 0: slot 0 carries 1 op; genesis carries none" bad(with(w0; slot = 0, prev_hash = nothing); slot = 0)
         @test_throws "op 1: op is not a map" bad(with(w0; ops = Any[1]))
         @test_throws "op 2: unknown op \"nope\"" bad(with(w0; ops = Any[w0["ops"][1], Dict{String,Any}("op" => "nope", "table" => "t")]))
         @test_throws "client is not a map" bad(with(w0; client = 1))
@@ -145,7 +153,7 @@ using SHA: sha256
         @test_throws "client.time_ms is not an integer" bad(with(w0; client = Dict{String,Any}("lib" => "L", "julia" => "J", "time_ms" => 1.0)))
         @test_throws "client.host is not text" bad(with(w0; client = Dict{String,Any}("lib" => "L", "julia" => "J", "time_ms" => 1, "host" => 1)))
         # the slot the record was fetched from must be the slot it names (ADR-0002)
-        @test_throws "malformed record at slot 3: the record names slot 0" bad(w0; slot = 3)
+        @test_throws "malformed record at slot 3: the record names slot 1" bad(w0; slot = 3)
         # not the format's CBOR at all: the decoder's rejection, folded
         @test_throws "malformed record at slot 5: not deterministic CBOR (byte 0: " Ops.decode_record(UInt8[0xff]; slot = 5)
         @test_throws MalformedRecordError Ops.decode_record(vcat(bytes, 0x00))
@@ -155,10 +163,10 @@ using SHA: sha256
         @test_throws "the chain is dead beyond this slot; a new chain is the recovery" bad(with(w0; extra = 1))
 
         # the 64 MiB cap, at build time, with the byte count (ADR-0006)
-        big = Record(chain_id, 0, nothing, fp, client, nothing,
+        big = Record(chain_id, 1, prev, fp, client, nothing,
                      [Insert("t", [Any[1, zeros(UInt8, 64 * 1024 * 1024)]])])
         @test_throws WriteBuilderError Ops.encode_record(big)
-        @test_throws "record is 67109033 bytes; the cap is 67108864 bytes (64 MiB): split the write" Ops.encode_record(big)
+        @test_throws "record is 67109077 bytes; the cap is 67108864 bytes (64 MiB): split the write" Ops.encode_record(big)
         @test_throws "malformed record at slot 0: record is 67108865 bytes; the cap is 67108864" Ops.decode_record(zeros(UInt8, 64 * 1024 * 1024 + 1); slot = 0)
     end
 
@@ -176,7 +184,7 @@ using SHA: sha256
         @test Ops.local_client(; user = "").user === nothing
         c2 = Ops.local_client(; record_host = false)
         @test c2.host === nothing && c2.user === nothing
-        @test !haskey(Ops.wire(Record(chain_id, 0, nothing, fp, c2, nothing, [DropTable("t")]))["client"], "host")
+        @test !haskey(Ops.wire(Record(chain_id, 1, prev, fp, c2, nothing, [DropTable("t")]))["client"], "host")
     end
 
     # ------------------------------------------------------------------------
@@ -187,15 +195,15 @@ using SHA: sha256
     record(slot, ops; prev = slot == 0 ? nothing : prev) = Record(chain_id, slot, prev, fp, client, nothing, ops)
     # a record as a second client meets it: through the bytes
     second(slot, ops) = Ops.decode_record(Ops.encode_record(record(slot, ops)); slot)
-    fresh() = (c = Content(); Ops.apply!(c, second(0, [CreateTable("t", shape), Insert("t", [Any[1, "a"], Any[2, missing]])])); c)
+    fresh() = (c = Content(); Ops.apply!(c, second(1, [CreateTable("t", shape), Insert("t", [Any[1, "a"], Any[2, missing]])])); c)
 
     @testset "apply" begin
         c = fresh()
         @test collect(keys(c)) == ["t"]
         @test isequal(Model.getrow(c["t"], (2,)), Any[2, missing])
-        @test Model.state_fingerprint(c) == Model.state_fingerprint(Content("t" => Table(shape, [Any[1, "a"], Any[2, missing]])))
+        @test Model.state_fingerprint(c) == Model.state_fingerprint(Content("t" => Table(shape, [Any[1, "a"], Any[2, missing]], 1)))
         # every op kind, applied in order within one record
-        Ops.apply!(c, second(1, [
+        Ops.apply!(c, second(2, [
             Update("t", ["v"], [Any[2, "b"]]),
             Delete("t", [Any[1]]),
             AddColumn("t", Column("w", "float64", false), 0.5),       # a non-nullable float64 is addable
@@ -208,22 +216,22 @@ using SHA: sha256
         @test collect(keys(c)) == ["t"]
         @test isequal(Model.getrow(c["t"], (2,)), Any[2, 0.5, missing])
         @test c["t"].shape == Shape([Column("id", "int64", false), Column("w", "float64", false), Column("n", "int64", true)], ["id"])
-        @test Ops.apply!(c, second(2, [DropTable("t")])) === nothing
+        @test Ops.apply!(c, second(3, [DropTable("t")])) === nothing
         @test isempty(c)
 
         # the named test: a float64 in an int64 column raises MalformedRecordError
         # at apply on a second client, naming slot, op index and rule
         c = fresh()
-        bad = second(1, [DropColumn("t", "v"), Insert("t", [Any[3.0]])])
+        bad = second(2, [DropColumn("t", "v"), Insert("t", [Any[3.0]])])
         @test_throws MalformedRecordError Ops.apply!(c, bad)
-        @test_throws "malformed record at slot 1: op 2 (insert on \"t\"): column \"id\" is int64, got a value of type Float64" Ops.apply!(fresh(), bad)
+        @test_throws "malformed record at slot 2: op 2 (insert on \"t\"): column \"id\" is int64, got a value of type Float64" Ops.apply!(fresh(), bad)
         @test_throws "(chain AAAQEAYEAUDAOCAJBIFQYDIOB4)" Ops.apply!(fresh(), bad)      # the chain id as humans read it (ADR-0019)
         err = try; Ops.apply!(fresh(), bad); nothing; catch e; e; end
-        @test (err.chain_id, err.slot, err.op) == ("AAAQEAYEAUDAOCAJBIFQYDIOB4", 1, 2)
+        @test (err.chain_id, err.slot, err.op) == ("AAAQEAYEAUDAOCAJBIFQYDIOB4", 2, 2)
         @test_throws "the chain is dead beyond this slot; a new chain is the recovery" Ops.apply!(fresh(), bad)
 
         # each structural check of ADR-0025, refused at the op that breaks it
-        rule(ops) = try Ops.apply!(fresh(), second(1, ops)); "applied" catch e; e isa MalformedRecordError ? e.msg : rethrow() end
+        rule(ops) = try Ops.apply!(fresh(), second(2, ops)); "applied" catch e; e isa MalformedRecordError ? e.msg : rethrow() end
         @test occursin("op 1 (insert on \"t\"): column \"id\" is int64 and does not admit null", rule([Insert("t", [Any[missing, "x"]])]))
         @test occursin("op 1 (insert on \"t\"): row has 1 cells; the shape has 2 columns", rule([Insert("t", [Any[3]])]))        # every column named
         @test occursin("op 1 (insert on \"nope\"): unknown table \"nope\"", rule([Insert("nope", [Any[3, "x"]])]))
@@ -250,18 +258,26 @@ using SHA: sha256
         # tables: a known name, the identifier rule, no double creation
         @test occursin("op 1 (create_table on \"t\"): table \"t\" already exists", rule([CreateTable("t", shape)]))
         @test occursin("op 1 (create_table on \"T\"): table name \"T\" is not an identifier", rule([CreateTable("T", shape)]))
+        # a column name starting with _ (ADR-0032), as a second client meets it: an
+        # add_column is refused at apply, a create_table's shape when it is read
+        @test occursin("op 1 (add_column on \"t\"): column name \"_slot\" is not an identifier ([a-z][a-z0-9_]*: a column name starts with a letter)",
+                       rule([AddColumn("t", Column("_slot", "int64", true), missing)]))
+        w2 = Ops.wire(record(2, [CreateTable("u", shape)]))
+        w2["ops"][1]["shape"]["columns"][2][1] = "_v"
+        @test_throws MalformedRecordError Ops.decode_record(CBOR.encode(w2); slot = 2)
+        @test_throws "malformed record at slot 2: op 1: column name \"_v\" is not an identifier" Ops.decode_record(CBOR.encode(w2); slot = 2)
         @test occursin("op 1 (drop_table on \"nope\"): unknown table \"nope\"", rule([DropTable("nope")]))
         @test occursin("op 1 (drop_column on \"nope\"): unknown table \"nope\"", rule([DropColumn("nope", "v")]))
         # ops after the failing one are not applied, and the ops before it are
         c = fresh()
-        @test_throws MalformedRecordError Ops.apply!(c, second(1, [DropColumn("t", "v"), Insert("t", [Any[1]]), CreateTable("u", shape)]))
+        @test_throws MalformedRecordError Ops.apply!(c, second(2, [DropColumn("t", "v"), Insert("t", [Any[1]]), CreateTable("u", shape)]))
         @test collect(keys(c)) == ["t"] && Model.ncols(c["t"].shape) == 1
 
         # one op at a time, for the builder: the model's error, unfolded
         c = fresh()
-        @test Ops.apply!(c, Delete("t", [Any[1]])) === nothing
-        @test_throws Model.ModelError Ops.apply!(c, Delete("t", [Any[1]]))
-        @test_throws "delete names a key that is absent: (1,)" Ops.apply!(c, Delete("t", [Any[1]]))
+        @test Ops.apply!(c, Delete("t", [Any[1]]), 2) === nothing
+        @test_throws Model.ModelError Ops.apply!(c, Delete("t", [Any[1]]), 2)
+        @test_throws "delete names a key that is absent: (1,)" Ops.apply!(c, Delete("t", [Any[1]]), 2)
 
         # sorting rows into the canonical order is the builder's job; apply never
         # sorts, but the helper that does is here so the two agree
@@ -273,10 +289,13 @@ using SHA: sha256
 
     # ------------------------------------------------------------------------
     # The determinism vector (ADR-0022, #34 §4): the model vector of test/model.jl
-    # as one genesis record. Its state_fingerprint is the literal frozen there;
-    # its transaction_hash is minted here from the first green run and FROZEN:
-    # changing either literal is a chain break and needs an ADR. The client
-    # fields are literals, not this machine's.
+    # as one record at slot 2^32 with a prev_hash (genesis carries no ops,
+    # ADR-0032). Its state_fingerprint is the literal frozen there; its
+    # transaction_hash is minted here from the first green run and FROZEN:
+    # changing either literal is a chain break and needs an ADR. ADR-0032 moved
+    # them once, amending format_version 1 in place: the fingerprint now covers
+    # row slots, and the record moved off slot 0. The client fields are
+    # literals, not this machine's.
     # ------------------------------------------------------------------------
     @testset "determinism vector: transaction_hash" begin
         signbit_nan = reinterpret(Float64, 0xfff8000000000000)
@@ -310,8 +329,8 @@ using SHA: sha256
             Insert("gone", [Any[1]]),
             DropTable("gone"),
         ]
-        frozen_fp = hex2bytes("62bffad1f527b79663c487fe1e192be4617ccf4f29e466c7d8fbcfa92c505582")
-        vector = Record(UInt8.(0:15), 0, nothing, frozen_fp,
+        frozen_fp = hex2bytes("331e990a50abbbb3415e34eed0feb7fdc6549530bad76d3c8579c7ee086054df")
+        vector = Record(UInt8.(0:15), 2^32, UInt8.(0:31), frozen_fp,
                         Client("ci", "ci", "ChainTables 0.1.0", "1.10.0", 1_700_000_000_000),
                         "determinism vector", ops)
         # the ops reproduce the model vector's frozen fingerprint
@@ -320,10 +339,10 @@ using SHA: sha256
         @test Model.state_fingerprint(c) == frozen_fp
         # the bytes, and their hash, are the same on every cell
         bytes = Ops.encode_record(vector)
-        @test length(bytes) == 1226
-        @test hex(Ops.transaction_hash(bytes)) == "4529901d4b7bd95f56c6fd7cd32dec21baffdab666956f5dda37bd93791fa206"
+        @test length(bytes) == 1278
+        @test hex(Ops.transaction_hash(bytes)) == "ba70e47ecaf045d61d56bd2f937e80356e4850331a59add52d49e5771dbce16a"
         # and the second client reads exactly what the first wrote
-        back = Ops.decode_record(bytes; slot = 0)
+        back = Ops.decode_record(bytes; slot = 2^32)
         @test isequal(back, vector)
         @test Ops.encode_record(back) == bytes
         c2 = Content()

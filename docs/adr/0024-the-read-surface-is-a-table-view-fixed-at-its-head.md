@@ -23,6 +23,7 @@ length(v); keys(v)                       # rows; primary keys
 v[7]; v[(7, "eu")]                       # row by primary key → NamedTuple
 haskey(v, 7); get(v, 7, nothing)         # Base conventions; v[k] raises KeyError
 v.slot; v.transaction_hash               # what head this is
+ChainTables.table_with_slots(v)._slot    # each row's row slot, ≤ v.slot (ADR-0032)
 
 ChainTables.tables(copy)                 # sorted table names
 ChainTables.shape(copy, :orders)         # the declaration create_table! built
@@ -32,7 +33,9 @@ ChainTables.head(copy)                   # (; slot, transaction_hash, state_fing
 - A row is a `NamedTuple` in declaration order. Null is `missing`: a nullable
   column is `Vector{Union{Missing,T}}`, a non-nullable one `Vector{T}`, which is
   what ADR-0001 already accepts on the write side, so a row set read from a view
-  goes into the write builder with no conversion.
+  goes into the write builder with no conversion. *Amended by ADR-0032*:
+  `Tables.columns(v)` stays pure content for that reason; the row slots are read
+  through `table_with_slots(v)`, the view's own vectors plus a `_slot` column.
 - A composite key is a tuple in primary-key declaration order; a one-column key
   accepts the bare value. A missing key raises `KeyError`; `get` is the soft
   form. Fail-fast, and no convention of our own.

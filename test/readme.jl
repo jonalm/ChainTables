@@ -64,6 +64,8 @@ using ChainTables.Testing: InMemoryObjectStore
             r2 = CT.commit!(w2)
             @test r2.slot == 2
             @test v[2].mass === missing               # a view never moves (ADR-0024)
+            # every row carries its row slot; the view's own columns stay content (ADR-0032)
+            @test CT.table_with_slots(CT.table(copy2, :samples))._slot == [1, 2]
             @test CT.table(copy2, :samples)[2].mass == 2.5
             @test CT.table(copy2, :samples) !== v
 

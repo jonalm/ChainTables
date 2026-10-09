@@ -43,6 +43,14 @@ filled once the one before it is.
 _Avoid_: index, offset, position, sequence
 _See_: [ADR-0002](docs/adr/0002-commit-is-a-conditional-put-to-a-sequence-numbered-slot.md)
 
+**Row slot**:
+The slot of the last transaction record that changed a row's cells — an insert
+or update naming the row, or a column op on its table. It is content: stored with
+the row and inside the state fingerprint. It is never 0, and never above the
+head's slot.
+_Avoid_: version, revision, timestamp, etag, last-modified
+_See_: [ADR-0032](docs/adr/0032-every-row-carries-the-slot-of-the-last-record-that-changed-it.md)
+
 **Reserved name**:
 Anything under a chain's prefix that is not a slot. Clients ignore reserved names,
 so whatever a later version of ChainTables keeps there cannot break an earlier one.
@@ -94,8 +102,8 @@ _See_: [ADR-0013](docs/adr/0013-apply-is-per-record-in-memory-and-checkpoints-ar
 
 **State fingerprint**:
 A canonical hash of the whole content after a transaction record has been
-applied — the shape and the rows of every table the chain created, and nothing a
-client keeps for itself. It is carried in the record, and every client recomputes
+applied — the shape and the rows of every table, each row with its row slot, and
+nothing a client keeps for itself. It is carried in the record, and every client recomputes
 it. Distinct from the transaction hash: that one hashes stored bytes, this one
 hashes content a client derived for itself.
 _Avoid_: checksum, digest, merkle root, state hash

@@ -205,7 +205,9 @@ end
 Declare a table (ADR-0003, ADR-0025): its columns in declaration order, and its
 primary key. The block is the one place a do-block reads well (ADR-0001). A
 table needs at least one column and an explicit key of non-nullable columns;
-names are identifiers, `[a-z_][a-z0-9_]*`. Refuses a name already in use.
+the table name is an identifier, `[a-z_][a-z0-9_]*`, and a column name one that
+starts with a letter, `[a-z][a-z0-9_]*`, so it never collides with the `_slot` of
+[`table_with_slots`](@ref) (ADR-0032). Refuses a name already in use.
 """
 function create_table!(f, w::WriteBuilder, table)
     guarded("create_table!(w, $(repr(table)))") do
@@ -231,7 +233,7 @@ tags — `Int64`, `Float64`, `String`, `Vector{UInt8}` — by identity (ADR-0019
 function column!(d::TableDeclaration, column, T; nullable = false)
     guarded("column!(t, $(repr(column)), $(repr(T)))") do
         name = colname(column)
-        Model.is_identifier(name) || fail("column name $(repr(name)) is not an identifier ([a-z_][a-z0-9_]*)")
+        Model.check_column_name(name)
         any(c -> c.name == name, d.columns) && fail("duplicate column name $(repr(name))")
         push!(d.columns, Model.Column(name, tag_value_type(T, name), nullable))
     end
@@ -257,6 +259,13 @@ end
 # The column and table ops (ADR-0025)
 # ---------------------------------------------------------------------------
 
+# The slot a scratch table's column op stamps: a placeholder 0, since a scratch
+# table holds a shape and never rows, so nothing is stamped (ADR-0032).
+function scratch_slot(t::Model.Table)
+    Model.nrows(t) == 0 || error("scratch table holds $(Model.nrows(t)) rows; it holds a shape and never rows")
+    return 0
+end
+
 """
     add_column!(w, :t, :c, T; nullable = false, fill)
 
@@ -272,7 +281,7 @@ function add_column!(w::WriteBuilder, table, column, T; nullable = false, fill)
         c = Model.Column(cname, tag_value_type(T, cname), nullable)
         t = scratch_table(w, name)
         f = cell(c, fill)
-        Model.add_column!(t, c, f)                                  # exists, fill against the column, identifier
+        Model.add_column!(t, c, f, scratch_slot(t))                 # exists, fill against the column, identifier
         push!(w.ops, Ops.AddColumn(name, c, f))
     end
 end
@@ -288,7 +297,8 @@ function drop_column!(w::WriteBuilder, table, column)
         live(w)
         name = tablename(table)
         cname = colname(column)
-        Model.drop_column!(scratch_table(w, name), cname)
+        t = scratch_table(w, name)
+        Model.drop_column!(t, cname, scratch_slot(t))
         push!(w.ops, Ops.DropColumn(name, cname))
     end
 end
