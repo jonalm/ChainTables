@@ -11,8 +11,11 @@ using .Model: Content
 
 # The transaction hash each slot 0..head.slot must have, walked backwards from the head:
 # the head names its own slot, every record names its parent. The cache's copy of a slot
-# is rehashed against that before anything of it is trusted; a copy that lacks a slot
-# stops unless `fetch` fills it from the store. Returns the hashes by slot (index s + 1).
+# is rehashed against that before anything of it is trusted. A slot the cache lacks, or
+# holds other bytes for, is a damaged record cache, not a damaged chain (ADR-0040): local
+# (`fetch = false`), it raises `RecordCacheError`; with `fetch`, the store's bytes replace
+# it once they hash right, and only bytes the store holds can make a rewritten chain — the
+# cached file then stays as it was. Returns the hashes by slot (index s + 1).
 function cached_chain_hashes(copy::LocalCopy, chain::Chain, call; fetch = false)
     h = copy.head
     hashes = Vector{Vector{UInt8}}(undef, h.slot + 1)
@@ -20,15 +23,28 @@ function cached_chain_hashes(copy::LocalCopy, chain::Chain, call; fetch = false)
     named_by = "the head of the local copy at $(copy.path) names it as"
     for s in h.slot:-1:0
         key = slot_key(chain, s)
-        path = record_path(chain.cache, chain.bucket, key)
-        bytes = fetch ? fetch_record(chain.cache, chain.store, chain.bucket, key) : cached_record(chain, s)
-        bytes === nothing && throw(ArgumentError("$call: slot $s of chain $(h.chain_id) is not in the record cache ($path), " *
-            "and the check is local. repair!(copy) fetches what the cache lacks and rewrites what differs; a fresh local " *
-            "copy sync!ed from the chain fetches every record."))
-        th = Ops.transaction_hash(bytes)
-        th == expected || error("$call: the record cache's copy of slot $s ($path) hashes to $(bytes2hex(th)); " *
-            "$named_by $(bytes2hex(expected)). The record cache is damaged: delete that file, and repair!(copy) " *
-            "fetches it again.")
+        path = record_path(chain.cache, chain.store, chain.bucket, key)
+        bytes = cached_record(chain, s)
+        th = bytes === nothing ? nothing : Ops.transaction_hash(bytes)
+        if th != expected && !fetch
+            throw(RecordCacheError(th === nothing ?
+                "$call: slot $s of chain $(h.chain_id) is not in the record cache ($path), and the check is local. " *
+                "repair!(copy) fetches what the cache lacks and replaces what is damaged; a fresh local copy sync!ed " *
+                "from the chain fetches every record." :
+                "$call: the record cache's copy of slot $s ($path) hashes to $(bytes2hex(th)); $named_by " *
+                "$(bytes2hex(expected)). The record cache is damaged, not the chain: repair!(copy) fetches the record " *
+                "again and replaces the file.";
+                chain_id = h.chain_id, slot = s, path, expected, found = th))
+        elseif th != expected
+            bytes = fetch_object(chain.store, key)
+            th = bytes === nothing ? nothing : Ops.transaction_hash(bytes)
+            th == expected && heal_record!(chain.cache, chain.store, chain.bucket, key, bytes)
+            th == expected || throw(RewrittenChainError("rewritten chain: slot $s of chain $(h.chain_id) at " *
+                "$(location(chain)) " * (th === nothing ? "is absent" : "holds a record hashing to $(bytes2hex(th))") *
+                "; $named_by $(bytes2hex(expected)). The bucket was written from outside the protocol and nothing heals " *
+                "it. Nothing was written; the local copy stays readable and never commits onto this chain.";
+                chain_id = h.chain_id, slot = s, expected, found = th))
+        end
         hashes[s+1] = th
         record = Ops.decode_record(bytes; slot = s)
         chain_id_string(record.chain_id) == h.chain_id || throw(MalformedRecordError("malformed record at slot $s: it " *
@@ -40,10 +56,13 @@ function cached_chain_hashes(copy::LocalCopy, chain::Chain, call; fetch = false)
 end
 
 # The record at `slot`, from the cache, rehashed against what the chain walk established.
-function cached_record_at(chain::Chain, slot, hashes, call)
+function cached_record_at(chain::Chain, chain_id, slot, hashes, call)
+    path = record_path(chain.cache, chain.store, chain.bucket, slot_key(chain, slot))
     bytes = cached_record(chain, slot)
-    (bytes !== nothing && Ops.transaction_hash(bytes) == hashes[slot+1]) ||
-        error("$call: the record cache's copy of slot $slot changed while it was being read")
+    th = bytes === nothing ? nothing : Ops.transaction_hash(bytes)
+    th == hashes[slot+1] || throw(RecordCacheError("$call: the record cache's copy of slot $slot ($path) changed while " *
+        "it was being read; another process is writing the record cache. Run $call again.";
+        chain_id, slot, path, expected = hashes[slot+1], found = th))
     return Ops.decode_record(bytes; slot)
 end
 
@@ -71,10 +90,10 @@ first slot whose fingerprint this client does not reproduce** — the head is re
 first, and if it reproduces the copy is verified; otherwise `log` replays from slot 0
 find the first mismatching slot, which the error names in message and fields with
 the record's `client.lib`/`client.julia` against this machine's. The bisection assumes
-what determinism gives: once a slot fails to reproduce, so does every later one. A
-record the cache lacks stops the check (it is local); a cached record whose bytes do
-not hash to what the chain names is a damaged record cache, and the error says which
-file to delete.
+what determinism gives: once a slot fails to reproduce, so does every later one. The
+check is local, so a record the cache lacks, or a cached record whose bytes do not hash
+to what the chain names, stops it with `RecordCacheError` naming the file: the record
+cache is damaged, not the chain, and `repair!(copy)` fetches the record again (ADR-0040).
 """
 function verify(copy::LocalCopy; full = false)
     check_open(copy)
@@ -86,7 +105,7 @@ function verify(copy::LocalCopy; full = false)
     chain = chain_of(copy, "verify")
     call = "verify(copy; full = true)"
     hashes = cached_chain_hashes(copy, chain, call)
-    records = [cached_record_at(chain, s, hashes, call) for s in 0:h.slot]
+    records = [cached_record_at(chain, h.chain_id, s, hashes, call) for s in 0:h.slot]
     replay_to(content, from, to) = (for s in from:to; Ops.apply!(content, records[s+1]); end; content)
     reproduces(content, s) = Model.state_fingerprint(content) == records[s+1].state_fingerprint
     top = replay_to(Content(), 0, h.slot)
@@ -162,10 +181,15 @@ end
     repair!(copy) -> (; slot, files_rewritten)
 
 Repair a damaged copy in place (ADR-0014, ADR-0023): replay the chain from the record
-cache to the head's slot in memory — a record the cache lacks is fetched through it —
-encode and hash every table, and hold the list against the head's. All match: rewrite
-only the files whose on-disk bytes do not hash to their name, or are missing, each
-written to a `.tmp` and renamed into place; the head and the pin are untouched, there
+cache to the head's slot in memory, encode and hash every table, and hold the list
+against the head's. A record the cache lacks, or holds bytes for that do not hash to
+what the chain names, is fetched from the store into the cache — a damaged file is
+replaced with a warning (ADR-0040) — and a store whose bytes do not hash to it either is
+`RewrittenChainError`, with nothing written and the cached file left as it was. A cache
+file that changes while it is read, because another process is writing the cache, is
+`RecordCacheError`; run `repair!` again. All match: rewrite only the files whose on-disk
+bytes do not hash to their name, or are missing, each written to a `.tmp` and renamed
+into place; the head and the pin are untouched, there
 is no temporary directory and no swap, and `files_rewritten` counts files (two tables
 with identical content share one). Mismatch: `DivergenceError` naming the slot, both
 fingerprints and the tables that differ, and **nothing is written** — this machine
@@ -186,7 +210,7 @@ function repair!(copy::LocalCopy)
     hashes = cached_chain_hashes(copy, chain, call; fetch = true)
     content = Content()
     for s in 0:h.slot
-        Ops.apply!(content, cached_record_at(chain, s, hashes, call))
+        Ops.apply!(content, cached_record_at(chain, h.chain_id, s, hashes, call))
     end
     replayed = sort!([name => Model.table_hash(t) for (name, t) in content]; by = first)
     computed = Model.state_fingerprint(replayed)
@@ -250,8 +274,8 @@ pinned above, or live, it is refused, since a copy never moves backwards and `as
 never touches a live copy. A `path` bound to another chain is `WrongChainError`.
 
 A `target` the chain has no slot for is refused; a prefix with no slot 0 is
-`ChainNotFoundError`. Addressing by hash scans the chain's records from slot 0 through
-the record cache.
+`ChainNotFoundError`. Addressing by hash scans the chain's records from slot 0 with
+[`read_forward`](@ref), which holds each against its parent (ADR-0040).
 """
 function as_of(chain::Chain, target; path = nothing)
     slot = target_slot(chain, target)
@@ -294,14 +318,14 @@ function target_slot(chain::Chain, target::Integer)
     return Int64(target)
 end
 function target_slot(chain::Chain, target::TransactionHash)
-    keyof(s) = slot_key(chain, s)
-    top = gallop(chain.store, keyof, -1)
+    top = gallop(chain.store, s -> slot_key(chain, s), -1)
     top == -1 && throw(chain_not_found(chain, "as_of"))
-    for s in 0:top
-        bytes = fetch_record(chain.cache, chain.store, chain.bucket, keyof(s))
-        bytes === nothing && throw(vanished(chain, s))
-        Ops.transaction_hash(bytes) == target.bytes && return s
+    found = nothing
+    read_forward(chain, 0, top) do s, record, th
+        th == target.bytes && (found = s)
+        return found !== nothing
     end
+    found === nothing || return Int64(found)
     throw(ArgumentError("as_of(chain, $(repr(target))): no record of the chain at $(location(chain)) hashes to it " *
         "(slots 0 to $top scanned)"))
 end
@@ -321,35 +345,29 @@ chain_not_found(chain::Chain, call) = ChainNotFoundError("chain not found: no sl
     "no chain to read. Either the bucket or prefix is not the chain's, or no chain was created there — create_chain(chain) " *
     "writes slot 0, and only that. The two cannot be told apart from here."; bucket = chain.bucket, prefix = chain.prefix)
 
-vanished(chain::Chain, s) = RewrittenChainError("rewritten chain: slot $s at $(location(chain)) was there when head " *
-    "discovery probed it and is absent now. The bucket is being written from outside the protocol and nothing heals it.";
-    slot = Int64(s), found = nothing)
-
 """
     slot_at(chain, time_ms) -> Int64
 
 The highest slot whose record's `client.time_ms` is at or below `time_ms` (milliseconds
 since the Unix epoch, UTC), found by scanning every record of the chain from slot 0
-through the record cache (ADR-0015). A scan, because `client.time_ms` is what the
-committer asserted and is not monotone across clients with skewed clocks — which is
-also why this is a separate, differently named lookup that returns a slot for
-[`as_of`](@ref) rather than an address of its own. A time before the genesis record's
+with [`read_forward`](@ref), which holds each against its parent (ADR-0015, ADR-0040):
+a broken link is `RewrittenChainError`, not an answer. A scan, because
+`client.time_ms` is what the committer asserted and is not monotone across clients with
+skewed clocks — which is also why this is a separate, differently named lookup that
+returns a slot for [`as_of`](@ref) rather than an address of its own. A time before the genesis record's
 is an error: there is no state before slot 0.
 """
 function slot_at(chain::Chain, time_ms)
     time_ms isa Integer || throw(ArgumentError("slot_at(chain, time_ms): time_ms is a $(typeof(time_ms)), not an Integer " *
         "of milliseconds since the Unix epoch"))
-    keyof(s) = slot_key(chain, s)
-    top = gallop(chain.store, keyof, -1)
+    top = gallop(chain.store, s -> slot_key(chain, s), -1)
     top == -1 && throw(chain_not_found(chain, "slot_at"))
     best = nothing
     genesis_ms = nothing
-    for s in 0:top
-        bytes = fetch_record(chain.cache, chain.store, chain.bucket, keyof(s))
-        bytes === nothing && throw(vanished(chain, s))
-        record = Ops.decode_record(bytes; slot = s)
+    read_forward(chain, 0, top) do s, record, th
         s == 0 && (genesis_ms = record.client.time_ms)
         record.client.time_ms <= time_ms && (best = s)
+        return false
     end
     best === nothing && throw(ArgumentError("slot_at(chain, $time_ms): the time is before the genesis record's " *
         "client.time_ms, $genesis_ms; there is no state before slot 0 (ADR-0015)"))

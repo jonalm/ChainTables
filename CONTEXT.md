@@ -214,11 +214,15 @@ _See_: [ADR-0023](docs/adr/0023-the-local-copy-is-hash-named-table-files-and-a-s
 
 **Record cache**:
 The machine-wide directory of transaction records a client has fetched. Keyed by
-bucket and key, disposable, and never re-validated — correct because at most one
-record ever occupies a slot, so a key's bytes are immutable by protocol. Distinct
-from the local copy, which is derived from the records rather than a copy of them.
+the store's namespace, bucket and key, disposable, and a hit is never asked of the
+store — at most one record ever occupies a slot, so a key's bytes are immutable by
+protocol. Not the chain's word, though: a file can be damaged, or outlive a bucket
+that was emptied and refilled, so a cached record is applied only once a record the
+store returned names it, and a hit that fails is fetched again before the chain is
+blamed. Distinct from the
+local copy, which is derived from the records rather than a copy of them.
 _Avoid_: blob cache, object cache, store, mirror
-_See_: [ADR-0010](docs/adr/0010-s3sqlite-owns-its-s3-client-and-its-record-cache.md)
+_See_: [ADR-0010](docs/adr/0010-s3sqlite-owns-its-s3-client-and-its-record-cache.md), [ADR-0040](docs/adr/0040-the-record-cache-is-not-the-chains-word.md)
 
 **Object store**:
 The four operations ChainTables needs of a bucket — fetch one object, put one object

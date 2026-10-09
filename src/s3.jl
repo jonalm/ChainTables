@@ -315,6 +315,19 @@ and China endpoints. A suffix test on a host, not a security control.
 is_aws(store::S3ObjectStore) = store.endpoint_host === nothing ||
     endswith(store.endpoint_host, ".amazonaws.com") || endswith(store.endpoint_host, ".amazonaws.com.cn")
 
+# The record cache's namespace (ADR-0040): AWS's own URL is one namespace per partition,
+# where bucket names are unique; a configured endpoint is hashed in the canonical form
+# `parse_endpoint` gives it, so `HTTPS://Host:443/` and `https://host` share one.
+function cache_namespace(store::S3ObjectStore)
+    if store.endpoint === nothing
+        startswith(store.region, "cn-") && return "aws-cn"
+        startswith(store.region, "us-gov-") && return "aws-us-gov"
+        return "aws"
+    end
+    scheme, hostport = parse_endpoint(store.endpoint)
+    return "ep-" * bytes2hex(sha256(scheme * "://" * hostport))[1:8]
+end
+
 # The S3 client a store reads through: itself, or a gateway store's S3 half (gateway.jl).
 s3_half(store::S3ObjectStore) = store
 

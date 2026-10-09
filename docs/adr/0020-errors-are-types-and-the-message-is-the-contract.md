@@ -27,6 +27,7 @@ function to call, where there is one.
 | `MalformedRecordError` | apply | none under this format version: the committer had a bug, the chain is dead beyond that slot (ADR-0025) |
 | `WriteRefusedError` | commit, create_chain | stop and have a person act: the bucket's operator adds the name to the gateway policy or grants the writer permission set, or a mismatch is reported as a bug — `reason` says which (ADR-0028) |
 | `GatewayMismatchError` | commit, create_chain | the gateway fills another bucket than the one this chain reads: pair the bucket with its own gateway, as one `Bucket` (ADR-0029) |
+| `RecordCacheError` | verify (full); repair!, sync!, as_of, slot_at | the record cache, not the chain, lacks or has damaged a record: `repair!(copy)` fetches it again; or a cache file changed while it was read, because another process writes the cache: run the call again (ADR-0040) |
 
 ADR-0023 and ADR-0014 both close by saying each failure must be
 *distinguishable* and that the names were issue #16's. This is that list
@@ -34,7 +35,8 @@ ADR-0023 and ADR-0014 both close by saying each failure must be
 added by ADR-0028 for a gateway bucket's refusal, one type with a `reason`
 field because the caller's branch is the same for every reason;
 `GatewayMismatchError` added by ADR-0029, a type of its own because nothing was
-refused and the next move is the configuration's).
+refused and the next move is the configuration's; `RecordCacheError` added by
+ADR-0040, because a damaged record cache is not a damaged chain or copy).
 
 ## Why types at all, when the message is the target
 

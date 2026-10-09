@@ -2,7 +2,7 @@
 # repair! and DivergenceError, as_of by slot and by TransactionHash, pinned copies and
 # unpin!, slot_at. Everything runs against the double with no credentials.
 using ChainTables: Chain, LocalCopy, TransactionHash, StateFingerprint, Model, Ops, FingerprintMismatchError,
-    DivergenceError, PinnedCopyError, ChainNotFoundError, WrongChainError, LocalCopyInconsistentError, record_path
+    DivergenceError, PinnedCopyError, ChainNotFoundError, WrongChainError, LocalCopyInconsistentError, RecordCacheError, record_path
 using ChainTables.Testing: InMemoryObjectStore
 using ChainTables.Ops: Record, Client, Insert, CreateTable
 using ChainTables.Model: Column, Shape, Content
@@ -79,7 +79,7 @@ using SHA: sha256
             bytes = Ops.encode_record(Record(cidb, s, prev, s in liars ? fill(UInt8(s), 32) : fp,
                                              Client(nothing, nothing, "L$s", "J", times(s)), nothing, ops))
             plant ? plant!(store, slotkey(s, prefix), bytes) : CT.put_object_if_absent(store, slotkey(s, prefix), bytes)
-            cache === nothing || write(record_path(cache, "bkt", slotkey(s, prefix)), bytes)
+            cache === nothing || write(record_path(cache, store, "bkt", slotkey(s, prefix)), bytes)
             push!(records, bytes)
             prev = Ops.transaction_hash(bytes)
         end
@@ -172,22 +172,40 @@ using SHA: sha256
             @test err.record_client == (; lib = "L4", julia = "J") && err.this_client.julia == string(VERSION)
             # the head's own content is what the replay yields, so repair! has nothing to rewrite
             @test CT.repair!(copy) == (; slot = 6, files_rewritten = 0)
-            # a missing cached record: the check is local and stops
-            cached(s) = record_path(chain.cache, "bkt", slotkey(s))
+            # a missing cached record: the check is local and stops, a damaged record cache (ADR-0040)
+            cached(s) = record_path(chain.cache, chain.store, "bkt", slotkey(s))
             two = read(cached(2))
             rm(cached(2))
             @test_throws "verify(copy; full = true): slot 2 of chain $cid is not in the record cache ($(cached(2))), and the check " *
-                         "is local. repair!(copy) fetches what the cache lacks and rewrites what differs; a fresh local copy " *
+                         "is local. repair!(copy) fetches what the cache lacks and replaces what is damaged; a fresh local copy " *
                          "sync!ed from the chain fetches every record." CT.verify(copy; full = true)
+            err = caught(() -> CT.verify(copy; full = true))
+            @test err isa RecordCacheError && (err.chain_id, err.slot, err.path, err.found) == (cid, 2, cached(2), nothing)
             write(cached(2), two)
-            # a damaged cached record: caught by hash before anything is replayed
+            # a damaged cached record: caught by hash before anything is replayed, and blamed on the cache
             three = read(cached(3))
             badbytes = Base.copy(three)
             badbytes[end] ⊻= 0x01
             write(cached(3), badbytes)
             @test_throws "verify(copy; full = true): the record cache's copy of slot 3 ($(cached(3))) hashes to " *
                          "$(hex(Ops.transaction_hash(badbytes))); slot 4 names its parent as $(hex(Ops.transaction_hash(three))). " *
-                         "The record cache is damaged: delete that file, and repair!(copy) fetches it again." CT.verify(copy; full = true)
+                         "The record cache is damaged, not the chain: repair!(copy) fetches the record again and replaces " *
+                         "the file." CT.verify(copy; full = true)
+            err = caught(() -> CT.verify(copy; full = true))
+            @test err isa RecordCacheError && (err.slot, err.path) == (3, cached(3))
+            @test (err.expected, err.found) == (Ops.transaction_hash(three), Ops.transaction_hash(badbytes))
+            write(cached(3), three)
+            # a file that changes after the walk vouched for it and before the replay reads it: another
+            # process is writing the record cache
+            hashes = CT.cached_chain_hashes(copy, chain, "verify(copy; full = true)")
+            write(cached(3), badbytes)
+            err = caught(() -> CT.cached_record_at(chain, cid, 3, hashes, "verify(copy; full = true)"))
+            @test err isa RecordCacheError
+            @test sprint(showerror, err) == "RecordCacheError: verify(copy; full = true): the record cache's copy of slot 3 " *
+                "($(cached(3))) changed while it was being read; another process is writing the record cache. Run " *
+                "verify(copy; full = true) again."
+            @test (err.chain_id, err.slot, err.path, err.expected, err.found) ==
+                  (cid, 3, cached(3), Ops.transaction_hash(three), Ops.transaction_hash(badbytes))
             write(cached(3), three)
             six = read(cached(6))
             write(cached(6), badbytes)
@@ -254,8 +272,8 @@ using SHA: sha256
             damage!(copy, "samples")
             @test CT.repair!(copy) == (; slot = 3, files_rewritten = 2)
             @test CT.verify(copy) === nothing
-            # a record the cache lacks is fetched; a damaged cached record stops it
-            cached(s) = record_path(chain.cache, "bkt", slotkey(s))
+            # a record the cache lacks is fetched; a damaged cached record is fetched again, with a warning
+            cached(s) = record_path(chain.cache, chain.store, "bkt", slotkey(s))
             rm(cached(1))
             damage!(copy, "samples")
             n = length(store.calls)
@@ -265,8 +283,29 @@ using SHA: sha256
             badbytes = Base.copy(two)
             badbytes[end] ⊻= 0x01
             write(cached(2), badbytes)
-            @test_throws "repair!(copy): the record cache's copy of slot 2 ($(cached(2))) hashes to" CT.repair!(copy)
+            damage!(copy, "samples")
+            n = length(store.calls)
+            healed = r"record cache: the cached copy of p/000000000002 in bucket bkt is not what the store holds"
+            @test (@test_logs (:warn, healed) CT.repair!(copy)) == (; slot = 3, files_rewritten = 1)
+            @test read(cached(2)) == two && store.calls[n+1:end] == [(:fetch_object, slotkey(2))]
+            # the store's bytes not hashing to what the chain names either: a rewritten chain, nothing written,
+            # and the cached file left as it was
+            write(cached(2), b"cached damage")
+            plant!(store, slotkey(2), badbytes)
+            file, _ = damage!(copy, "samples")
+            damaged = read(file)
+            err = caught(() -> CT.repair!(copy))
+            @test err isa CT.RewrittenChainError
+            @test sprint(showerror, err) == "RewrittenChainError: rewritten chain: slot 2 of chain $cid at bkt/p holds a record " *
+                "hashing to $(hex(Ops.transaction_hash(badbytes))); slot 3 names its parent as $(hex(Ops.transaction_hash(two))). " *
+                "The bucket was written from outside the protocol and nothing heals it. Nothing was written; the local copy " *
+                "stays readable and never commits onto this chain."
+            @test (err.slot, err.expected, err.found) == (2, Ops.transaction_hash(two), Ops.transaction_hash(badbytes))
+            @test read(file) == damaged
+            @test read(cached(2)) == b"cached damage"
+            plant!(store, slotkey(2), two)
             write(cached(2), two)
+            @test CT.repair!(copy) == (; slot = 3, files_rewritten = 1)
             fresh = CT.open(chain, joinpath(dir, "fresh"))
             @test_throws "repair!(copy): the local copy at $(fresh.path) has no head yet, so there is nothing to repair; sync!(copy) binds it" CT.repair!(fresh)
             close(fresh)
@@ -374,7 +413,7 @@ using SHA: sha256
             close(t)
             @test !ispath(tp)                                                   # temporary regardless
             # the record it stops at is verified, built (the checkpoint) or opened (the head's record)
-            cached(s) = record_path(chain.cache, "bkt", slotkey(s))
+            cached(s) = record_path(chain.cache, chain.store, "bkt", slotkey(s))
             two = store.objects[slotkey(2)]
             rec2 = Ops.decode_record(two; slot = 2)
             lie = Ops.encode_record(Record(rec2.chain_id, 2, rec2.prev_hash, fill(0xee, 32), rec2.client, rec2.comment, rec2.ops))

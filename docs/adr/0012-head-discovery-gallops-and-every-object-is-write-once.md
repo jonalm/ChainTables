@@ -39,7 +39,8 @@ keeps ADR-0010's deliberately shuffled in-process fake honest.
 **A mutable pointer object** (`<prefix>/_latest`, a manifest) makes head discovery
 one request flat. Rejected, and with it mutability anywhere: a mutable object can
 never be read through the record cache, which ADR-0010 established is never
-re-validated; it needs a second write verb the port does not have and would not
+re-validated (never asked of the store on a hit; ADR-0040 has the chain's readers
+check every hit against the chain instead); it needs a second write verb the port does not have and would not
 want; and it reintroduces staleness and write races into the one place the chain
 was designed to have none. Twenty probes once at cold start is not worth that.
 

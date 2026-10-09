@@ -4,7 +4,8 @@ status: accepted
 
 # A prefix segment is portable to every filesystem
 
-The record cache stores a record at `cache.dir/<bucket>/<key segments…>`, one
+The record cache stores a record at `cache.dir/<bucket>/<key segments…>` (since
+ADR-0040, `cache.dir/<namespace>/<bucket>/<key segments…>`), one
 directory per `/`-separated segment of the slot key (ADR-0010, ADR-0011). So
 every segment of a chain's prefix, and the bucket name, must be a valid
 directory name on every platform a client might run on. ChainTables targets
@@ -53,7 +54,9 @@ Two limits apply, on every platform:
   machine that opens the chain, but the cache directory is local, so a chain
   must be openable under any reasonable `cache_dir`. With a 63-character bucket
   (S3's longest), the path below `cache_dir` is at most 63 + 1 + 100 + 1 + 20 =
-  185, which leaves 74 for `cache_dir`. The Windows default,
+  185, which leaves 74 for `cache_dir`. *Amended by ADR-0040*: the store's cache
+  namespace, at most 12 characters, comes first, so the path below `cache_dir`
+  is at most 198 and 61 are left for it. The Windows default,
   `C:\Users\<user>\.julia\chaintables\records`, is about 40 plus the user
   name.
 - **The longest cache path is at most 259 UTF-16 code units.** This is checked
@@ -87,5 +90,5 @@ listed cannot slip through.
   segment means anything, but not every string is a prefix.
 - A chain created at a prefix that breaks the rule can no longer be opened by a
   client. No such chain is known to exist.
-- A cache directory longer than about 74 characters can refuse a long prefix
+- A cache directory longer than about 61 characters (74 before ADR-0040) can refuse a long prefix
   that another machine accepted. The error names the path and its length.

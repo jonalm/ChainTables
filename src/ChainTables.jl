@@ -4,7 +4,7 @@ module ChainTables
 # errors.jl comes first so every lane raises the same types (ADR-0020).
 
 include("hashes.jl")     # step 8: TransactionHash, StateFingerprint (ADR-0019)
-include("errors.jl")     # ADR-0020: ChainTablesError and the sixteen concrete types; AbstractObjectStore (ADR-0010)
+include("errors.jl")     # ADR-0020: ChainTablesError and the seventeen concrete types; AbstractObjectStore (ADR-0010)
 include("cbor.jl")       # step 1
 include("model.jl")      # step 2
 include("ops.jl")        # step 3

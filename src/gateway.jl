@@ -78,6 +78,7 @@ Base.show(io::IO, s::GatewayObjectStore) = print(io, "GatewayObjectStore(", repr
     s.s3.path_style ? ", path_style = true" : "", ")")
 
 is_aws(store::GatewayObjectStore) = is_aws(store.s3)
+cache_namespace(store::GatewayObjectStore) = cache_namespace(store.s3)     # reads go to S3 directly (ADR-0040)
 s3_half(store::GatewayObjectStore) = store.s3
 
 record_cap(::GatewayObjectStore) = GATEWAY_RECORD_BYTES

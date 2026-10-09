@@ -109,6 +109,13 @@ and concurrent fetches of one record do not clobber each other.
 
 Two properties are load-bearing and are recorded as such:
 
+- *Amended by ADR-0040*: the cache is keyed by the store's namespace too, so two
+  stores never share a file. A hit is still never asked of the store, but it is
+  not the chain's word — a cache file can be damaged, or outlive a bucket that
+  was emptied and refilled. A reader applies a cached record only once a record
+  the store returned names it, fetches a hit that fails again past the cache
+  before blaming the chain, and the read-back below asks the store, never the
+  cache.
 - **A cached record is never re-validated, and that is correct** — not because
   keys are content-addressed, but because ADR-0002 gives every slot at most one
   record for all time, so a key's bytes are immutable by protocol. Any object

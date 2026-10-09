@@ -225,6 +225,29 @@ LocalCopyInconsistentError(msg; path = nothing, slot = nothing, file = nothing) 
     LocalCopyInconsistentError(msg, path, slot, file)
 
 """
+    RecordCacheError(msg; chain_id, slot, path, expected, found)
+
+Raised by `verify(copy; full = true)`, which is local: the record cache lacks the record
+of `slot` (`found = nothing`), or holds bytes for it hashing to `found` where the chain
+names `expected` — a damaged record cache, not a damaged chain (ADR-0040). `path` is the
+cache file. Next move: `repair!(copy)`, which fetches the record from the store and
+replaces the file. Also raised by `verify`, `repair!` and the chain's readers (`sync!`,
+`as_of`, `slot_at`) when a cache file they already checked changes before they read it
+again — another process is writing the record cache; the next move is to run the call
+again.
+"""
+struct RecordCacheError <: ChainTablesError
+    msg::String
+    chain_id::MaybeString
+    slot::MaybeInt
+    path::MaybeString
+    expected::MaybeTxn
+    found::MaybeTxn
+end
+RecordCacheError(msg; chain_id = nothing, slot = nothing, path = nothing, expected = nothing, found = nothing) =
+    RecordCacheError(msg, chain_id, slot, path, maybe_hash(TransactionHash, expected), maybe_hash(TransactionHash, found))
+
+"""
     MalformedRecordError(msg; chain_id, slot, op)
 
 Raised at apply and on decoding: a record no client can apply under this format

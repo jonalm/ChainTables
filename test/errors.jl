@@ -1,4 +1,4 @@
-# ADR-0020 — the taxonomy: sixteen types under one supertype, each with `msg` and its evidence as
+# ADR-0020 — the taxonomy: seventeen types under one supertype, each with `msg` and its evidence as
 # keyword fields defaulting to nothing. Every type is provoked, with @test_throws "<message>", in
 # the test file of the lane that raises it (localcopy.jl, ops.jl, builder.jl, chain.jl, recovery.jl,
 # gateway.jl); the one step 9 raises — UnsupportedStoreError — is checked by construction here.
@@ -9,7 +9,7 @@
         ChainTables.UnsupportedStoreError, ChainTables.RewrittenChainError, ChainTables.ChainNotFoundError,
         ChainTables.NotALocalCopyError, ChainTables.LayoutVersionError, ChainTables.WrongChainError,
         ChainTables.LocalCopyInconsistentError, ChainTables.MalformedRecordError, ChainTables.WriteRefusedError,
-        ChainTables.GatewayMismatchError,
+        ChainTables.GatewayMismatchError, ChainTables.RecordCacheError,
     )
         @test T <: ChainTables.ChainTablesError
         @test ChainTables.ChainTablesError <: Exception
@@ -42,5 +42,10 @@
     # a gateway filling another bucket than the chain reads (ADR-0029): the pair as evidence, never retried
     e = ChainTables.GatewayMismatchError("gateway mismatch"; key = "p/000000000004", bucket = "bkt", gateway = "https://gw")
     @test (e.key, e.bucket, e.gateway) == ("p/000000000004", "bkt", "https://gw") && !ChainTables.retryable(e)
+    # a damaged record cache (ADR-0040): the file and both hashes as evidence
+    e = ChainTables.RecordCacheError("record cache"; slot = 2, path = "/c/bkt/p/000000000002",
+                                     expected = zeros(UInt8, 32), found = ones(UInt8, 32))
+    @test (e.slot, e.path) == (2, "/c/bkt/p/000000000002")
+    @test e.expected isa ChainTables.TransactionHash && e.found isa ChainTables.TransactionHash
     @test isabstracttype(ChainTables.AbstractObjectStore)
 end

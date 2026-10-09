@@ -80,7 +80,6 @@ function Chain(bucket::AbstractString, prefix::AbstractString;
     check_bucket_name(bucket)
     check_prefix(prefix)
     cache = RecordCache(; dir = cache_dir)
-    record_path(cache, bucket, isempty(prefix) ? head_filename(0) : prefix * "/" * head_filename(0))   # every slot's path is as long (ADR-0034)
     read_ahead >= 1 || throw(ArgumentError("Chain: read_ahead is $read_ahead; at least 1 record is fetched ahead"))
     if gateway !== nothing                   # the gateway store (gateway.jl, ADR-0028): the S3 client plus a function URL
         store === nothing || throw(ArgumentError("Chain: gateway and store were both given; a chain has one store, and " *
@@ -96,6 +95,7 @@ function Chain(bucket::AbstractString, prefix::AbstractString;
         store = S3ObjectStore(bucket; region, credentials, endpoint, path_style)
     end
     store isa AbstractObjectStore || throw(ArgumentError("Chain: store is a $(typeof(store)), not an AbstractObjectStore"))
+    record_path(cache, store, bucket, isempty(prefix) ? head_filename(0) : prefix * "/" * head_filename(0))   # every slot's path is as long (ADR-0034)
     (store isa GatewayObjectStore && !record_user) && throw(ArgumentError("Chain: record_user = false with a gateway " *
         "store: the gateway refuses a record with no author (ADR-0028), so this chain could never commit; leave record_user = true"))
     return Chain{typeof(store)}(String(bucket), String(prefix), region === nothing ? nothing : String(region), credentials,
@@ -117,8 +117,9 @@ end
 # The prefix is opaque (ADR-0031), but each `/`-separated segment of a slot key becomes a
 # record-cache directory, so it must be portable to every filesystem (ADR-0034). Refusing a
 # bad one here, before any I/O, keeps `create_chain` from writing a slot 0 no client could cache.
-# With a 63-character bucket (S3's longest), the cache path below `cache_dir` is at most
-# 63 + 1 + 100 + 1 + 20 = 185 characters, leaving 74 of MAX_PORTABLE_PATH for `cache_dir`.
+# With a 63-character bucket (S3's longest) under the longest cache namespace (ADR-0040), the
+# cache path below `cache_dir` is at most 12 + 1 + 63 + 1 + 100 + 1 + 20 = 198 characters,
+# leaving 61 of MAX_PORTABLE_PATH for `cache_dir`.
 const MAX_PREFIX_LENGTH = 100
 
 function check_prefix(prefix::AbstractString)
@@ -154,7 +155,7 @@ The record cache's copy of `slot`, read from disk without consulting the store, 
 `nothing` when it is not cached. What `open` may consult: no network I/O.
 """
 function cached_record(chain::Chain, slot::Integer)
-    path = record_path(chain.cache, chain.bucket, slot_key(chain, slot))
+    path = record_path(chain.cache, chain.store, chain.bucket, slot_key(chain, slot))
     return isfile(path) ? read(path) : nothing
 end
 
@@ -307,11 +308,19 @@ end
 
 # The head's own slot, fetched through the record cache and held against the head
 # (ADR-0014): absent, or bytes of another hash, is a rewritten chain — or, when the
-# record there names another chain, the wrong chain. Returns the record's bytes.
+# record there names another chain, the wrong chain. Cached bytes of another hash are
+# fetched again past the cache first, and replace the file if they are the head's: a
+# damaged cache file is not the chain's word (ADR-0040). Returns the record's bytes.
 function check_head_slot(copy::LocalCopy, chain::Chain)
     h = copy.head
     where = location(chain)
-    bytes = fetch_record(chain.cache, chain.store, chain.bucket, slot_key(chain, h.slot))
+    key = slot_key(chain, h.slot)
+    bytes, cached = fetch_record_from(chain.cache, chain.store, chain.bucket, key)
+    if cached && Ops.transaction_hash(bytes) != h.transaction_hash
+        bytes = fetch_object(chain.store, key)
+        bytes === nothing || Ops.transaction_hash(bytes) != h.transaction_hash ||
+            heal_record!(chain.cache, chain.store, chain.bucket, key, bytes)
+    end
     bytes === nothing && throw(RewrittenChainError("rewritten chain: slot $(h.slot) — the head of the local copy at " *
         "$(copy.path), chain $(h.chain_id) — is absent at $where. Either the chain was truncated from outside the " *
         "protocol, or this is not the chain's bucket and prefix; neither is healed. The local copy stays readable; " *
@@ -345,8 +354,11 @@ Bring the local copy up to the chain's head (ADR-0013): fetch the head's own slo
 hold it against the head (ADR-0014 — `RewrittenChainError`, or `WrongChainError` when
 the record there names another chain), gallop for the chain head from the slot above
 (ADR-0012), fetch the tail through the record cache `read_ahead` records ahead, apply
-each record in slot order, and checkpoint — always at the end, and mid-replay whenever
-the apply time since the last checkpoint exceeds the last checkpoint's duration (ADR-0023).
+each record in slot order once [`read_forward`](@ref) has held it against the chain
+(ADR-0040: a cached record waits for a record the store returned to name it, and a hit
+that fails is fetched again before the chain is blamed), and checkpoint — always at the
+end, and mid-replay whenever the apply time since the last checkpoint exceeds the last
+checkpoint's duration (ADR-0023).
 Every checkpoint's fingerprint is verified against its record. Nothing new is
 `applied = 0`, never an error, once the copy has a head; a copy with no head against a
 prefix with no slot 0 raises `ChainNotFoundError`, which names both a wrong location and
@@ -387,63 +399,190 @@ function await(t::Task)
     end
 end
 
+# ---------------------------------------------------------------------------
+# The forward reader (ADR-0040, ADR-0013, ADR-0014): the chain's records in slot order,
+# each held against its parent and yielded only once the store vouches for its bytes.
+# ---------------------------------------------------------------------------
+
+# How many bytes of cached records `read_forward` keeps decoded while it waits for the
+# store to vouch for them; records past it are read from the cache again when vouched.
+const PENDING_BYTES = 64 * 2^20
+
+"""
+    read_forward(f, chain, first, last; prev = nothing, chain_id = nothing, holder = nothing, tail = "",
+                 keep_bytes = PENDING_BYTES) -> nothing
+
+Call `f(slot, record, transaction_hash)` for the records of slots `first:last` in slot
+order, stopping early when `f` returns `true`. Records are fetched through the record
+cache `read_ahead` ahead, and each is checked: it decodes, carries the chain's id —
+`chain_id`, else slot 0's — and names its parent's hash: `prev`, the hash `holder` (in
+words: "the local copy at …") holds for slot `first - 1`, or, from slot 0, none. `prev`
+and `holder` are given together, exactly when `first > 0`.
+
+The record cache is not the chain's word (ADR-0040). A record the store returned is
+yielded once checked; a cached one only once a record the store returned names it,
+directly or through a run of cached records naming each other. The last record of the
+read, and slot 0, are fetched from the store past the cache, so every read ends vouched.
+A check that fails is asked of the store: the slot's own bytes, then, from the top down,
+the cached run below it, until the store agrees with the cache. Bytes the store returned
+replace a cache file that differs ([`heal_record!`](@ref)) once they pass. Only the
+store's bytes raise `RewrittenChainError` (a slot vanished, a parent not named) or
+`MalformedRecordError` (bytes that do not decode, another chain's id). `tail` closes the
+rewritten-chain messages. Up to `keep_bytes` of cached records waiting to be vouched for
+are kept decoded; the rest are read from the cache again, and one that changed meanwhile
+is `RecordCacheError`.
+"""
+function read_forward(f, chain::Chain, first::Integer, last::Integer;
+                      prev = nothing, chain_id = nothing, holder = nothing, tail = "", keep_bytes = PENDING_BYTES)
+    first, last = Int64(first), Int64(last)
+    (prev === nothing && holder === nothing) == (first == 0) ||
+        error("read_forward: prev and holder are given together, exactly when the read starts above slot 0")
+    where = location(chain)
+    key(s) = slot_key(chain, s)
+    cid = chain_id
+    # `bytes` as slot `s`, whose parent is `parent` (`(; th, is)`: the hash and the words
+    # naming who holds it): the record, or the error to raise once the store agrees
+    function check(bytes, s, parent)
+        bytes === nothing && return RewrittenChainError("rewritten chain: slot $s at $where was there when head " *
+            "discovery probed it and is absent now. The bucket is being written from outside the protocol and nothing " *
+            "heals it.$tail"; chain_id = cid, slot = s, found = nothing)
+        record = try
+            Ops.decode_record(bytes; slot = s)
+        catch e
+            e isa MalformedRecordError || rethrow()
+            return e
+        end
+        rcid = chain_id_string(record.chain_id)
+        cid === nothing || rcid == cid || return MalformedRecordError("malformed record at slot $s: it carries chain id " *
+            "$rcid, the chain is $cid (a record of another chain was written into this prefix). No client can apply it: " *
+            "the chain is dead beyond this slot; a new chain is the recovery (ADR-0025)."; chain_id = cid, slot = s)
+        (parent === nothing || record.prev_hash == parent.th) && return record
+        return RewrittenChainError("rewritten chain: slot $s of chain $cid at $where names parent " *
+            "$(bytes2hex(record.prev_hash)), $(parent.is) $(bytes2hex(parent.th)). The chain below was rewritten from " *
+            "outside the protocol, or the committer of slot $s had a bug; nothing heals it.$tail";
+            chain_id = cid, slot = s, expected = parent.th, found = record.prev_hash)
+    end
+    hashed(s, th) = (; th, is = "slot $s hashes to")
+    anchor = prev === nothing ? nothing : (; th = prev, is = "$holder holds slot $(first - 1) as")   # the last record vouched for
+    pending = @NamedTuple{slot::Int64, th::Vector{UInt8}, record::Any}[]   # cached, checked, not yet vouched for
+    pending_bytes = 0
+    # The cached run in `pending` failed to vouch for what follows it: ask the store for
+    # it from the top down until the store agrees with the cache — that record vouches for
+    # the run below it — then check the store's bytes above that point upwards.
+    function settle!()
+        fresh = Vector{Any}(nothing, length(pending))
+        agree = length(pending)
+        while agree >= 1
+            bytes = fetch_object(chain.store, key(pending[agree].slot))
+            bytes !== nothing && Ops.transaction_hash(bytes) == pending[agree].th && break
+            fresh[agree] = bytes
+            agree -= 1
+        end
+        parent = agree == 0 ? anchor : hashed(pending[agree].slot, pending[agree].th)
+        for j in agree+1:length(pending)
+            s = pending[j].slot
+            got = check(fresh[j], s, parent)
+            got isa Exception && throw(got)
+            heal_record!(chain.cache, chain.store, chain.bucket, key(s), fresh[j])
+            pending[j] = (; slot = s, th = Ops.transaction_hash(fresh[j]), record = got)
+            parent = hashed(s, pending[j].th)
+        end
+        return parent
+    end
+    # Yield the vouched-for run in `pending`, reading again from the cache what was not
+    # kept; `true` when `f` stopped the read.
+    function flush!()
+        for p in pending
+            record = p.record
+            if record === nothing
+                bytes = cached_record(chain, p.slot)
+                (bytes !== nothing && Ops.transaction_hash(bytes) == p.th) || throw(RecordCacheError("the record " *
+                    "cache's copy of slot $(p.slot) ($(record_path(chain.cache, chain.store, chain.bucket, key(p.slot)))) " *
+                    "changed while it was being read; another process is writing the record cache. Read again.";
+                    chain_id = cid, slot = p.slot, path = record_path(chain.cache, chain.store, chain.bucket, key(p.slot)),
+                    expected = p.th, found = bytes === nothing ? nothing : Ops.transaction_hash(bytes)))
+                record = Ops.decode_record(bytes; slot = p.slot)
+            end
+            f(p.slot, record, p.th) === true && return true
+        end
+        anchor = isempty(pending) ? anchor : hashed(pending[end].slot, pending[end].th)
+        empty!(pending)
+        pending_bytes = 0
+        return false
+    end
+    tasks = Dict{Int64,Task}()
+    next = first
+    try
+        for s in first:last
+            while next <= min(last, s + chain.read_ahead - 1)
+                k = next
+                tasks[k] = k == last || k == 0 ? @async((fetch_object(chain.store, key(k)), false)) :
+                    @async(fetch_record_from(chain.cache, chain.store, chain.bucket, key(k)))
+                next += 1
+            end
+            bytes, cached = await(pop!(tasks, s))
+            parent = isempty(pending) ? anchor : hashed(pending[end].slot, pending[end].th)
+            got = check(bytes, s, parent)
+            if got isa Exception && cached          # the store's word before the chain is blamed: this slot's bytes…
+                bytes, cached = fetch_object(chain.store, key(s)), false
+                got = check(bytes, s, parent)
+            end
+            if got isa Exception && !isempty(pending)   # … then the cached run below, which nothing has vouched for
+                got = check(bytes, s, settle!())
+            end
+            got isa Exception && throw(got)
+            cid === nothing && (cid = chain_id_string(got.chain_id))
+            th = Ops.transaction_hash(bytes)
+            if cached
+                keep = pending_bytes + length(bytes) <= keep_bytes
+                push!(pending, (; slot = s, th, record = keep ? got : nothing))
+                keep && (pending_bytes += length(bytes))
+            else
+                heal_record!(chain.cache, chain.store, chain.bucket, key(s), bytes)
+                flush!() && return nothing
+                f(s, got, th) === true && return nothing
+                anchor = hashed(s, th)
+            end
+        end
+    finally
+        for t in values(tasks)      # reads ahead of an early stop or a failure: let them land, unawaited
+            try
+                wait(t)
+            catch
+            end
+        end
+    end
+    isempty(pending) || error("read_forward: slot $last was fetched from the store, so nothing is left unvouched")
+    return nothing
+end
+
 """
     replay!(copy, first, last; clock = time_ns) -> (; applied, checkpoints)
 
-Apply slots `first:last` of the chain to the copy, fetching `read_ahead` records ahead
-through the record cache, and checkpoint by the amortized rule (ADR-0013, ADR-0023):
-at `last`, and after any record once the apply time since the last checkpoint exceeds
-that checkpoint's duration, both measured on `clock` (nanoseconds; a test may script
-it). `checkpoints` lists the slots checkpointed. `sync!`'s inner loop; a fresh copy
-binds to the chain at slot 0.
+Apply slots `first:last` of the chain to the copy, each record as [`read_forward`](@ref)
+yields it — fetched `read_ahead` ahead through the record cache and checked against the
+chain — and checkpoint by the amortized rule (ADR-0013, ADR-0023): at `last`, and after
+any record once the apply time since the last checkpoint exceeds that checkpoint's
+duration, both measured on `clock` (nanoseconds; a test may script it). `checkpoints`
+lists the slots checkpointed. `sync!`'s inner loop; a fresh copy binds to the chain at
+slot 0.
 """
 function replay!(copy::LocalCopy, first::Integer, last::Integer; clock = time_ns)
     chain = chain_of(copy, "sync!")
-    store, cache, bucket = chain.store, chain.cache, chain.bucket
     h = copy.head
-    prev = h === nothing ? nothing : h.transaction_hash
-    cid = h === nothing ? nothing : h.chain_id
     (h === nothing && first != 0) && error("replay!: a copy with no head replays from slot 0, not $first")
-    tasks = Dict{Int64,Task}()
-    next = Int64(first)
     checkpoints = Int64[]
     last_checkpoint_ns = 0
     applying_ns = 0
     try
-        for s in Int64(first):Int64(last)
-            while next <= min(last, s + chain.read_ahead - 1)
-                key = slot_key(chain, next)
-                tasks[next] = @async fetch_record(cache, store, bucket, key)
-                next += 1
-            end
-            bytes = await(pop!(tasks, s))
-            bytes === nothing && throw(RewrittenChainError("rewritten chain: slot $s at $(location(chain)) was there " *
-                "when head discovery probed it and is absent now. The bucket is being written from outside the " *
-                "protocol and nothing heals it. The local copy at $(copy.path) stays at its last checkpoint.";
-                chain_id = cid, slot = s, found = nothing))
-            th = Ops.transaction_hash(bytes)
-            record = Ops.decode_record(bytes; slot = s)
-            rcid = chain_id_string(record.chain_id)
-            if cid === nothing
-                cid = rcid
-            elseif rcid != cid
-                throw(MalformedRecordError("malformed record at slot $s: it carries chain id $rcid, the chain is $cid " *
-                    "(a record of another chain was written into this prefix). No client can apply it: the chain is dead " *
-                    "beyond this slot; a new chain is the recovery (ADR-0025).";
-                    chain_id = cid, slot = s))
-            end
-            if s > 0 && record.prev_hash != prev
-                throw(RewrittenChainError("rewritten chain: slot $s of chain $cid at $(location(chain)) names parent " *
-                    "$(bytes2hex(record.prev_hash)), the local copy at $(copy.path) holds slot $(s - 1) as " *
-                    "$(bytes2hex(prev)). The chain below was rewritten from outside the protocol, or the committer of " *
-                    "slot $s had a bug; nothing heals it. The local copy stays at its last checkpoint and readable.";
-                    chain_id = cid, slot = s, expected = prev, found = record.prev_hash))
-            end
+        read_forward(chain, first, last; prev = h === nothing ? nothing : h.transaction_hash,
+                     chain_id = h === nothing ? nothing : h.chain_id,
+                     holder = h === nothing ? nothing : "the local copy at $(copy.path)",
+                     tail = " The local copy at $(copy.path) stays at its last checkpoint and readable.") do s, record, th
             t0 = clock()
             load_tables!(copy, record)
             Ops.apply!(copy.content, record)
             applying_ns += clock() - t0
-            prev = th
             if applying_ns > last_checkpoint_ns || s == last
                 t1 = clock()
                 checkpoint!(copy, record.chain_id, s, th, record.state_fingerprint; client = record.client)
@@ -451,6 +590,7 @@ function replay!(copy::LocalCopy, first::Integer, last::Integer; clock = time_ns
                 applying_ns = 0
                 push!(checkpoints, s)
             end
+            return false
         end
     catch
         discard!(copy)      # the copy stays at its last checkpoint; the model reloads from it

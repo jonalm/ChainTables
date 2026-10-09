@@ -125,10 +125,12 @@ function record_author(::AbstractObjectStore)
 end
 
 # ---------------------------------------------------------------------------
-# The record cache (ADR-0010, ADR-0012, ADR-0013, ADR-0019). Keyed by bucket and key
-# under one directory; a hit is served from disk and never re-validated against the
-# store, which is correct because every key ChainTables writes is written once
-# (ADR-0002, ADR-0012). A miss is never memoized.
+# The record cache (ADR-0010, ADR-0012, ADR-0013, ADR-0019, ADR-0040). Keyed by the
+# store's namespace, bucket and key under one directory; a hit is served from disk
+# without asking the store, because every key ChainTables writes is written once
+# (ADR-0002, ADR-0012). It is not the chain's word: the chain's readers hold every hit
+# against the chain, and a hit that fails is fetched again past the cache before the
+# chain is blamed (ADR-0040). A miss is never memoized.
 # ---------------------------------------------------------------------------
 
 """
@@ -146,15 +148,38 @@ end
     RecordCache(; dir = default_cache_dir())
 
 The record cache: the machine-wide directory of objects a client has fetched, keyed by
-bucket and key (ADR-0010). Disposable — delete the directory and every record is fetched
-again — and never re-validated against the store, because a key's bytes are immutable
-by protocol (ADR-0002, ADR-0012). Distinct from the local copy, which is derived from
-the records rather than a copy of them (ADR-0023).
+the store's [`cache_namespace`](@ref), bucket and key (ADR-0010, ADR-0040). Disposable —
+delete the directory and every record is fetched again. A hit is served without asking
+the store, because a key's bytes are immutable by protocol (ADR-0002, ADR-0012), but it
+is not the chain's word: a file can be damaged, or outlive a bucket that was emptied and
+reused, so the chain's readers hold what it serves against the chain and fetch again
+what fails (ADR-0040). Distinct from the local copy, which is derived from the records
+rather than a copy of them (ADR-0023).
 """
 struct RecordCache
     dir::String
 end
 RecordCache(; dir = default_cache_dir()) = RecordCache(String(dir))
+
+"""
+    cache_namespace(store) -> String
+
+The record-cache directory above the bucket for objects read through `store`: two stores
+that may hold different objects under one bucket name and key — AWS and a MinIO, two
+MinIOs — must not share cached files (ADR-0040). At most
+[`MAX_NAMESPACE_LENGTH`](@ref) characters, and a portable segment (ADR-0034).
+[`S3ObjectStore`](@ref) returns its partition for AWS's own URL — `aws`, `aws-cn`,
+`aws-us-gov`, where bucket names are unique — and `ep-` with 8 hex digits of the
+SHA-256 of `scheme://host[:port]` for a configured endpoint. A
+[`GatewayObjectStore`](@ref) reads through its S3 client and shares its namespace. A
+`Testing.InMemoryObjectStore` is its own namespace, `mem-` and 8 hex digits. Any other
+store is `other`, one namespace for them all. Internal dispatch, not a port verb
+(ADR-0010).
+"""
+cache_namespace(::AbstractObjectStore) = "other"
+
+# The longest `cache_namespace`: `mem-` and 8 hex digits.
+const MAX_NAMESPACE_LENGTH = 12
 
 # Windows' MAX_PATH less the terminating NUL, in UTF-16 code units: the longest path that
 # opens on every platform without opting in to long paths (ADR-0034).
@@ -197,22 +222,26 @@ function portable_segment_problem(s::AbstractString)
 end
 
 """
-    record_path(cache, bucket, key) -> String
+    record_path(cache, store, bucket, key) -> String
 
-The file a record is cached at: `cache.dir/bucket/key`, with each `/`-separated segment
-of `key` a directory (ADR-0011: the mapping from keys to paths is local and ours). The
-bucket and every segment must pass [`portable_segment_problem`](@ref), and the
+The file a record is cached at: `cache.dir/namespace/bucket/key`, the namespace being
+`store`'s [`cache_namespace`](@ref) (ADR-0040) and each `/`-separated segment of `key` a
+directory (ADR-0011: the mapping from keys to paths is local and ours). The namespace,
+the bucket and every segment must pass [`portable_segment_problem`](@ref), and the
 [`longest_cache_path`](@ref) is at most $MAX_PORTABLE_PATH, so the path stays inside the
 cache and opens on every platform (ADR-0034).
 """
-function record_path(cache::RecordCache, bucket::AbstractString, key::AbstractString)
+function record_path(cache::RecordCache, store::AbstractObjectStore, bucket::AbstractString, key::AbstractString)
+    namespace = cache_namespace(store)
+    length(namespace) <= MAX_NAMESPACE_LENGTH || throw(ArgumentError("record_path: the cache namespace " *
+        "$(repr(namespace)) of $(typeof(store)) is over $MAX_NAMESPACE_LENGTH characters (ADR-0034, ADR-0040)"))
     segments = split(key, '/')
-    for s in (bucket, segments...)
+    for s in (namespace, bucket, segments...)
         problem = portable_segment_problem(s)
         problem === nothing || throw(ArgumentError(
             "record_path: segment $(repr(s)) of bucket $(repr(bucket)), key $(repr(key)) $problem (ADR-0034)"))
     end
-    path = joinpath(cache.dir, bucket, segments...)
+    path = joinpath(cache.dir, namespace, bucket, segments...)
     n = longest_cache_path(path)
     n <= MAX_PORTABLE_PATH || throw(ArgumentError("record_path: the record cache path $(repr(path)) is $n characters " *
         "long with its temporary file, over the $MAX_PORTABLE_PATH Windows allows (ADR-0034); use a shorter cache_dir or prefix"))
@@ -232,19 +261,45 @@ see the record the moment it lands (ADR-0012). Failure raises.
 The cache does not hash what it serves. Every read returns the file's bytes fresh, and
 the caller rehashes them against the hash it holds — a child's `prev_hash`, or the head
 file's `transaction_hash` (ADR-0006, ADR-0013) — because only the chain knows the
-expected value.
+expected value. Bytes that fail that check are fetched again past the cache, and
+replace the file with [`heal_record!`](@ref) once they pass, before the chain is blamed
+(ADR-0040).
 """
-function fetch_record(cache::RecordCache, store::AbstractObjectStore, bucket::AbstractString, key::AbstractString)
-    path = record_path(cache, bucket, key)
-    isfile(path) && return read(path)
+fetch_record(cache::RecordCache, store::AbstractObjectStore, bucket::AbstractString, key::AbstractString) =
+    first(fetch_record_from(cache, store, bucket, key))
+
+# `fetch_record`, and whether the bytes came from the cache (`true`) or the store: a
+# reader vouches for what the store returned, not for a hit (ADR-0040).
+function fetch_record_from(cache::RecordCache, store::AbstractObjectStore, bucket::AbstractString, key::AbstractString)
+    path = record_path(cache, store, bucket, key)
+    isfile(path) && return read(path), true
     bytes = fetch_object(store, key)
-    bytes === nothing && return nothing
-    cache_record!(cache, bucket, key, bytes)
-    return bytes
+    bytes === nothing && return nothing, false
+    cache_record!(cache, store, bucket, key, bytes)
+    return bytes, false
 end
 
 """
-    cache_record!(cache, bucket, key, bytes) -> nothing
+    heal_record!(cache, store, bucket, key, bytes) -> nothing
+
+Put `bytes`, which `store` returned for `key` past the cache and the caller has checked
+against the chain, in the record cache (ADR-0040). A cached file that differs — damaged,
+or left by a bucket that was emptied and reused — is replaced, with a warning naming it;
+an absent one is filled silently. Called only once the store's bytes pass, so a check the
+store fails too leaves the cached file in place as evidence.
+"""
+function heal_record!(cache::RecordCache, store::AbstractObjectStore, bucket::AbstractString, key::AbstractString, bytes)
+    path = record_path(cache, store, bucket, key)
+    held = isfile(path) ? read(path) : nothing
+    held == bytes && return nothing
+    held === nothing || @warn("record cache: the cached copy of $key in bucket $bucket is not what the store holds; " *
+        "replaced with the store's bytes (ADR-0040)", path, cached_bytes = length(held), store_bytes = length(bytes))
+    cache_record!(cache, store, bucket, key, bytes)
+    return nothing
+end
+
+"""
+    cache_record!(cache, store, bucket, key, bytes) -> nothing
 
 Put `bytes` in the cache as the record at `key`: written to a temporary file in the
 destination directory and renamed into place. What [`fetch_record`](@ref) does with a
@@ -252,8 +307,8 @@ fetched object, and what the commit layer does with a record it has just put —
 of our own is as immutable as a fetched one, and `repair!` and `verify` replay from the
 cache (ADR-0014), so our own commits belong there too.
 """
-function cache_record!(cache::RecordCache, bucket::AbstractString, key::AbstractString, bytes)
-    path = record_path(cache, bucket, key)
+function cache_record!(cache::RecordCache, store::AbstractObjectStore, bucket::AbstractString, key::AbstractString, bytes)
+    path = record_path(cache, store, bucket, key)
     dir = dirname(path)
     mkpath(dir)
     tmp = joinpath(dir, bytes2hex(rand(UInt8, 8)) * ".tmp")    # CACHE_TEMP_NAME_LENGTH characters
@@ -330,9 +385,10 @@ outcome is decided by the read-back, never by the status:
 | nothing | the request never landed; retry, bounded |
 
 A retryable failure ([`retryable`](@ref)) is re-issued after the read-back, up to
-[`PUT_ATTEMPTS`](@ref); any other exception propagates at once. The read-back goes
-through the record cache, so what is found is cached as the slot's record; so is a record
-this call created.
+[`PUT_ATTEMPTS`](@ref); any other exception propagates at once. The read-back asks the
+store, past the record cache (ADR-0040) — it is the authority, and a cache file is not
+— and what it finds is cached as the slot's record ([`heal_record!`](@ref)); so is a
+record this call created.
 """
 function put_record!(store::AbstractObjectStore, cache::RecordCache, bucket::AbstractString, key::AbstractString, bytes)
     ours = Ops.transaction_hash(bytes)
@@ -347,12 +403,15 @@ function put_record!(store::AbstractObjectStore, cache::RecordCache, bucket::Abs
             nothing
         end
         if outcome !== nothing
-            outcome.created && (cache_record!(cache, bucket, key, bytes); return nothing)
+            outcome.created && (cache_record!(cache, store, bucket, key, bytes); return nothing)
             outcome.status == 412 || error("put_object_if_absent($(typeof(store))) returned created = false with status " *
                 "$(outcome.status); the port promises false only for a 412 (ADR-0019)")
         end
-        found = fetch_record(cache, store, bucket, key)
-        found === nothing || return Ops.transaction_hash(found) == ours ? nothing : found
+        found = fetch_object(store, key)
+        if found !== nothing
+            heal_record!(cache, store, bucket, key, found)
+            return Ops.transaction_hash(found) == ours ? nothing : found
+        end
     end
     failure === nothing || throw(failure)
     throw(RewrittenChainError("rewritten chain: the put to $key was refused as existing (412) and a fetch found nothing " *

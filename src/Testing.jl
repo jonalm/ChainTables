@@ -10,7 +10,7 @@ own ChainTables-backed code runs against instead of AWS (ADR-0019). Nothing else
 module Testing
 
 import ..AbstractObjectStore, ..PutOutcome, ..ObjectMeta
-import ..fetch_object, ..put_object_if_absent, ..stat_object, ..list_objects, ..startswith_bytes
+import ..fetch_object, ..put_object_if_absent, ..stat_object, ..list_objects, ..startswith_bytes, ..cache_namespace
 
 """
     InMemoryObjectStore(; clock, fault, seed) <: AbstractObjectStore
@@ -33,6 +33,9 @@ Fields a test may set:
   Default does nothing.
 - `seed`: seeds the listing shuffle, so a test can reproduce one order. Default varies.
 
+Each store is its own record-cache namespace (ADR-0040): two stores never share cached
+files, even under one bucket name, and two chains over one store do.
+
 `calls` records every request as `(verb, key)` in order, for asserting that an
 operation made none (`open`, ADR-0023) or how many (galloping, ADR-0012). `objects`
 and `modified` hold the bytes and stamps by key and are the store's own copies.
@@ -41,6 +44,7 @@ mutable struct InMemoryObjectStore <: AbstractObjectStore
     const objects::Dict{String,Vector{UInt8}}
     const modified::Dict{String,Int64}
     const calls::Vector{Tuple{Symbol,String}}
+    const namespace::String       # the record cache's directory for this store (ADR-0040)
     clock::Any
     fault::Any
     state::UInt64
@@ -51,8 +55,11 @@ function InMemoryObjectStore(; clock = () -> floor(Int64, time()),
                              seed = hash(time_ns()))
     state = UInt64(seed) | UInt64(1)   # xorshift needs a non-zero state
     return InMemoryObjectStore(Dict{String,Vector{UInt8}}(), Dict{String,Int64}(),
-                               Tuple{Symbol,String}[], clock, fault, state)
+                               Tuple{Symbol,String}[], "mem-" * string(rand(UInt32); base = 16, pad = 8),
+                               clock, fault, state)
 end
+
+cache_namespace(store::InMemoryObjectStore) = store.namespace
 
 function _request!(store::InMemoryObjectStore, verb::Symbol, key::String)
     push!(store.calls, (verb, key))
