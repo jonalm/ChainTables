@@ -202,8 +202,8 @@ using SHA: sha256
             err = caught(() -> CT.cached_record_at(chain, cid, 3, hashes, "verify(copy; full = true)"))
             @test err isa RecordCacheError
             @test sprint(showerror, err) == "RecordCacheError: verify(copy; full = true): the record cache's copy of slot 3 " *
-                "($(cached(3))) changed while it was being read; another process is writing the record cache. Run " *
-                "verify(copy; full = true) again."
+                "($(cached(3))) changed while it was being read: another process is writing the record cache, or the disk " *
+                "damaged the file. Run verify(copy; full = true) again."
             @test (err.chain_id, err.slot, err.path, err.expected, err.found) ==
                   (cid, 3, cached(3), Ops.transaction_hash(three), Ops.transaction_hash(badbytes))
             write(cached(3), three)

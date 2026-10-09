@@ -173,10 +173,16 @@ MinIOs — must not share cached files (ADR-0040). At most
 SHA-256 of `scheme://host[:port]` for a configured endpoint. A
 [`GatewayObjectStore`](@ref) reads through its S3 client and shares its namespace. A
 `Testing.InMemoryObjectStore` is its own namespace, `mem-` and 8 hex digits. Any other
-store is `other`, one namespace for them all. Internal dispatch, not a port verb
+store must define it: there is no shared fallback, because two stores sharing a namespace
+overwrite each other's cached files on every read (ADR-0040), so a store that leaves it
+undefined is refused when a `Chain` is built over it. Internal dispatch, not a port verb
 (ADR-0010).
 """
-cache_namespace(::AbstractObjectStore) = "other"
+cache_namespace(store::AbstractObjectStore) = throw(ArgumentError("cache_namespace: $(nameof(typeof(store))) does not " *
+    "define ChainTables.cache_namespace, the record cache's directory for objects read through it. Define " *
+    "ChainTables.cache_namespace(::$(nameof(typeof(store)))) to return a portable name of at most " *
+    "$MAX_NAMESPACE_LENGTH characters that no other store holding different objects under the same bucket and " *
+    "key returns (ADR-0040)"))
 
 # The longest `cache_namespace`: `mem-` and 8 hex digits.
 const MAX_NAMESPACE_LENGTH = 12
@@ -234,7 +240,8 @@ cache and opens on every platform (ADR-0034).
 function record_path(cache::RecordCache, store::AbstractObjectStore, bucket::AbstractString, key::AbstractString)
     namespace = cache_namespace(store)
     length(namespace) <= MAX_NAMESPACE_LENGTH || throw(ArgumentError("record_path: the cache namespace " *
-        "$(repr(namespace)) of $(typeof(store)) is over $MAX_NAMESPACE_LENGTH characters (ADR-0034, ADR-0040)"))
+        "$(repr(namespace)) of $(typeof(store)) is over $MAX_NAMESPACE_LENGTH characters (ADR-0034, ADR-0040); " *
+        "its cache_namespace method must return a shorter name"))
     segments = split(key, '/')
     for s in (namespace, bucket, segments...)
         problem = portable_segment_problem(s)
@@ -261,9 +268,9 @@ see the record the moment it lands (ADR-0012). Failure raises.
 The cache does not hash what it serves. Every read returns the file's bytes fresh, and
 the caller rehashes them against the hash it holds — a child's `prev_hash`, or the head
 file's `transaction_hash` (ADR-0006, ADR-0013) — because only the chain knows the
-expected value. Bytes that fail that check are fetched again past the cache, and
-replace the file with [`heal_record!`](@ref) once they pass, before the chain is blamed
-(ADR-0040).
+expected value. The caller fetches bytes that fail that check again past the cache
+(`fetch_object`), and replaces the file with [`heal_record!`](@ref) once they pass,
+before the chain is blamed (ADR-0040).
 """
 fetch_record(cache::RecordCache, store::AbstractObjectStore, bucket::AbstractString, key::AbstractString) =
     first(fetch_record_from(cache, store, bucket, key))
@@ -282,11 +289,12 @@ end
 """
     heal_record!(cache, store, bucket, key, bytes) -> nothing
 
-Put `bytes`, which `store` returned for `key` past the cache and the caller has checked
-against the chain, in the record cache (ADR-0040). A cached file that differs — damaged,
-or left by a bucket that was emptied and reused — is replaced, with a warning naming it;
-an absent one is filled silently. Called only once the store's bytes pass, so a check the
-store fails too leaves the cached file in place as evidence.
+Put `bytes`, which `store` returned for `key` past the cache, in the record cache
+(ADR-0040). A cached file that differs — damaged, or left by a bucket that was emptied
+and reused — is replaced, with a warning naming it; an absent one is filled silently.
+The chain's readers call it only once the store's bytes pass their check, so a check the
+store fails too leaves the cached file in place as evidence. `put_record!`'s read-back
+calls it unchecked: the store's bytes at the slot are the authority (ADR-0010).
 """
 function heal_record!(cache::RecordCache, store::AbstractObjectStore, bucket::AbstractString, key::AbstractString, bytes)
     path = record_path(cache, store, bucket, key)

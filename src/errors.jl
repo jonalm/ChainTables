@@ -22,6 +22,10 @@ abstract type ChainTablesError <: Exception end
 The object-store port: fetch one object, put one object only if its key is absent,
 stat one key, list a prefix (ADR-0010, ADR-0019). Declared here rather than in
 `store.jl` so the local-copy lane can dispatch on it before the store lane lands.
+
+A store of your own implements the four verbs and `ChainTables.cache_namespace`, the
+record cache's directory for what it reads (ADR-0040); a `Chain` over a store without it
+is refused.
 """
 abstract type AbstractObjectStore end
 
@@ -231,10 +235,11 @@ Raised by `verify(copy; full = true)`, which is local: the record cache lacks th
 of `slot` (`found = nothing`), or holds bytes for it hashing to `found` where the chain
 names `expected` — a damaged record cache, not a damaged chain (ADR-0040). `path` is the
 cache file. Next move: `repair!(copy)`, which fetches the record from the store and
-replaces the file. Also raised by `verify`, `repair!` and the chain's readers (`sync!`,
-`as_of`, `slot_at`) when a cache file they already checked changes before they read it
-again — another process is writing the record cache; the next move is to run the call
-again.
+replaces the file. Also raised by `verify` and `repair!` when a cache file they already
+checked changes before they read it again — another process is writing the record
+cache, or the disk damaged it; the next move is to run the call again. The chain's
+readers (`sync!`, `as_of`, `slot_at`) never raise it: they read such a file from the
+store instead.
 """
 struct RecordCacheError <: ChainTablesError
     msg::String

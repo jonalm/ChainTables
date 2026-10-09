@@ -404,8 +404,8 @@ end
 # each held against its parent and yielded only once the store vouches for its bytes.
 # ---------------------------------------------------------------------------
 
-# How many bytes of cached records `read_forward` keeps decoded while it waits for the
-# store to vouch for them; records past it are read from the cache again when vouched.
+# How many stored bytes of cached records `read_forward` keeps decoded while it waits for
+# the store to vouch for them; records past it are read from the cache again when vouched.
 const PENDING_BYTES = 64 * 2^20
 
 """
@@ -416,8 +416,8 @@ Call `f(slot, record, transaction_hash)` for the records of slots `first:last` i
 order, stopping early when `f` returns `true`. Records are fetched through the record
 cache `read_ahead` ahead, and each is checked: it decodes, carries the chain's id —
 `chain_id`, else slot 0's — and names its parent's hash: `prev`, the hash `holder` (in
-words: "the local copy at …") holds for slot `first - 1`, or, from slot 0, none. `prev`
-and `holder` are given together, exactly when `first > 0`.
+words: "the local copy at …") holds for slot `first - 1`, or, from slot 0, none. `prev`,
+`holder` and `chain_id` are given together, exactly when `first > 0`.
 
 The record cache is not the chain's word (ADR-0040). A record the store returned is
 yielded once checked; a cached one only once a record the store returned names it,
@@ -427,16 +427,19 @@ A check that fails is asked of the store: the slot's own bytes, then, from the t
 the cached run below it, until the store agrees with the cache. Bytes the store returned
 replace a cache file that differs ([`heal_record!`](@ref)) once they pass. Only the
 store's bytes raise `RewrittenChainError` (a slot vanished, a parent not named) or
-`MalformedRecordError` (bytes that do not decode, another chain's id). `tail` closes the
-rewritten-chain messages. Up to `keep_bytes` of cached records waiting to be vouched for
-are kept decoded; the rest are read from the cache again, and one that changed meanwhile
-is `RecordCacheError`.
+`MalformedRecordError` (bytes that do not decode, another chain's id), and what the store
+vouched for below the failing slot is yielded first. `tail` closes the rewritten-chain
+messages. Up to `keep_bytes` of the stored bytes of records waiting to be vouched for are
+kept decoded, and as much again of the store's bytes while a cached run is asked of the
+store; the rest is read again when needed — a cache file that changed meanwhile is read
+from the store, which must hold the bytes the chain names.
 """
 function read_forward(f, chain::Chain, first::Integer, last::Integer;
                       prev = nothing, chain_id = nothing, holder = nothing, tail = "", keep_bytes = PENDING_BYTES)
     first, last = Int64(first), Int64(last)
-    (prev === nothing && holder === nothing) == (first == 0) ||
-        error("read_forward: prev and holder are given together, exactly when the read starts above slot 0")
+    given = (prev !== nothing, holder !== nothing, chain_id !== nothing)
+    (all(given) || !any(given)) && all(given) == (first > 0) ||
+        error("read_forward: prev, holder and chain_id are given together, exactly when the read starts above slot 0")
     where = location(chain)
     key(s) = slot_key(chain, s)
     cid = chain_id
@@ -464,46 +467,68 @@ function read_forward(f, chain::Chain, first::Integer, last::Integer;
     end
     hashed(s, th) = (; th, is = "slot $s hashes to")
     anchor = prev === nothing ? nothing : (; th = prev, is = "$holder holds slot $(first - 1) as")   # the last record vouched for
-    pending = @NamedTuple{slot::Int64, th::Vector{UInt8}, record::Any}[]   # cached, checked, not yet vouched for
+    # checked, not yet yielded: a cached run waiting to be vouched for, or, after `settle!`, one the store vouched for;
+    # `size` is what the record counts against `keep_bytes`, 0 when it was not kept
+    pending = @NamedTuple{slot::Int64, th::Vector{UInt8}, record::Any, size::Int}[]
     pending_bytes = 0
-    # The cached run in `pending` failed to vouch for what follows it: ask the store for
-    # it from the top down until the store agrees with the cache — that record vouches for
-    # the run below it — then check the store's bytes above that point upwards.
+    function hold!(s, th, record, n)
+        keep = pending_bytes + n <= keep_bytes
+        push!(pending, (; slot = s, th, record = keep ? record : nothing, size = keep ? n : 0))
+        keep && (pending_bytes += n)
+        return nothing
+    end
+    # The cached run in `pending` failed to vouch for what follows it: ask the store for it
+    # from the top down until the store agrees with the cache — that record vouches for
+    # the run below it — then check the store's bytes above that point upwards, holding
+    # them as the run. The walk down keeps up to `keep_bytes` of the store's bytes and
+    # fetches the rest again on the way up. Returns the run's top as a parent, or the
+    # store's error, `pending` then holding the part of the run the store vouched for.
     function settle!()
-        fresh = Vector{Any}(nothing, length(pending))
+        fresh = Dict{Int,Any}()          # index in `pending` => the store's bytes, or nothing
+        fresh_bytes = 0
         agree = length(pending)
         while agree >= 1
             bytes = fetch_object(chain.store, key(pending[agree].slot))
             bytes !== nothing && Ops.transaction_hash(bytes) == pending[agree].th && break
-            fresh[agree] = bytes
+            n = bytes === nothing ? 0 : length(bytes)
+            fresh_bytes + n <= keep_bytes && (fresh[agree] = bytes; fresh_bytes += n)
             agree -= 1
         end
+        above = [p.slot for p in pending[agree+1:end]]
+        resize!(pending, agree)
+        pending_bytes = sum((p.size for p in pending); init = 0)
         parent = agree == 0 ? anchor : hashed(pending[agree].slot, pending[agree].th)
-        for j in agree+1:length(pending)
-            s = pending[j].slot
-            got = check(fresh[j], s, parent)
-            got isa Exception && throw(got)
-            heal_record!(chain.cache, chain.store, chain.bucket, key(s), fresh[j])
-            pending[j] = (; slot = s, th = Ops.transaction_hash(fresh[j]), record = got)
-            parent = hashed(s, pending[j].th)
+        for (j, s) in zip(agree+1:agree+length(above), above)
+            bytes = haskey(fresh, j) ? pop!(fresh, j) : fetch_object(chain.store, key(s))
+            got = check(bytes, s, parent)
+            got isa Exception && return got
+            heal_record!(chain.cache, chain.store, chain.bucket, key(s), bytes)
+            th = Ops.transaction_hash(bytes)
+            hold!(s, th, got, length(bytes))
+            parent = hashed(s, th)
         end
         return parent
     end
-    # Yield the vouched-for run in `pending`, reading again from the cache what was not
-    # kept; `true` when `f` stopped the read.
+    # A vouched-for record that was not kept: from the cache again, or, when the file
+    # changed meanwhile (damaged, or written by another process), from the store, which
+    # must hold the bytes the chain names; they replace the file.
+    function reread(s, th)
+        bytes = cached_record(chain, s)
+        if bytes === nothing || Ops.transaction_hash(bytes) != th
+            bytes = fetch_object(chain.store, key(s))
+            found = bytes === nothing ? nothing : Ops.transaction_hash(bytes)
+            found == th || throw(RewrittenChainError("rewritten chain: slot $s of chain $cid at $where " *
+                (found === nothing ? "is absent" : "holds a record hashing to $(bytes2hex(found))") * "; the record " *
+                "above it names $(bytes2hex(th)). The bucket is being written from outside the protocol and nothing " *
+                "heals it.$tail"; chain_id = cid, slot = s, expected = th, found))
+            heal_record!(chain.cache, chain.store, chain.bucket, key(s), bytes)
+        end
+        return Ops.decode_record(bytes; slot = s)
+    end
+    # Yield the vouched-for run in `pending`; `true` when `f` stopped the read.
     function flush!()
         for p in pending
-            record = p.record
-            if record === nothing
-                bytes = cached_record(chain, p.slot)
-                (bytes !== nothing && Ops.transaction_hash(bytes) == p.th) || throw(RecordCacheError("the record " *
-                    "cache's copy of slot $(p.slot) ($(record_path(chain.cache, chain.store, chain.bucket, key(p.slot)))) " *
-                    "changed while it was being read; another process is writing the record cache. Read again.";
-                    chain_id = cid, slot = p.slot, path = record_path(chain.cache, chain.store, chain.bucket, key(p.slot)),
-                    expected = p.th, found = bytes === nothing ? nothing : Ops.transaction_hash(bytes)))
-                record = Ops.decode_record(bytes; slot = p.slot)
-            end
-            f(p.slot, record, p.th) === true && return true
+            f(p.slot, p.record === nothing ? reread(p.slot, p.th) : p.record, p.th) === true && return true
         end
         anchor = isempty(pending) ? anchor : hashed(pending[end].slot, pending[end].th)
         empty!(pending)
@@ -528,15 +553,18 @@ function read_forward(f, chain::Chain, first::Integer, last::Integer;
                 got = check(bytes, s, parent)
             end
             if got isa Exception && !isempty(pending)   # … then the cached run below, which nothing has vouched for
-                got = check(bytes, s, settle!())
+                settled = settle!()
+                got = settled isa Exception ? settled : check(bytes, s, settled)
+                if got isa Exception        # the store's word raises, after what it vouched for below the failure
+                    flush!() && return nothing
+                    throw(got)
+                end
             end
             got isa Exception && throw(got)
             cid === nothing && (cid = chain_id_string(got.chain_id))
             th = Ops.transaction_hash(bytes)
             if cached
-                keep = pending_bytes + length(bytes) <= keep_bytes
-                push!(pending, (; slot = s, th, record = keep ? got : nothing))
-                keep && (pending_bytes += length(bytes))
+                hold!(s, th, got, length(bytes))
             else
                 heal_record!(chain.cache, chain.store, chain.bucket, key(s), bytes)
                 flush!() && return nothing

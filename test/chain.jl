@@ -15,11 +15,13 @@ using ChainTables.Ops: Record, Client, Insert
 struct ChainTestPhantom412 <: AbstractObjectStore
     inner::InMemoryObjectStore
 end
+ChainTables.cache_namespace(s::ChainTestPhantom412) = ChainTables.cache_namespace(s.inner)
 ChainTables.put_object_if_absent(s::ChainTestPhantom412, key, bytes) = PutOutcome(false, 412)
 ChainTables.fetch_object(s::ChainTestPhantom412, key) = fetch_object(s.inner, key)
 ChainTables.stat_object(s::ChainTestPhantom412, key) = stat_object(s.inner, key)
 # A store that reports a refused put with a status the port does not allow.
 struct ChainTestBadOutcome <: AbstractObjectStore end
+ChainTables.cache_namespace(::ChainTestBadOutcome) = "bad"
 ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome(false, 200)
 
 @testset "chain" begin
@@ -931,23 +933,131 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             close(fresh)
 
             # past keep_bytes a cached run waiting to be vouched for is read again when it is: the same records,
-            # and a file another process changed meanwhile is RecordCacheError, not a record nobody checked
+            # and a file changed meanwhile (another process, the disk) is read from the store and replaced
             one = Chain("bkt", "p"; store, cache_dir = chain.cache.dir, read_ahead = 1, record_host = false, record_user = false)
             seen(; kw...) = (got = Tuple{Int64,Vector{UInt8}}[]; CT.read_forward((s, r, th) -> (push!(got, (s, th)); false), one, 0, 3; kw...); got)
             @test seen(; keep_bytes = 0) == seen() == [(k, Ops.transaction_hash(good(k))) for k in 0:3]
             store.fault = (verb, key, phase) -> verb === :fetch_object && key == slotkey(3) && phase === :before &&
                 write(cached(2), b"changed")
-            err = caught(() -> seen(; keep_bytes = 0))
+            @test (@test_logs (:warn, r"cached copy of p/000000000002") seen(; keep_bytes = 0)) ==
+                  [(k, Ops.transaction_hash(good(k))) for k in 0:3]
+            @test read(cached(2)) == good(2)
+            # … unless the store no longer holds what the chain names there: the store's word raises
+            store.fault = (verb, key, phase) -> verb === :fetch_object && key == slotkey(3) && phase === :before &&
+                (write(cached(2), b"changed"); plant!(store, slotkey(2), b"rewritten"); nothing)
+            err = @test_logs caught(() -> seen(; keep_bytes = 0))
             store.fault = (verb, key, phase) -> nothing
-            @test err isa RecordCacheError
-            @test sprint(showerror, err) == "RecordCacheError: the record cache's copy of slot 2 ($(cached(2))) changed while it " *
-                "was being read; another process is writing the record cache. Read again."
-            @test (err.chain_id, err.slot, err.path, err.expected, err.found) ==
-                  (cid, 2, cached(2), Ops.transaction_hash(good(2)), Ops.transaction_hash(b"changed"))
+            @test err isa RewrittenChainError
+            @test sprint(showerror, err) == "RewrittenChainError: rewritten chain: slot 2 of chain $cid at bkt/p holds a " *
+                "record hashing to $(hex(Ops.transaction_hash(b"rewritten"))); the record above it names " *
+                "$(hex(Ops.transaction_hash(two))). The bucket is being written from outside the protocol and nothing heals it."
+            @test (err.slot, err.expected, err.found) == (2, Ops.transaction_hash(two), Ops.transaction_hash(b"rewritten"))
+            @test read(cached(2)) == b"changed"     # the file stays as it was, as evidence
+            plant!(store, slotkey(2), two)
+            write(cached(2), two)
             # read_forward's anchors go together
-            @test_throws "prev and holder are given together" CT.read_forward((s, r, th) -> false, one, 1, 3)
-            @test_throws "prev and holder are given together" CT.read_forward((s, r, th) -> false, one, 0, 3; prev = Ops.transaction_hash(good(0)))
+            msg = "prev, holder and chain_id are given together, exactly when the read starts above slot 0"
+            @test_throws msg CT.read_forward((s, r, th) -> false, one, 1, 3)
+            @test_throws msg CT.read_forward((s, r, th) -> false, one, 0, 3; prev = Ops.transaction_hash(good(0)))
+            @test_throws msg CT.read_forward((s, r, th) -> false, one, 1, 3; prev = Ops.transaction_hash(good(0)),
+                                             holder = "the local copy at x")
             close(copy)
+        end
+    end
+
+    @testset "a cached fork, asked of the store: down to the anchor, a slot gone, an early stop (ADR-0040)" begin
+        mktempdir() do dir
+            warned(s) = (:warn, Regex("record cache: the cached copy of $(slotkey(s)) in bucket bkt is not what the store holds"))
+            mk(st, name; kw...) = Chain("bkt", "p"; store = st, cache_dir = joinpath(dir, name), record_host = false,
+                                        record_user = false, kw...)
+            function add!(cp, i, tag)
+                w = CT.write_builder(cp)
+                i == 1 && declare!(w)
+                CT.insert_rows!(w, :samples, [(id = tag + i, label = "x", mass = 1.0)])
+                CT.commit!(w)
+            end
+            # A and B: one chain id, A's slots below `at` copied to B, then each commits its own from `at` to 5
+            function forked(at)
+                a = InMemoryObjectStore()
+                CT.create_chain(mk(a, "ca$at"))
+                wa = CT.open(mk(a, "ca$at"), joinpath(dir, "wa$at"))
+                CT.sync!(wa)
+                foreach(i -> add!(wa, i, 100), 1:at-1)
+                b = InMemoryObjectStore()
+                foreach(((k, v),) -> plant!(b, k, copy(v)), a.objects)
+                wb = CT.open(mk(b, "cb$at"), joinpath(dir, "wb$at"))
+                CT.sync!(wb)
+                for i in at:5, (cp, tag) in ((wa, 100), (wb, 200))
+                    add!(cp, i, tag)
+                end
+                return a, b, wa
+            end
+            # a bucket that held B, read whole into the cache `name`, then emptied and refilled with A
+            function refilled(a, b, name; kw...)
+                s = InMemoryObjectStore()
+                foreach(((k, v),) -> plant!(s, k, copy(v)), b.objects)
+                chain = mk(s, name; kw...)
+                rb = CT.open(chain, joinpath(dir, "rb_$name"))
+                CT.sync!(rb)
+                close(rb)
+                empty!(s.objects); empty!(s.modified)
+                foreach(((k, v),) -> plant!(s, k, copy(v)), a.objects)
+                return s, chain
+            end
+            fetched(s, n) = sort([k for (v, k) in s.calls[n+1:end] if v === :fetch_object])
+            cached_is(chain, s, k, st) = read(record_path(chain.cache, s, "bkt", slotkey(k))) == st.objects[slotkey(k)]
+
+            # forked at slot 1: the store agrees with none of the cached run, so slot 0 vouches for the store's bytes
+            a, b, wa = forked(1)
+            s, chain = refilled(a, b, "down")
+            ra = CT.open(chain, joinpath(dir, "ra_down"))
+            n = length(s.calls)
+            @test_logs warned(1) warned(2) warned(3) warned(4) warned(5) CT.sync!(ra)
+            @test fetched(s, n) == slotkey.(0:5)
+            @test CT.head(ra) == CT.head(wa) && rows_of(ra, "samples") == rows_of(wa, "samples")
+            @test all(cached_is(chain, s, k, a) for k in 0:5)
+            close(ra)
+
+            a, b, wa = forked(2)
+            # keep_bytes = 0: the store's bytes are not kept on the way down, but fetched again on the way up
+            s, chain = refilled(a, b, "kept")
+            n = length(s.calls)
+            got = Tuple{Int64,Vector{UInt8}}[]
+            @test_logs warned(2) warned(3) warned(4) warned(5) CT.read_forward((k, r, th) -> (push!(got, (k, th)); false), chain, 0, 5;
+                                                                    keep_bytes = 0)
+            @test got == [(k, Ops.transaction_hash(a.objects[slotkey(k)])) for k in 0:5]
+            @test fetched(s, n) == slotkey.([0, 1, 2, 2, 3, 3, 4, 4, 5])
+
+            # a slot gone mid-settle: the store's word raises, after the part of the run it vouched for is applied
+            s, chain = refilled(a, b, "gone")
+            ra = CT.open(chain, joinpath(dir, "ra_gone"))
+            s.fault = (verb, key, phase) -> (verb === :fetch_object && key == slotkey(5) && phase === :after &&
+                (delete!(s.objects, slotkey(3)); delete!(s.modified, slotkey(3))); nothing)
+            t = Ref(0); step = Ref(0)
+            clock() = (step[] += 1; t[] += (10, 0, 1, 0)[mod1(step[] - 1, 4)])     # a checkpoint after every record
+            err = @test_logs warned(2) caught(() -> CT.replay!(ra, 0, 5; clock))   # slot 5 is never healed: the read fails below it
+            s.fault = (verb, key, phase) -> nothing
+            @test err isa RewrittenChainError && err.slot == 3 && err.found === nothing
+            @test occursin("slot 3 at bkt/p was there when head discovery probed it and is absent now", sprint(showerror, err))
+            # slot 1 vouched for by the store's agreeing bytes, slot 2 by the store's own: both applied
+            @test CT.head(ra).slot == 2
+            @test CT.head(ra).transaction_hash == Ops.transaction_hash(a.objects[slotkey(2)])
+            # what the store returned and passed replaced the file; B's slots 3 and 4 stay as they were, as evidence
+            @test cached_is(chain, s, 2, a) && cached_is(chain, s, 3, b) && cached_is(chain, s, 4, b)
+            close(ra)
+
+            # an early stop, the target in a cached fork: B's slot 2 is not the chain's, A's is found once vouched;
+            # files of the layout before ADR-0040 (no namespace) are never read
+            s, chain = refilled(a, b, "stop")
+            for k in 0:5
+                old = joinpath(dir, "stop", "bkt", "p", CT.head_filename(k))
+                mkpath(dirname(old))
+                write(old, b"cached before ADR-0040")
+            end
+            hb = CT.TransactionHash(Ops.transaction_hash(b.objects[slotkey(2)]))
+            err = @test_logs warned(2) warned(3) warned(4) warned(5) caught(() -> CT.target_slot(chain, hb))
+            @test err isa ArgumentError && occursin("no record of the chain at bkt/p hashes to it", sprint(showerror, err))
+            @test CT.target_slot(chain, CT.TransactionHash(Ops.transaction_hash(a.objects[slotkey(2)]))) == 2
         end
     end
 

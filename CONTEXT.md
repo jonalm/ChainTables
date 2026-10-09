@@ -219,8 +219,8 @@ store — at most one record ever occupies a slot, so a key's bytes are immutabl
 protocol. Not the chain's word, though: a file can be damaged, or outlive a bucket
 that was emptied and refilled, so a cached record is applied only once a record the
 store returned names it, and a hit that fails is fetched again before the chain is
-blamed. Distinct from the
-local copy, which is derived from the records rather than a copy of them.
+blamed. Distinct from the local copy, which is derived from the records rather than a
+copy of them.
 _Avoid_: blob cache, object cache, store, mirror
 _See_: [ADR-0010](docs/adr/0010-s3sqlite-owns-its-s3-client-and-its-record-cache.md), [ADR-0040](docs/adr/0040-the-record-cache-is-not-the-chains-word.md)
 

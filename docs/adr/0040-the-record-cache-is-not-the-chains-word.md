@@ -27,9 +27,11 @@ the partition, and `ep-` with 8 hex digits of the SHA-256 of the canonical
 `scheme://host[:port]` for a configured endpoint. A gateway store reads from
 S3 directly and shares its S3 client's namespace. Each
 `Testing.InMemoryObjectStore` is its own (`mem-` and 8 random hex digits). Any
-other store is `other`. It is internal dispatch, like `record_author`; the port
-stays four verbs (ADR-0010). Two stores that may hold different objects under
-one name no longer share a file.
+other store must define `cache_namespace` itself: there is no fallback, and a
+`Chain` over a store without one is refused with a message naming the method
+to define. It is internal dispatch, like `record_author`; the port stays four
+verbs (ADR-0010). Two stores that may hold different objects under one name no
+longer share a file.
 
 **A hit is still served without asking the store, but no reader trusts it on
 its own.** Only bytes the store returned vouch for a record:
@@ -40,23 +42,27 @@ its own.** Only bytes the store returned vouch for a record:
   hash all read through it. A record must decode, carry the chain's id, and
   name its parent's hash. A record fetched from the store, a miss, is yielded
   once checked. The last record of a read, and slot 0, are always fetched from
-  the store, so every read ends vouched for. Up to 64 MiB of a cached run
-  waiting to be vouched for is kept decoded; the rest is read from the cache
-  again, and a file that changed meanwhile is `RecordCacheError`.
+  the store, so every read ends vouched for. Up to 64 MiB of the stored bytes
+  of a cached run waiting to be vouched for is kept decoded; the rest is read
+  from the cache again. A file that changed meanwhile is read from the store,
+  which must hold the bytes the chain names, and replaced.
 - **A check that fails is asked of the store before the chain is blamed.**
   First the slot's own bytes. If the store's bytes fail against a cached
   parent, the cached run below is fetched from the store from the top down,
   until the store's bytes at a slot equal the cache's. That slot vouches for
-  the run below it, and the store's bytes above it are checked upwards. A run
-  of cached records that agree with each other, carry the chain's id, and are
+  the run below it, and the store's bytes above it are checked upwards. The
+  walk down keeps up to 64 MiB of the store's bytes and fetches the rest again
+  on the way up. A run of cached records that agree with each other, carry the chain's id, and are
   not the store's (an emptied and refilled bucket, holding a fork of the same
   chain) is therefore replaced, never applied or checkpointed.
 - **Only the store's bytes raise** `RewrittenChainError` or
-  `MalformedRecordError`.
+  `MalformedRecordError`, and what the store vouched for below the failing
+  slot is yielded first.
 - **The store's bytes replace a cache file only once they pass**
   (`heal_record!`), with a warning naming the file when it held other bytes.
   When the store's bytes fail too, the cached file stays as it was, as
-  evidence.
+  evidence. A miss is cached as the store returned it: it fills a file, it
+  replaces none.
 
 **The head's own slot (`check_head_slot`) is fetched again when the cached
 bytes do not hash to the head.** The head is ours, so it is the anchor.
@@ -66,8 +72,9 @@ other bytes for raises the new `RecordCacheError`, naming the file and both
 hashes, with `repair!(copy)` as the next move. **`repair!` fetches such a
 record itself** and replaces the file instead of telling the user to delete
 it. The store's bytes not hashing to what the chain names are
-`RewrittenChainError`. A cache file that changes while `verify` or `repair!`
-reads it is `RecordCacheError` too: another process is writing the cache.
+`RewrittenChainError`. A cache file that changes between `verify`'s or
+`repair!`'s two reads of it is `RecordCacheError` too: another process is
+writing the cache, or the disk damaged it.
 
 **The read-back of a put asks the store, never the cache.** ADR-0010 made the
 read-back the authority, and a cache file is not one.
@@ -80,6 +87,10 @@ read-back the authority, and a cache file is not one.
   each other's files on every read: one synchronous GET and one warning per
   slot, with no read-ahead. And a reader over AWS cannot tell another store's
   run of the same chain from a rewritten bucket. Rejected.
+- **One shared namespace, `other`, for every store ChainTables does not
+  know.** Two such stores under one bucket name would rewrite each other's
+  files on every read, the cost the first option was rejected for, and
+  silently. A store defines its own, or is refused. Rejected.
 - **The endpoint's host as the namespace.** Readable, but a host costs up to
   253 characters of the path budget ADR-0034 gave to `cache_dir`. A short
   hash costs 12. Rejected.
@@ -92,7 +103,10 @@ read-back the authority, and a cache file is not one.
   knows which bytes belong at a slot. Rejected.
 - **Raise on a damaged cache instead of replacing the file.** The cache is
   disposable (ADR-0010), and replacing a file loses nothing. The warning keeps
-  the event visible. Only `verify`, which is local by contract, raises.
+  the event visible. Only `verify`, which is local by contract, raises, and
+  `verify` and `repair!` when a file changes between their two reads of it.
+  The chain's readers never do: they hold the hash the chain names, so the
+  store's bytes can stand in.
 - **Always fetch the head's slot from the store.** ADR-0014 counts one fetch
   of slot N per sync, but in practice the cache serves it, so a rewrite of
   slot N alone goes unseen until the next record. That is a separate gap in
@@ -111,10 +125,27 @@ read-back the authority, and a cache file is not one.
   from the store even when cached. A `sync!` that finds a cached record at the
   top fetches it once more.
 - A cached record is applied only when the read reaches a record the store
-  returned. A `sync!` that fails mid-read leaves the copy at the last record
-  the store vouched for, which can be lower than before.
+  returned. A `sync!` that fails mid-read leaves the copy at its last
+  checkpoint, at or below the last record the store vouched for, which can be
+  lower than before. On a warm cache that is the top: nothing is applied, and
+  no mid-replay checkpoint written, until the top is fetched.
+- `as_of` by hash no longer stops at the target on a warm cache: a cached
+  target waits for the store to vouch for it, which is at the top, so the
+  whole chain is read. Before, it stopped at the target. A cost against
+  ADR-0013's intent, accepted here; confirming a found target early with one
+  GET of the slot above it is left for its own issue.
+- A cached run whose records carry another chain id (a bucket emptied and
+  refilled with another chain) fails slot by slot: one synchronous GET and one
+  warning per slot, with no read-ahead, once.
+- Files cached before this change, at `cache_dir/<bucket>/<key>`, are never
+  read or swept. Delete `cache_dir` once to reclaim the space. Where an old
+  bucket was named like a namespace (`aws`, `aws-cn`, `aws-us-gov`, `ep-…`,
+  or a store's own), an old file can sit at a new path: the old (bucket
+  `aws`, prefix `abc`) is the new (namespace `aws`, bucket `abc`, no prefix).
+  The readers' checks replace it.
 - `open` still reads the chain id from the cached slot 0 alone (no network).
   A stale file there can raise `WrongChainError` at open, and the message does
   not mention the cache. With the namespace, only a bucket that was emptied
-  and refilled can cause it. Not addressed here.
+  and refilled, or an old file at a new path (above), can cause it. Not
+  addressed here.
 - Adds `RecordCacheError`, the seventeenth type (ADR-0020).

@@ -61,7 +61,7 @@ function cached_record_at(chain::Chain, chain_id, slot, hashes, call)
     bytes = cached_record(chain, slot)
     th = bytes === nothing ? nothing : Ops.transaction_hash(bytes)
     th == hashes[slot+1] || throw(RecordCacheError("$call: the record cache's copy of slot $slot ($path) changed while " *
-        "it was being read; another process is writing the record cache. Run $call again.";
+        "it was being read: another process is writing the record cache, or the disk damaged the file. Run $call again.";
         chain_id, slot, path, expected = hashes[slot+1], found = th))
     return Ops.decode_record(bytes; slot)
 end
@@ -354,8 +354,8 @@ with [`read_forward`](@ref), which holds each against its parent (ADR-0015, ADR-
 a broken link is `RewrittenChainError`, not an answer. A scan, because
 `client.time_ms` is what the committer asserted and is not monotone across clients with
 skewed clocks — which is also why this is a separate, differently named lookup that
-returns a slot for [`as_of`](@ref) rather than an address of its own. A time before the genesis record's
-is an error: there is no state before slot 0.
+returns a slot for [`as_of`](@ref) rather than an address of its own. A time before the
+genesis record's is an error: there is no state before slot 0.
 """
 function slot_at(chain::Chain, time_ms)
     time_ms isa Integer || throw(ArgumentError("slot_at(chain, time_ms): time_ms is a $(typeof(time_ms)), not an Integer " *
