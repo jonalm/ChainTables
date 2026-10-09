@@ -118,6 +118,13 @@ Both `lambda:` actions are required: function URLs created since October 2025 ch
 A principal lacking either gets a 403 from AWS before the handler runs, which the client
 reports as `WriteRefusedError` with `reason = "forbidden"`.
 
+**Keep the `InvokedViaFunctionUrl` condition.** Without it, the principal can call the
+Lambda Invoke API directly with a hand-built event, and the event's authorizer, which is
+where the gateway reads the caller, can then name anyone (ADR-0036). The same holds for any
+principal whose own policy grants `lambda:InvokeFunction` or `lambda:*` on the function or
+on `*` with no such condition, `AdministratorAccess` and `PowerUserAccess` among them: such a
+principal can write as any listed name.
+
 The reads are direct: the client's fetch, stat, list and the read-back after a commit go to
 S3, not through the gateway. Nothing in a writer's policy grants `PutObject`.
 
@@ -130,7 +137,8 @@ The two S3 statements only (`ReadObjects`, `ListBucket`).
 For a principal in the **same account** as the bucket and the function, the identity policy
 above is sufficient, and `deploy.sh` needs no `--writer`/`--reader`. For a principal in
 **another account**, the resource side must grant too: pass its ARN as `--writer` (both
-invoke actions on the function, plus reads in the bucket policy) or `--reader` (reads in the
+invoke actions on the function, `lambda:InvokeFunction` only via the URL, plus reads in the
+bucket policy) or `--reader` (reads in the
 bucket policy). A role named this way must exist when the script runs; S3 rejects a policy
 naming a role that does not.
 
@@ -153,9 +161,11 @@ naming a role that does not.
    "Action": ["s3:GetObject", "s3:ListBucket"], "Resource": ["arn:aws:s3:::<bucket>", "arn:aws:s3:::<bucket>/*"]}]}
 ```
 
-The Deny is the guarantee: an administrator with `s3:*` on the account cannot fill a slot
-either, only the gateway can. What the policy does **not** prevent: an administrator can
-still delete objects, and can rewrite this policy. The trust boundary is one fact wide, that
+The Deny is the guarantee: only the gateway can fill a slot, and an administrator with
+`s3:*` on the account cannot either. What the policy does **not** prevent: an administrator
+can still delete objects, and can rewrite this policy. And an administrator whose policy
+grants `lambda:InvokeFunction` without the `InvokedViaFunctionUrl` condition can have the
+gateway fill a slot under any listed name (ADR-0036). The trust boundary is one fact wide, that
 a record in the bucket names the principal that filled its slot and that principal was
 allowed to (ADR-0028); it is not tamper-evidence against the account's owners.
 

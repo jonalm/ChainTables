@@ -1,5 +1,6 @@
 """The deployment scripts, offline: `setup-locked-bucket.sh --print-policies` makes no AWS call,
-so the policies it would apply are checked here statement by statement."""
+so the policies it would apply are checked here statement by statement; `deploy.sh` runs
+against a fake `aws` on PATH that logs every call."""
 
 import json
 import os
@@ -73,3 +74,44 @@ def test_print_policies_without_a_required_argument_fails():
     r = subprocess.run(["bash", os.path.join(HERE, "setup-locked-bucket.sh"), "--print-policies"],
                        capture_output=True, text=True)
     assert r.returncode != 0 and "--account" in r.stderr
+
+
+# A fake AWS CLI: logs its argv one call per line (arguments NUL-separated), answers what
+# deploy.sh reads, and reports an existing bucket, role, function and URL, plus one grant
+# from an earlier deployment that the run must remove.
+FAKE_AWS = r"""#!/usr/bin/env bash
+printf '%s\0' "$@" >> "$FAKE_AWS_LOG"; printf '\n' >> "$FAKE_AWS_LOG"
+case "$1 $2" in
+    "sts get-caller-identity") case "$*" in *Account*) echo 111122223333 ;; *) echo arn:aws:iam::111122223333:user/admin ;; esac ;;
+    "lambda get-function-url-config") case "$*" in *AuthType*) echo AWS_IAM ;; *) echo https://abc.lambda-url.eu-north-1.on.aws/ ;; esac ;;
+    "lambda get-policy") echo '{"Statement":[{"Sid":"chaintables-writer-1-invoke"},{"Sid":"someone-else"}]}' ;;
+esac
+"""
+
+
+def test_deploy_grants_writers_invoke_only_via_the_function_url(tmp_path):
+    (tmp_path / "aws").write_text(FAKE_AWS)
+    (tmp_path / "aws").chmod(0o755)
+    (tmp_path / "gw.zip").write_bytes(b"zip")
+    log = tmp_path / "log"
+    writers = ["arn:aws:iam::444455556666:role/w1", "arn:aws:iam::444455556666:user/w2"]
+    subprocess.run(
+        ["bash", os.path.join(HERE, "deploy.sh"), "--bucket", "bkt", "--function", "gw", "--region", "eu-north-1",
+         "--role", "gw-role", "--zip", str(tmp_path / "gw.zip"), "--no-smoke",
+         *[a for w in writers for a in ("--writer", w)]],
+        check=True, capture_output=True, text=True,
+        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "FAKE_AWS_LOG": str(log)},
+    )
+    calls = [line.split("\0")[:-1] for line in log.read_text().splitlines()]
+    removed = [c for c in calls if c[:2] == ["lambda", "remove-permission"]]
+    assert removed == [["lambda", "remove-permission", "--function-name", "gw", "--statement-id", "chaintables-writer-1-invoke"]]
+    grants = [c for c in calls if c[:2] == ["lambda", "add-permission"]]
+    assert len(grants) == 2 * len(writers)
+    for c in grants:
+        action, principal = c[c.index("--action") + 1], c[c.index("--principal") + 1]
+        assert principal in writers
+        if action == "lambda:InvokeFunctionUrl":
+            assert c[c.index("--function-url-auth-type") + 1] == "AWS_IAM"
+        else:
+            # unconditioned, a writer could call the Invoke API with a forged authorizer (#68)
+            assert action == "lambda:InvokeFunction" and "--invoked-via-function-url" in c

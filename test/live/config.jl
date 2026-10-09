@@ -7,7 +7,7 @@ const LIVE_EXAMPLE = "test/live/live.env.example"
 
 # test => the variables it requires, each read from CHAINTABLES_LIVE_<TEST>_<NAME>
 const LIVE_VARIABLES = (
-    gateway = (:bucket, :url, :region, :profile, :prefix, :unlisted_prefix),
+    gateway = (:bucket, :url, :function, :region, :profile, :prefix, :unlisted_prefix),
 )
 
 live_variable(test, name) = "CHAINTABLES_LIVE_" * uppercase("$(test)_$(name)")

@@ -20,8 +20,10 @@
 #      with --reserved-concurrency, that many concurrent executions reserved, which also caps
 #      them (left as it is otherwise: an account with the minimum quota cannot reserve any);
 #   4. function URL with AuthType=AWS_IAM; for each --writer, resource-based grants of both
-#      lambda:InvokeFunctionUrl and lambda:InvokeFunction (a same-account writer whose
-#      permission set already grants both needs no --writer; a cross-account one does);
+#      lambda:InvokeFunctionUrl and lambda:InvokeFunction, the latter only when invoked via the
+#      function URL (lambda:InvokedViaFunctionUrl), so a writer cannot call the Invoke API with
+#      a hand-built event that names another caller (ADR-0036); a same-account writer whose
+#      permission set already grants both needs no --writer; a cross-account one does;
 #   5. bucket policy: the execution role may PutObject; every other principal is denied
 #      PutObject; each --reader and --writer may GetObject and ListBucket; every request
 #      without TLS is denied (DenyInsecureTransport, the same statement a locked bucket has);
@@ -48,7 +50,7 @@ while [ $# -gt 0 ]; do
         --log-retention) retention="$2"; shift 2 ;;
         --reserved-concurrency) concurrency="$2"; shift 2 ;;
         --no-smoke) smoke=0; shift ;;
-        -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
         *) echo "deploy.sh: unknown argument $1" >&2; exit 2 ;;
     esac
 done
@@ -171,7 +173,7 @@ for w in ${writers[@]+"${writers[@]}"}; do
     aws lambda add-permission --function-name "$function" --statement-id "chaintables-writer-$i-url" \
         --action lambda:InvokeFunctionUrl --principal "$w" --function-url-auth-type AWS_IAM >/dev/null
     aws lambda add-permission --function-name "$function" --statement-id "chaintables-writer-$i-invoke" \
-        --action lambda:InvokeFunction --principal "$w" >/dev/null
+        --action lambda:InvokeFunction --principal "$w" --invoked-via-function-url >/dev/null
 done
 
 # 5. bucket policy

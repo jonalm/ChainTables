@@ -5,6 +5,7 @@
 # it creates a chain under a fresh prefix the policy lists the caller under and commits
 # through the gateway; a direct put to the bucket is denied; a commit racing for a slot
 # loses; a record naming another author, and a chain under an unlisted prefix, are refused;
+# a direct Invoke whose event forges the authorizer is denied by AWS (issue #68, ADR-0036);
 # a record over 4 MiB fails at commit before any call. Never deletes (the port has no delete
 # verb): the bucket's operator expires `<prefix>/` objects, or keeps them.
 using ChainTables: Bucket, Chain, GatewayObjectStore, PutOutcome, TransportError, WriteRefusedError, WriteBuilderError,
@@ -108,6 +109,17 @@ end
         e = try put_object_if_absent(store, key3, gwtest_record(author * ".impostor")); nothing catch e; e end
         @test e isa WriteRefusedError && e.reason == "author_mismatch" && e.key == key3 && e.caller == author
         @test occursin("author_mismatch: the record names '$author.impostor' as client.user but the caller is '$author'", sprint(showerror, e))
+        @test stat_object(store, key3) === nothing
+        # the Invoke API, bypassing the URL, with an event whose authorizer names someone else:
+        # AWS denies it before the handler runs, so the authorizer is AWS's word (#68, ADR-0036)
+        forged = "arn:aws:sts::111122223333:assumed-role/forged/$author.impostor"
+        event = """{"requestContext":{"http":{"method":"PUT","path":"/"},"authorizer":{"iam":{"userArn":"$forged"}}},""" *
+                """"rawQueryString":"key=$key3","body":"","isBase64Encoded":false}"""
+        err = IOBuffer()
+        invoke = `aws lambda invoke --profile $(config.profile) --region $(config.region) --function-name $(config.function)
+                  --cli-binary-format raw-in-base64-out --payload $event $(joinpath(dir, "invoke.json"))`
+        p = run(pipeline(ignorestatus(invoke); stdout = devnull, stderr = err))
+        @test !success(p) && occursin("AccessDeniedException", String(take!(err)))
         @test stat_object(store, key3) === nothing
         # a chain under a prefix the policy does not list the caller under: not_allowed at slot 0
         denied = Chain(gwbucket, "$unlisted/$run"; cache_dir)

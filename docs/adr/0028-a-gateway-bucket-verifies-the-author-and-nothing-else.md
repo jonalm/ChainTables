@@ -114,7 +114,10 @@ The client has **no new login code**: it signs a request as it already does,
 with the region and credentials the `Chain` already holds. A function-URL
 caller needs both `lambda:InvokeFunctionUrl` and `lambda:InvokeFunction`; a
 403 that arrives with no gateway `code` in its body is AWS refusing the
-invocation, and the client reports it as `reason = "forbidden"`.
+invocation, and the client reports it as `reason = "forbidden"`. (*Amended by
+ADR-0036*: the `lambda:InvokeFunction` grant must hold only via the function
+URL. Otherwise its holder can call the Invoke API with an event that names any
+principal as the caller.)
 
 **Reads stay direct.** A reader permission set grants `GetObject` and
 `ListBucket` on the bucket; only the gateway's execution role holds
@@ -240,7 +243,9 @@ the plain store's behaviour is unchanged. This amends ADR-0010's retry rule.
   exactly one fact wide: a record in a gateway bucket names the principal that
   filled its slot, and that principal was allowed to. Everything else a reader
   believes about a record, it believes for the same reasons as on a plain
-  bucket.
+  bucket. (*Amended by ADR-0036*: any principal that may call
+  `lambda:InvokeFunction` on the function other than through its URL is inside
+  this boundary, because it can name any principal as the caller.)
 - **Onboarding a writer is three independent gates**: assignment to the
   identity provider's application (sign-in), a permission-set assignment (the
   AWS rights), and the name in the gateway policy. Any one missing yields a
