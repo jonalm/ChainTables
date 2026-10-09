@@ -80,6 +80,12 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
         @test_throws "the bucket name is empty" Chain("", "p"; store)
         @test_throws "prefix \"/p\" begins or ends with '/'" Chain("bkt", "/p"; store)
         @test_throws "prefix \"p/\" begins or ends with '/'" Chain("bkt", "p/"; store)
+        @test_throws "prefix \"a//b\" has an empty segment" Chain("bkt", "a//b"; store)
+        @test_throws "prefix \".\" has the segment \".\"" Chain("bkt", "."; store)
+        @test_throws "prefix \"a/./b\" has the segment \".\"" Chain("bkt", "a/./b"; store)
+        @test_throws "prefix \"..\" has the segment \"..\"" Chain("bkt", ".."; store)
+        @test_throws "prefix \"a/../b\" has the segment \"..\"" Chain("bkt", "a/../b"; store)
+        @test Chain("bkt", "a/.b/c..d/..."; store).prefix == "a/.b/c..d/..."     # dots inside a segment are fine
         @test_throws "read_ahead is 0" Chain("bkt", "p"; store, read_ahead = 0)
         withenv("AWS_ACCESS_KEY_ID" => nothing, "AWS_SECRET_ACCESS_KEY" => nothing) do   # store = nothing is the S3 client (test/s3.jl)
             @test_throws "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY is not set" Chain("bkt", "p"; region = "eu-north-1")

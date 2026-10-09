@@ -52,7 +52,8 @@ one performs no I/O.
 A bucket name containing a dot is refused: it breaks certificate matching under
 virtual-hosted URLs (ADR-0010). A prefix beginning or ending in `/` is refused, because
 the slot key is `<prefix>/<12 digits>` (ADR-0011); an empty prefix puts the slots at the
-bucket root.
+bucket root. A prefix with an empty (`a//b`), `.` or `..` segment is refused, because
+each segment of a slot key is a record-cache directory (ADR-0031).
 """
 struct Chain{S<:AbstractObjectStore}
     bucket::String
@@ -74,8 +75,7 @@ function Chain(bucket::AbstractString, prefix::AbstractString;
                path_style = false, assume_first_writer_wins = false, read_ahead = 8, cache_dir = default_cache_dir(),
                record_host = true, record_user = true)
     check_bucket_name(bucket)
-    (startswith(prefix, "/") || endswith(prefix, "/")) && throw(ArgumentError(
-        "Chain: prefix $(repr(prefix)) begins or ends with '/'; a slot key is <prefix>/<12 digits>, so give the prefix without them"))
+    check_prefix(prefix)
     read_ahead >= 1 || throw(ArgumentError("Chain: read_ahead is $read_ahead; at least 1 record is fetched ahead"))
     if gateway !== nothing                   # the gateway store (gateway.jl, ADR-0028): the S3 client plus a function URL
         store === nothing || throw(ArgumentError("Chain: gateway and store were both given; a chain has one store, and " *
@@ -103,6 +103,22 @@ function check_bucket_name(bucket::AbstractString)
     isempty(bucket) && throw(ArgumentError("Chain: the bucket name is empty"))
     '.' in bucket && throw(ArgumentError("Chain: bucket name $(repr(bucket)) contains a dot, which breaks certificate " *
         "matching under the virtual-hosted URL ChainTables builds (ADR-0010); use a bucket without one"))
+    return nothing
+end
+
+# The prefix is opaque (ADR-0031), but a slot key's `/`-separated segments become cache
+# directories (`record_path`), which refuses an empty, `.` or `..` one. Refusing them here,
+# before any I/O, keeps `create_chain` from writing a slot 0 no client could cache.
+function check_prefix(prefix::AbstractString)
+    (startswith(prefix, "/") || endswith(prefix, "/")) && throw(ArgumentError(
+        "Chain: prefix $(repr(prefix)) begins or ends with '/'; a slot key is <prefix>/<12 digits>, so give the prefix without them"))
+    isempty(prefix) && return nothing
+    for s in split(prefix, '/')
+        isempty(s) && throw(ArgumentError("Chain: prefix $(repr(prefix)) has an empty segment ('//'); " *
+            "each '/'-separated segment of a slot key is a record-cache directory, so remove it"))
+        s in (".", "..") && throw(ArgumentError("Chain: prefix $(repr(prefix)) has the segment $(repr(s)); " *
+            "each '/'-separated segment of a slot key is a record-cache directory, which cannot be $(repr(s))"))
+    end
     return nothing
 end
 
