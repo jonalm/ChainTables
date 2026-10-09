@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The one entry point of the live suite (ADR-0030):
 #
-#     test/live/run.sh [s3] [gateway]        # no argument: all
+#     test/live/run.sh [gateway]        # no argument: all
 #
 # Reads the configuration from the file CHAINTABLES_LIVE_ENV names, default env/live.env
 # (git-ignored; copy test/live/live.env.example), checks the login session of every profile

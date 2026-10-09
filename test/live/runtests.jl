@@ -5,7 +5,7 @@ import ChainTables
 # The live suite (ADR-0030): the tests only AWS can answer. It is never part of `Pkg.test()`.
 # Run it through its one entry point,
 #
-#     test/live/run.sh [s3] [gateway]        # no argument: all
+#     test/live/run.sh [gateway]        # no argument: all
 #
 # which reads the configuration from a file outside the repository (env/live.env, git-ignored;
 # test/live/live.env.example lists the variables), checks the login sessions, and runs this
@@ -19,15 +19,12 @@ import ChainTables
 include("config.jl")
 include(joinpath(@__DIR__, "..", "fixtures", "gateway.jl"))
 
-const LIVE_S3_PREFIX = "chaintables-test"       # the live S3 test writes under <this>/<run>
-
 const LIVE_SELECTION = live_selection(ARGS)
 const LIVE_CONFIG = Dict(test => live_config(test) for test in LIVE_SELECTION)    # all of it, before any test runs
 
 for test in LIVE_SELECTION
     c = LIVE_CONFIG[test]
-    prefix = test === :s3 ? LIVE_S3_PREFIX : c.prefix
-    println("live $test test: writes permanent objects under s3://$(c.bucket)/$prefix/<run>/ ($(c.region), profile $(c.profile))")
+    println("live $test test: writes permanent objects under s3://$(c.bucket)/$(c.prefix)/<run>/ ($(c.region), profile $(c.profile))")
 end
 
 @testset "ChainTables live" begin

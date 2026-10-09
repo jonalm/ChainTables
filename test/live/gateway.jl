@@ -49,11 +49,18 @@ end
         @test author isa String && !isempty(author) && store.author_key == GWT.current_credentials(store.s3).access_key_id
         # create_chain through the gateway; the genesis carries the author; reads are direct
         key0 = GWT.slot_key(chain, 0)
+        # under a session, the token is signed and sent — the reads below would be 403 otherwise
+        session = GWT.current_credentials(store.s3).session_token !== nothing
+        req = GWT.request_headers(store.s3, "GET", key0)
+        @test session == any(kv -> kv[1] == "x-amz-security-token", req.headers)
+        @test session == occursin("x-amz-security-token", last(req.headers[findfirst(kv -> kv[1] == "authorization", req.headers)]))
         @test fetch_object(store, key0) === nothing && stat_object(store, key0) === nothing && isempty(list_objects(store, prefix * "/"))
         created = GWT.create_chain(chain)
         @test created.slot == 0
         genesis = fetch_object(store, key0)
         @test genesis !== nothing && GWT.Ops.decode_record(genesis; slot = 0).client.user == author
+        meta = stat_object(store, key0)
+        @test meta.key == key0 && meta.size == length(genesis) && abs(meta.modified - time()) < 300
         @test [m.key for m in list_objects(store, prefix * "/")] == [key0]
         # the bucket policy's Deny: a direct put by the writer is refused by S3, only the gateway fills slots
         key1 = GWT.slot_key(chain, 1)

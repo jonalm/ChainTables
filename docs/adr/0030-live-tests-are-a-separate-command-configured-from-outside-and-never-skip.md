@@ -4,11 +4,10 @@ status: accepted
 
 # Live tests are a separate command, configured from outside the repository, and never skip
 
-The tests only AWS can answer — a plain bucket's conditional put (issue #6) and a
-gateway bucket end to end (issue #60) — live in `test/live/` and run through one
-entry point, `test/live/run.sh [s3] [gateway]`. `Pkg.test()` is offline: it reads
-no live configuration and makes no request beyond loopback, whatever the shell
-exports. The live configuration is a git-ignored file, `env/live.env`
+The tests only AWS can answer — a gateway bucket end to end (issue #60) — live in
+`test/live/` and run through one entry point, `test/live/run.sh [gateway]`.
+`Pkg.test()` is offline: it reads no live configuration and makes no request
+beyond loopback, whatever the shell exports. The live configuration is a git-ignored file, `env/live.env`
 (`test/live/live.env.example` lists the variables), and **every variable of a
 selected test is required**: nothing is defaulted, nothing is taken from the
 ambient environment, and nothing in `test/live/` skips.
@@ -69,6 +68,10 @@ themselves on from the environment.
 - The live gateway test is the live coverage of `Bucket` /
   `Chain(bucket, prefix)`, and with it of ADR-0029's post-`200` check on every
   commit.
+- **Amended: no live plain-bucket test.** The live S3 test (issue #6) checked a
+  plain bucket's direct conditional put. No deployment uses a plain bucket, so it
+  was dropped; its session-token and `stat_object` checks moved into the gateway
+  test, and the direct put stays covered offline by `test/s3.jl` only.
 - Considered and not done: a live `GatewayMismatchError` test. It needs two
   deployments and strands a record in the wrong bucket on every run; the
   loopback test in `test/gateway.jl` covers the path.

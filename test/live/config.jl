@@ -7,7 +7,6 @@ const LIVE_EXAMPLE = "test/live/live.env.example"
 
 # test => the variables it requires, each read from CHAINTABLES_LIVE_<TEST>_<NAME>
 const LIVE_VARIABLES = (
-    s3 = (:bucket, :region, :profile),
     gateway = (:bucket, :url, :region, :profile, :prefix, :unlisted_prefix),
 )
 

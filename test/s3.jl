@@ -1,7 +1,8 @@
 # #34 step 9 — ADR-0010, ADR-0016, ADR-0019, ADR-0020: the SigV4 signer against AWS's
 # worked examples, the URL and endpoint rules, credential and region resolution, the four
 # verbs against an in-process HTTP server that checks every signature, the backend gate
-# end to end. Nothing here reaches AWS: the live test is test/live/s3.jl (ADR-0030).
+# end to end. Nothing here reaches AWS, and no live test covers the plain bucket's direct
+# put (ADR-0030).
 # The loopback S3 (`S3TestServer`, `s3test_*`) is test/fixtures/s3_server.jl, included by
 # test/runtests.jl ahead of this file.
 using Sockets
