@@ -142,6 +142,26 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
         end
     end
 
+    # try_create_chain (ADR-0033): create_chain, with the slot-0 LostRaceError, and
+    # nothing else, turned into `nothing`.
+    @testset "try_create_chain" begin
+        mktempdir() do dir
+            store, chain = fixture(dir)
+            created = CT.try_create_chain(chain)
+            @test keys(created) == (:chain_id, :slot, :transaction_hash) && created.slot == 0
+            @test Ops.transaction_hash(store.objects["p/000000000000"]) == created.transaction_hash
+            # a chain already there: nothing, one put, the genesis untouched
+            n = length(store.calls)
+            @test CT.try_create_chain(chain) === nothing
+            @test store.calls[n+1:end] == [(:put_object_if_absent, "p/000000000000")]
+            @test Ops.transaction_hash(store.objects["p/000000000000"]) == created.transaction_hash
+            # any other failure propagates unchanged
+            broken = Chain("bkt", "p"; store = ChainTestBadOutcome(), cache_dir = joinpath(dir, "cache2"),
+                record_host = false, record_user = false)
+            @test_throws "returned created = false with status 200; the port promises false only for a 412" CT.try_create_chain(broken)
+        end
+    end
+
     @testset "sync! on a copy with no head against a prefix with no slot 0" begin
         mktempdir() do dir
             store, chain = fixture(dir)

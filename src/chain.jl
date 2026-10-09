@@ -252,15 +252,20 @@ end
 
 
 """
-    try_create_chain(chain) -> (; chain_id, slot, transaction_hash)
+    try_create_chain(chain) -> (; chain_id, slot, transaction_hash) or nothing
 
-runs `create_chain(chain)`, returns `nothing` if chain already created
+Run [`create_chain`](@ref) and return what it returns, or `nothing` when a chain is
+already at `chain`'s bucket and prefix — the `LostRaceError` slot 0 raises, and nothing
+else, is swallowed (ADR-0033). For setup that runs more than once. It is still a
+creation: a typo'd prefix mints a chain in silence, which is why `create_chain` itself
+raises (ADR-0019). Every other error propagates unchanged.
 """
 function try_create_chain(chain::Chain)
-    try 
-        create_chain(chain)  
+    try
+        return create_chain(chain)
     catch e
-        isa(e, LostRaceError) || rethrow(e)
+        e isa LostRaceError || rethrow()
+        return nothing
     end
 end
 

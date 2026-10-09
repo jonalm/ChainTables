@@ -57,6 +57,12 @@ the same reason `sync!` on a copy with no head, against a prefix with no slot 0,
 is an error naming both possibilities, rather than ADR-0013's ordinary
 `applied = 0`. Once a copy has a head, `applied = 0` stays non-erroring.
 
+**Amended by ADR-0033**: `try_create_chain(chain)` is a second explicit form. It
+runs `create_chain` and returns `nothing` in place of the slot-0
+`LostRaceError`, for setup that runs more than once. It is still creation named
+at the call site, not genesis hidden in a commit. The typo'd-prefix hazard
+remains for its callers, and they accept it.
+
 Returning no local copy keeps one rule with no exception: **every local copy is
 built by replay**. The user opens and syncs like anyone else. A zero-op record is
 therefore legal at slot 0 and nowhere else — an empty commit elsewhere is a

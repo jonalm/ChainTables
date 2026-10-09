@@ -37,6 +37,8 @@ chain = ChainTables.Chain("my-bucket", "experiments/run-7"; region = "eu-north-1
 # Only create_chain writes slot 0. It mints the chain id, commits a zero-op
 # genesis record, and returns no local copy (ADR-0019).
 ChainTables.create_chain(chain)          # (; chain_id, slot = 0, transaction_hash)
+# For setup that runs more than once, ChainTables.try_create_chain(chain)
+# returns nothing where create_chain would raise LostRaceError (ADR-0033).
 
 # open creates the directory if absent, does no network I/O, and binds the
 # copy to the chain at the first sync (ADR-0023, ADR-0013).
