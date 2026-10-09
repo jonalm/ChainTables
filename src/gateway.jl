@@ -223,9 +223,9 @@ function refusal_message(store::GatewayObjectStore, key, reason, message)
                "lambda:InvokeFunction on the function: ask the bucket's operator for the writer permission set (ADR-0028)."
     elseif reason == "not_allowed"
         return "write refused: $where for caller $caller — not_allowed" *
-               "$(message === nothing ? "" : ": " * message). The gateway policy has no entry for this name on this prefix, " *
-               "or the principal is neither an IAM user nor an assumed role: ask the bucket's operator to add the name to " *
-               "the gateway policy (ADR-0028)."
+               "$(message === nothing ? "" : ": " * message). The gateway policy has no entry for this name on this prefix " *
+               "(or none from this account or role), or the principal is neither an IAM user nor an assumed role: ask " *
+               "the bucket's operator to add the name to the gateway policy (ADR-0028, ADR-0039)."
     elseif reason == "author_mismatch"
         return "write refused: $where for caller $caller — author_mismatch" *
                "$(message === nothing ? "" : ": " * message). client.user was resolved from sts:GetCallerIdentity and " *

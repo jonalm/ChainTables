@@ -31,7 +31,8 @@ is git-ignored). It says which caller names may fill slots under which chain pre
 
 ```json
 {"format_version": 1,
- "rules": [{"prefix": "teams/alpha", "writers": ["alice@example.com", "bob@example.com"]},
+ "rules": [{"prefix": "teams/alpha", "writers": ["alice@example.com", "bob@example.com"],
+            "accounts": ["111122223333"], "roles": ["AWSReservedSSO_chaintables-writer_*"]},
            {"prefix": "teams/*",     "writers": ["carol@example.com"]},
            {"prefix": "",            "writers": ["root-writer"]}]}
 ```
@@ -41,8 +42,18 @@ is git-ignored). It says which caller names may fill slots under which chain pre
   `/` included. `*` is the only wildcard: a prefix holding `?`, `[` or `]` is refused when the
   gateway loads the policy.
 - `writers` are caller names (next section), matched exactly and case-sensitively.
-- A caller is allowed when any matching rule lists its name. Creating a chain under an
-  allowed prefix needs no separate right.
+- `accounts` (optional): the caller's account, from its ARN, must be one of these 12-digit
+  ids.
+- `roles` (optional, needs `accounts`): the caller must be an assumed role whose role name
+  (not its ARN or path) matches one of these globs, `*` the only wildcard. An IAM user never
+  matches a rule with `roles`; give it a rule of its own. For Identity Center, pin the
+  permission set's role, `AWSReservedSSO_<permission set>_*`: the suffix differs per account.
+- A caller is allowed when any matching rule admits it: the rule lists its name, and its
+  account and role satisfy the rule's `accounts` and `roles` where present. Creating a chain
+  under an allowed prefix needs no separate right
+  ([ADR-0039](adr/0039-a-policy-rule-may-pin-the-callers-account-and-role.md)).
+- A policy with `accounts` or `roles` needs a gateway built from this repository at or after
+  #82; an older gateway refuses it at startup.
 
 Changing the policy is a rebuild and a redeploy: `build.sh --policy` bundles the file, and
 `deploy.sh` updates the function's code in place.
@@ -71,15 +82,21 @@ user name is exactly that.
 **Only grant invoke to principals whose session name is bound.** An IAM user's name is
 fixed, and Identity Center sets the session name itself. A plain IAM role that a caller can
 assume with `sts:AssumeRole` lets the caller *choose* the session name, and with it the
-author: never list such a role among the writers. Cross-account writers are fine as long as
-the same holds on their side.
+author: never list such a role among the writers, and where a name could also be claimed
+through such a role, pin the rule's `roles` to the ones whose session name is bound.
+Cross-account writers are fine as long as the same holds on their side.
 
 **A name is unique only within one account.** The policy lists names, not accounts, so every
 account whose principals may invoke the function shares one namespace. An administrator of
 any such account can create an IAM user, or provision an Identity Center user, named
-`alice@example.com`, and the gateway takes that principal for alice. Grant invoke
+`alice@example.com`, and the gateway takes that principal for alice. Pin each rule's
+`accounts` to the accounts its writers actually come from; without that, grant invoke
 (`--writer`) only to accounts whose administrators you would trust to write as any listed
-name.
+name. Pinning `roles` too limits a name to Identity Center sessions against everyone in the
+pinned accounts who cannot create roles, but not against those accounts' administrators,
+since a role name is theirs to choose. Pinning only binds callers that come through the
+function URL; anyone who may call Invoke without the function-URL condition can forge the
+account and role as well as the name ([ADR-0036](adr/0036-only-the-function-url-may-invoke-the-gateway.md)).
 
 ## The IAM contract
 

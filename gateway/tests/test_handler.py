@@ -240,16 +240,38 @@ def test_unexpected_exception_propagates_as_a_function_error():
         g.handle(event())
 
 
-@pytest.mark.parametrize("arn, name", [
-    (f"arn:aws:iam::{ACCOUNT}:user/alice@example.com", "alice@example.com"),
-    (f"arn:aws:iam::{ACCOUNT}:user/a/path/alice@example.com", "alice@example.com"),
-    (f"arn:aws-us-gov:sts::{ACCOUNT}:assumed-role/r/alice@example.com", "alice@example.com"),
-    (f"arn:aws-cn:iam::{ACCOUNT}:user/alice@example.com", "alice@example.com"),
+@pytest.mark.parametrize("arn, caller", [
+    (f"arn:aws:iam::{ACCOUNT}:user/alice@example.com", (ACCOUNT, None, "alice@example.com")),
+    (f"arn:aws:iam::{ACCOUNT}:user/a/path/alice@example.com", (ACCOUNT, None, "alice@example.com")),
+    (f"arn:aws-us-gov:sts::{ACCOUNT}:assumed-role/r/alice@example.com", (ACCOUNT, "r", "alice@example.com")),
+    (f"arn:aws-cn:iam::{ACCOUNT}:user/alice@example.com", (ACCOUNT, None, "alice@example.com")),
     (f"arn:aws:sts::{ACCOUNT}:federated-user/alice@example.com", None),
     (f"arn:aws:iam::{ACCOUNT}:role/r", None),
     (f"arn:aws:sts::{ACCOUNT}:assumed-role/r/alice@example.com\n", None),
     (None, None),
 ])
-def test_caller_name_by_arn_form(arn, name):
+def test_caller_by_arn_form(arn, caller):
     import handler as gw
-    assert gw.caller_name(arn) == name
+    assert gw.parse_caller(arn) == (None if caller is None else gw.Caller(*caller))
+
+
+def test_name_from_an_account_the_rule_does_not_pin_is_not_allowed(s3):
+    import handler as gw
+    from tests.conftest import BUCKET
+    policy = gw.Policy.from_dict({"format_version": 1, "rules": [
+        {"prefix": "teams/alpha", "writers": ["alice@example.com"], "accounts": ["444455556666"]}]})
+    status, body = parse(gw.Gateway(policy=policy, bucket=BUCKET, s3=s3.client).handle(event()))
+    assert (status, body["code"]) == (403, "not_allowed")
+    assert f"alice@example.com (account {ACCOUNT}, role AWSReservedSSO_chaintables-writer_a1b2c3d4e5f6)" in body["message"]
+
+
+def test_name_and_role_the_rule_pins_are_created(s3):
+    import handler as gw
+    from tests.conftest import BUCKET
+    policy = gw.Policy.from_dict({"format_version": 1, "rules": [
+        {"prefix": "teams/alpha", "writers": ["alice@example.com"], "accounts": [ACCOUNT],
+         "roles": ["AWSReservedSSO_chaintables-writer_*"]}]})
+    body = record()
+    s3.put_succeeds("teams/alpha/000000000003", body)
+    status, out = parse(gw.Gateway(policy=policy, bucket=BUCKET, s3=s3.client).handle(event(body=body)))
+    assert (status, out["code"]) == (200, "created")

@@ -44,6 +44,7 @@ body `{"code", "message"}` (the wire contract is issue #54 §5 and the top of
 
 1. The caller is an IAM user or an assumed role, and its name is allowed for
    the key's prefix by the gateway's policy → else `403 not_allowed`.
+   (*Amended by ADR-0039*: a rule may also pin the caller's account and role.)
 2. The key is a slot — `<prefix>/<12 digits>`, or `<12 digits>` at the bucket
    root — and never a reserved name (ADR-0011) → else `400 not_a_slot`.
 3. The body decodes, under a strict CBOR decoder, as a map → else
@@ -130,7 +131,8 @@ that read-back with no new logic.
 
 **Policy is the gateway's configuration**, a JSON file deployed with it: a list
 of rules, each a prefix glob and the names allowed to write under it. Creating a
-chain under an allowed prefix needs no separate right. One gateway per bucket.
+chain under an allowed prefix needs no separate right. (*Amended by ADR-0039*:
+a rule may also list the `accounts` and `roles` a name must come from.) One gateway per bucket.
 The chain carries no policy, in ADR-0003's sense and by the same argument: who
 may write is a rule about what is *permitted*, and the chain records only what
 *is*. A policy that lived in the chain would also have to be read by the

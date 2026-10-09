@@ -3,8 +3,8 @@
 A Lambda function behind a function URL with ``AuthType=AWS_IAM``. It fills a slot only
 after checking, in this order (issue #54 §5, the first failure wins):
 
-1. the caller is an IAM user or assumed role whose name the policy allows for the key's
-   prefix, else ``403 not_allowed``;
+1. the caller is an IAM user or assumed role that the policy allows for the key's prefix
+   (its name, and its account and role where the rule pins them), else ``403 not_allowed``;
 2. the key is a slot, ``<prefix>/<12 digits>`` or ``<12 digits>`` at the bucket root, never
    a reserved name, else ``400 not_a_slot``;
 3. the body is a CBOR map in the record format the Julia reader accepts (``src/cbor.jl``,
@@ -72,8 +72,14 @@ SLOT_KEY = re.compile(r"(?:(?P<prefix>[^/](?:.*[^/])?)/)?(?P<slot>[0-9]{12})")
 # The two principal kinds the gateway accepts. An IAM user may carry a path
 # (`user/path/name`); a role session name never contains '/'; neither contains whitespace.
 PRINCIPAL_ARN = re.compile(
-    r"arn:[^:\s]+:(?:iam|sts)::[0-9]{12}:(?:assumed-role/[^/\s]+/(?P<session>[^/\s]+)|user/(?:[^/\s]+/)*(?P<user>[^/\s]+))"
+    r"arn:[^:\s]+:(?:iam|sts)::(?P<account>[0-9]{12}):"
+    r"(?:assumed-role/(?P<role>[^/\s]+)/(?P<session>[^/\s]+)|user/(?:[^/\s]+/)*(?P<user>[^/\s]+))"
 )
+
+# A policy rule's pins: an account id, and a role-name glob (IAM's role-name characters,
+# with '*' as the only wildcard).
+ACCOUNT_ID = re.compile(r"[0-9]{12}")
+ROLE_GLOB = re.compile(r"[A-Za-z0-9+=,.@_*-]+")
 
 # The record format's bounds (src/cbor.jl): integers are int64, nesting is at most 64 levels.
 INT64_MIN, INT64_MAX = -(2**63), 2**63 - 1
@@ -89,9 +95,27 @@ class PolicyError(ValueError):
 
 
 @dataclass(frozen=True)
+class Caller:
+    """The principal named by a caller ARN: its account, its role (None for an IAM user), and
+    its name, the text after the last '/' (ADR-0028)."""
+
+    account: str
+    role: str | None
+    name: str
+
+
+@dataclass(frozen=True)
 class Rule:
     prefix: str
     writers: frozenset[str]
+    accounts: frozenset[str] | None = None  # None: any account (ADR-0039)
+    roles: tuple[str, ...] | None = None  # None: any principal; else an assumed role whose name matches a glob
+
+    def admits(self, caller: Caller) -> bool:
+        return (caller.name in self.writers
+                and (self.accounts is None or caller.account in self.accounts)
+                and (self.roles is None
+                     or caller.role is not None and any(fnmatch.fnmatchcase(caller.role, g) for g in self.roles)))
 
 
 @dataclass(frozen=True)
@@ -101,16 +125,20 @@ class Policy:
     File shape (JSON)::
 
         {"format_version": 1,
-         "rules": [{"prefix": "teams/alpha", "writers": ["alice@example.com"]},
+         "rules": [{"prefix": "teams/alpha", "writers": ["alice@example.com"],
+                    "accounts": ["111122223333"], "roles": ["AWSReservedSSO_chaintables-writer_*"]},
                    {"prefix": "teams/*",     "writers": ["carol@example.com"]},
                    {"prefix": "",            "writers": ["root-writer"]}]}
 
     ``prefix`` is a glob matched case-sensitively against the whole chain prefix (the key
     up to its last ``/``; ``""`` is the bucket root), where ``*`` matches any run of
     characters including ``/``; ``*`` is the only wildcard, and a prefix holding ``?``,
-    ``[`` or ``]`` is refused at load, since no chain prefix contains them (ADR-0034). A caller is allowed when any matching rule lists its name;
-    names match exactly and case-sensitively. Creating a chain under an allowed prefix needs
-    no separate right.
+    ``[`` or ``]`` is refused at load, since no chain prefix contains them (ADR-0034). A caller is allowed when any matching rule admits it:
+    the rule lists its name (exactly, case-sensitively) and, where the rule has them, its
+    account is in ``accounts`` and it is an assumed role whose role name matches a glob in
+    ``roles`` (an IAM user never matches a rule with ``roles``). ``roles`` needs ``accounts``:
+    a role name is whatever its account's administrators chose, so alone it pins nothing
+    (ADR-0039). Creating a chain under an allowed prefix needs no separate right.
     """
 
     rules: tuple[Rule, ...]
@@ -129,8 +157,9 @@ class Policy:
             raise PolicyError("policy 'rules' is not a list")
         out = []
         for i, r in enumerate(rules):
-            if not isinstance(r, dict) or set(r) != {"prefix", "writers"}:
-                raise PolicyError(f"policy rule {i} must be an object with exactly 'prefix' and 'writers'")
+            if not isinstance(r, dict) or not {"prefix", "writers"} <= set(r) <= {"prefix", "writers", "accounts", "roles"}:
+                raise PolicyError(f"policy rule {i} must be an object with 'prefix' and 'writers', and optionally "
+                                  "'accounts' and 'roles'")
             if not isinstance(r["prefix"], str):
                 raise PolicyError(f"policy rule {i}: 'prefix' is not text")
             if any(c in r["prefix"] for c in "?[]"):
@@ -138,7 +167,25 @@ class Policy:
                                   "wildcard, and no chain prefix contains those characters (ADR-0034)")
             if not isinstance(r["writers"], list) or not all(isinstance(w, str) and w for w in r["writers"]):
                 raise PolicyError(f"policy rule {i}: 'writers' is not a list of non-empty names")
-            out.append(Rule(r["prefix"], frozenset(r["writers"])))
+            accounts = r.get("accounts")
+            if accounts is not None:
+                if not isinstance(accounts, list) or not accounts or \
+                        not all(isinstance(a, str) and ACCOUNT_ID.fullmatch(a) for a in accounts):
+                    raise PolicyError(f"policy rule {i}: 'accounts' is not a non-empty list of 12-digit account ids "
+                                      "(as text)")
+                accounts = frozenset(accounts)
+            roles = r.get("roles")
+            if roles is not None:
+                if not isinstance(roles, list) or not roles or \
+                        not all(isinstance(g, str) and ROLE_GLOB.fullmatch(g) for g in roles):
+                    raise PolicyError(f"policy rule {i}: 'roles' is not a non-empty list of role-name globs: a glob "
+                                      "matches the role name alone (letters, digits, '+=,.@_-', and '*' as the only "
+                                      "wildcard), never a role ARN or path")
+                if accounts is None:
+                    raise PolicyError(f"policy rule {i}: 'roles' without 'accounts' pins nothing, since any account's "
+                                      "administrators can create a role of any name: add 'accounts' (ADR-0039)")
+                roles = tuple(roles)
+            out.append(Rule(r["prefix"], frozenset(r["writers"]), accounts, roles))
         return cls(tuple(out))
 
     @classmethod
@@ -152,19 +199,19 @@ class Policy:
             raise PolicyError(f"policy file {path} is not JSON: {e}") from e
         return cls.from_dict(doc)
 
-    def allows(self, name: str, prefix: str) -> bool:
+    def allows(self, caller: Caller, prefix: str) -> bool:
         # fnmatch's other wildcards, '?' and '[...]', are refused at load, so '*' is the only one here.
-        return any(name in r.writers for r in self.rules if fnmatch.fnmatchcase(prefix, r.prefix))
+        return any(r.admits(caller) for r in self.rules if fnmatch.fnmatchcase(prefix, r.prefix))
 
 
-def caller_name(user_arn) -> str | None:
-    """The text after the last '/' of an IAM-user or assumed-role ARN; None for any other principal."""
+def parse_caller(user_arn) -> Caller | None:
+    """The principal of an IAM-user or assumed-role ARN; None for any other principal."""
     if not isinstance(user_arn, str):
         return None
     m = PRINCIPAL_ARN.fullmatch(user_arn)
     if m is None:
         return None
-    return m.group("session") or m.group("user")
+    return Caller(account=m.group("account"), role=m.group("role"), name=m.group("session") or m.group("user"))
 
 
 def chain_prefix(key: str) -> str:
@@ -229,13 +276,16 @@ class Gateway:
             raise Refusal(400, "bad_request",
                           f"{http.get('method')} {http.get('path')} is not the gateway's one route, PUT /?key=<slot key>")
         key = request_key(event)
-        name = caller_name(((ctx.get("authorizer") or {}).get("iam") or {}).get("userArn"))
+        caller = parse_caller(((ctx.get("authorizer") or {}).get("iam") or {}).get("userArn"))
         prefix = chain_prefix(key)
-        if name is None or not self.policy.allows(name, prefix):
-            who = name if name is not None else "a principal that is neither an IAM user nor an assumed role"
+        if caller is None or not self.policy.allows(caller, prefix):
+            who = ("a principal that is neither an IAM user nor an assumed role" if caller is None else
+                   f"{caller.name} (account {caller.account}, "
+                   f"{'IAM user' if caller.role is None else 'role ' + caller.role})")
             raise Refusal(403, "not_allowed",
                           f"{who} may not write under prefix {prefix!r}: "
                           "ask the bucket's operator to add the name to the gateway policy")
+        name = caller.name
         if SLOT_KEY.fullmatch(key) is None:
             raise Refusal(400, "not_a_slot",
                           f"key {key!r} is not a slot: a slot key is <prefix>/<12 digits>, or <12 digits> at the "

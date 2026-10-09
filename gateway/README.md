@@ -44,7 +44,8 @@ JSON, one file per gateway, its *contents* private (never committed; `policy.jso
 
 ```json
 {"format_version": 1,
- "rules": [{"prefix": "teams/alpha", "writers": ["alice@example.com", "bob@example.com"]},
+ "rules": [{"prefix": "teams/alpha", "writers": ["alice@example.com", "bob@example.com"],
+            "accounts": ["111122223333"], "roles": ["AWSReservedSSO_chaintables-writer_*"]},
            {"prefix": "teams/*",     "writers": ["carol@example.com"]},
            {"prefix": "",            "writers": ["root-writer"]}]}
 ```
@@ -55,8 +56,13 @@ JSON, one file per gateway, its *contents* private (never committed; `policy.jso
 - `writers` are caller names: the text after the last `/` of the caller ARN. For an Identity
   Center session that is the role session name, which is the Identity Center user name.
   Matched exactly and case-sensitively.
-- A caller is allowed when any matching rule lists its name. Creating a chain under an
-  allowed prefix needs no separate right.
+- `accounts` (optional): 12-digit ids; the caller ARN's account must be one of them.
+- `roles` (optional, needs `accounts`): role-name globs, `*` the only wildcard; the caller
+  must be an assumed role whose role name matches one. An IAM user never matches such a rule.
+- A caller is allowed when any matching rule admits it: the name is listed, and the account
+  and role satisfy the rule's pins where present. Creating a chain under an allowed prefix
+  needs no separate right. The pins and their limits are in `docs/gateway-setup.md` and
+  ADR-0039.
 
 ## Build
 

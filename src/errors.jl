@@ -248,7 +248,7 @@ name this client resolved for itself, and `reason` says who must act:
 
 | `reason` | cause | next move |
 |---|---|---|
-| `"not_allowed"` | the gateway policy has no entry for this name on this prefix, or the principal is not a user or assumed role | ask the bucket's operator to add the name to the gateway policy |
+| `"not_allowed"` | the gateway policy has no entry for this name on this prefix (or none from this account or role), or the principal is not a user or assumed role | ask the bucket's operator to add the name to the gateway policy |
 | `"author_mismatch"` | `client.user` ≠ the caller name | a bug, or credentials changed between the STS call and the put; report it |
 | `"forbidden"` | AWS returned 403 before the gateway ran | the principal lacks `lambda:InvokeFunctionUrl` and `lambda:InvokeFunction`; ask the operator for the writer permission set |
 
