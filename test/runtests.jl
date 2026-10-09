@@ -8,10 +8,10 @@ import ChainTables
 # is exported in the shell. The tests only AWS can answer are a separate command,
 # test/live/run.sh (ADR-0030), and are never part of `Pkg.test()`.
 #
-# The suite resolves against the package's own environment. Its one dependency
-# of its own is Tables.jl, a test-target extra: test/views.jl proves a TableView
-# is a Tables.jl table, and nothing in the package itself depends on Tables.jl
-# (ADR-0022, ADR-0024).
+# The suite resolves against the package's own environment. Its dependencies of
+# its own are test-target extras: Tables.jl, because test/views.jl proves a
+# TableView is a Tables.jl table and nothing in the package itself depends on
+# Tables.jl (ADR-0022, ADR-0024); and Aqua.jl, for test/aqua.jl's hygiene checks.
 # ---------------------------------------------------------------------------
 
 @testset "ChainTables" begin
@@ -39,4 +39,5 @@ import ChainTables
     include("Testing.jl")
     include("readme.jl")
     include("tracked_values.jl")
+    include("aqua.jl")
 end

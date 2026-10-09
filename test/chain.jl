@@ -175,6 +175,18 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             @test puts(store, "p/000000000000") == 2
             @test store.calls[n+1:end] == [(:put_object_if_absent, "p/000000000000")]   # the read-back came from the cache
             @test Ops.transaction_hash(store.objects["p/000000000000"]) == created.transaction_hash
+
+            # a damaged cached genesis tells open nothing: the check is left to sync!, which reports it
+            write(record_path(chain.cache, "bkt", "p/000000000000"), b"not a record")
+            @test CT.expected_chain_id(chain) === nothing
+            close(CT.open(chain, path))
+
+            # a malformed record at slot 0 is still a chain already there: lost, its id unknown
+            put_object_if_absent(store, "q/000000000000", b"not a record")
+            err = caught(() -> CT.create_chain(Chain("bkt", "q"; store, cache_dir = joinpath(dir, "cache"), record_user = false)))
+            @test err isa LostRaceError && err.chain_id === nothing && err.slot == 0
+            @test occursin("a chain already exists there (chain unknown: its genesis record is malformed, transaction hash ",
+                           sprint(showerror, err))
         end
     end
 
@@ -636,6 +648,12 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             CT.delete_rows!(w, :samples, [(id = 1,)])
             @test_throws RewrittenChainError CT.commit!(w)                     # the pre-check refuses to commit onto it
             @test !haskey(store.objects, "p/000000000002")
+            # symptom one, bytes that are no record at all: still rewritten, not wrong chain
+            plant!(store, key1, b"not a record")
+            rm(cached)
+            err = caught(() -> CT.sync!(copy))
+            @test err isa RewrittenChainError
+            @test (err.chain_id, err.slot, err.expected, err.found) == (cid, 1, th1, Ops.transaction_hash(b"not a record"))
             # symptom two: the head's slot is absent
             delete!(store.objects, key1)
             isfile(cached) && rm(cached)

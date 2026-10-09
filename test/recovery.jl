@@ -441,6 +441,19 @@ using SHA: sha256
             old = CT.as_of(chain, CT.slot_at(chain, 99))
             @test CT.head(old).slot == 2 && CT.table(old, :samples)[2].v == "2"
             close(old)
+            # a slot that vanished between the probe and the fetch, for both scans; a cold
+            # cache, so the fetch reaches the store
+            slot3 = store.objects["t/000000000003"]
+            store.fault = (verb, key, phase) -> verb === :fetch_object && key == "t/000000000003" && phase === :before &&
+                delete!(store.objects, key)
+            for (i, f) in enumerate((c -> CT.slot_at(c, 10^12), c -> CT.as_of(c, TransactionHash(zeros(UInt8, 32)))))
+                plant!(store, "t/000000000003", slot3)
+                cold = Chain("bkt", "t"; store, cache_dir = joinpath(dir, "cold$i"))
+                err = caught(() -> f(cold))
+                @test err isa CT.RewrittenChainError && (err.slot, err.found) == (3, nothing)
+                @test occursin("slot 3 at bkt/t was there when head discovery probed it and is absent now", err.msg)
+            end
+            store.fault = (verb, key, phase) -> nothing
         end
     end
 end

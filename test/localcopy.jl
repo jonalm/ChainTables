@@ -276,6 +276,26 @@ ChainTables.expected_chain_id(c::LocalCopyTestBoundChain) = c.chain_id
     end
 
     # ------------------------------------------------------------------------
+    # A table file that hashes to its name but is no canonical table file: only a
+    # head naming bytes no checkpoint wrote reaches this.
+    # ------------------------------------------------------------------------
+    @testset "a table file that is not canonical is a damaged copy" begin
+        mktempdir() do path
+            close(two_checkpoints!(CT.open(LocalCopyTestChain(), path)))
+            junk = Vector{UInt8}("not a table")
+            f = hex(sha256(junk))
+            write(joinpath(path, "tables", f), junk)
+            write(headfile(path, 1), head_bytes(read(headfile(path, 1)); tables = [Any["t", sha256(junk)]],
+                                                state_fingerprint = Model.state_fingerprint(["t" => sha256(junk)])))
+            again = CT.open(LocalCopyTestChain(), path)
+            @test_throws LocalCopyInconsistentError CT.load_table!(again, "t")
+            @test_throws "damaged copy: table file tables/$f (table \"t\" at slot 1, chain $cid) hashes to its name but is not a canonical table file (" CT.load_table!(again, "t")
+            @test isempty(again.content) && isempty(again.loaded)
+            close(again)
+        end
+    end
+
+    # ------------------------------------------------------------------------
     # Sweep (ADR-0023): at open after the head is chosen and after every head
     # write — every head but the chosen one, every table file not named, every .tmp.
     # ------------------------------------------------------------------------
@@ -378,6 +398,12 @@ ChainTables.expected_chain_id(c::LocalCopyTestBoundChain) = c.chain_id
             @test_throws "unknown head field \"extra\"" reopen()
             write(headfile(path, 1), head_bytes(good; transaction_hash = UInt8[1]))
             @test_throws "transaction_hash is 1 bytes; a SHA-256 is 32" reopen()
+            write(headfile(path, 1), head_bytes(good; tables = [w["tables"][1], w["tables"][1]]))
+            @test_throws LocalCopyInconsistentError reopen()
+            @test_throws "head heads/000000000001 is not self-consistent: " reopen()
+            write(headfile(path, 1), head_bytes(good; chain_id = "ABC"))
+            @test_throws LocalCopyInconsistentError reopen()
+            @test_throws "chain_id \"ABC\" is not a chain id" reopen()
             write(headfile(path, 1), head_bytes(good; written_by = nothing))
             @test_throws "heads/000000000001 has no \"written_by\"" reopen()
             write(headfile(path, 1), good[1:end-3])

@@ -198,6 +198,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             @test chain.store.s3.credentials == Credentials("AKIAX", "s3cret") && chain.region == "eu-north-1"
             @test chain.store.s3.base == "http://127.0.0.1:9000" && chain.store.s3.path_style && !GWT.is_aws(chain.store)
             @test GWT.unsupported_store(chain)                        # ADR-0016's gate is the S3 half's
+            @test_throws "create_chain(chain) refuses to commit to http://127.0.0.1:9000, which is not AWS S3" GWT.create_chain(chain)
         end
         withenv("AWS_REGION" => nothing, "AWS_DEFAULT_REGION" => nothing) do
             @test_throws "region is required by the S3 client" Chain("bkt", "p"; gateway = url, credentials = creds)
@@ -275,6 +276,11 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             @test e isa WriteRefusedError && e.reason == "s3_refused" && !GWT.retryable(e)
             @test occursin("s3_refused: S3 answered 403 AccessDenied. S3 refused the gateway's own put", sprint(showerror, e))
             @test occursin("report it to the bucket's operator", sprint(showerror, e))
+            # a 403 code this client does not know: refused, never retried, and says so
+            double.respond = req -> gwtest_json(403, "brand_new", "a newer gateway's reason")
+            e = try put_object_if_absent(store, "p/000000000003", record); nothing catch e; e end
+            @test e isa WriteRefusedError && e.reason == "brand_new" && !GWT.retryable(e)
+            @test occursin("brand_new: a newer gateway's reason. This gateway answered with a reason this client does not know", sprint(showerror, e))
             double.respond = _ -> nothing
             @test !haskey(s3.objects, "p/000000000003")
             # a client bug is a TransportError carrying the gateway's code and message, not retried
@@ -375,6 +381,14 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                 @test e isa WriteRefusedError && e.reason == "not_allowed" && e.caller === nothing
                 @test occursin("arn:aws:iam::123456789012:root is neither an IAM user nor an assumed role", sprint(showerror, e))
                 @test store3.author === nothing
+                # through create_chain, the refusal is told for the chain and slot 0, before anything is written
+                mktempdir() do dir
+                    chain3 = Chain("bkt", "exp/run-1"; store = store3, cache_dir = dir, assume_first_writer_wins = true)
+                    e = try GWT.create_chain(chain3); nothing catch e; e end
+                    @test e isa WriteRefusedError && e.reason == "not_allowed" && e.slot == 0 && e.key == "exp/run-1/000000000000"
+                    @test e.chain_id isa String
+                    @test startswith(sprint(showerror, e), "WriteRefusedError: write refused for slot 0 of chain $(e.chain_id) at bkt/exp/run-1: ")
+                end
             finally
                 close(root)
             end
