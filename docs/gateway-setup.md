@@ -144,7 +144,10 @@ naming a role that does not.
 
 ### The bucket policy
 
-`deploy.sh` writes this, and it is what makes the bucket a gateway bucket:
+`deploy.sh` writes these statements, and they are what make the bucket a gateway bucket.
+It merges them by `Sid` into the policy in place: it rewrites its own (`GatewayPuts`,
+`OnlyTheGatewayPuts`, `DenyInsecureTransport`, `Read<n>`) and keeps every other statement,
+such as a locked bucket's denies (ADR-0037).
 
 ```json
 {"Version": "2012-10-17",
@@ -186,8 +189,10 @@ those.
 `gateway/setup-locked-bucket.sh` establishes all of it, and is as generic and idempotent as
 `deploy.sh`, which it runs: the key and its policy, the bucket with Object Lock and default
 SSE-KMS, the gateway with the two variables, the role's extra grants, and the deny statements
-merged into the bucket policy by `Sid`. It then reads the configuration back and proves a
-bare `PutObject` is denied. `--print-policies` shows the three policies without an AWS call.
+merged into the bucket policy by `Sid`. It then reads the configuration back, compares
+every bucket policy statement with what it put, and proves a bare `PutObject` is denied.
+Re-run it, not `deploy.sh`, to redeploy a locked bucket's gateway. `--print-policies` shows
+the three policies without an AWS call.
 
 ```sh
 AWS_PROFILE=<admin profile> gateway/setup-locked-bucket.sh \
@@ -215,8 +220,11 @@ AWS_PROFILE=<admin profile> gateway/deploy.sh \
 
 Every account-specific value is an argument with no default. The script is idempotent: it
 creates what is missing and updates what exists, so a rebuilt zip or a changed policy is
-deployed by running it again. Its last step invokes the function once with an
-unauthenticated `PUT`, which must come back `403 not_allowed`: that proves the zip imports
+deployed by running it again. A locked bucket is the exception: it is redeployed with
+`setup-locked-bucket.sh`, and `deploy.sh` refuses a bucket with Object Lock unless it is given
+both `CHAINTABLES_KMS_KEY_ARN` and `CHAINTABLES_RETENTION_DAYS`, so that a bare redeploy
+cannot strip the retention from every later put (ADR-0037). Its last step invokes the
+function once with an unauthenticated `PUT`, which must come back `403 not_allowed`: that proves the zip imports
 in the Lambda runtime (the `cbor2` extension matches the architecture), the bundled
 `policy.json` parses, and `CHAINTABLES_BUCKET` is set. It prints the function URL, which
 writers pass to `Chain` as `gateway`.

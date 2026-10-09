@@ -272,14 +272,15 @@ aws kms put-key-policy --key-id "$key_id" --policy-name default \
 
 # ---------------------------------------------------------------------------- 5. bucket policy
 existing="$(aws s3api get-bucket-policy --bucket "$bucket" --query Policy --output text 2>/dev/null || echo '{}')"
+desired="$(bucket_policy "$key_arn" "$existing")"
 say "putting the bucket policy: gateway statements kept, TLS / SSE-KMS / Object Lock denies merged"
-aws s3api put-bucket-policy --bucket "$bucket" --policy "$(bucket_policy "$key_arn" "$existing")"
+aws s3api put-bucket-policy --bucket "$bucket" --policy "$desired"
 
 # ---------------------------------------------------------------------------- 6. verify
 say "verifying the configuration against the spec"
-python3 - "$bucket" "$key_arn" "$role_arn" <<'PY'
+python3 - "$bucket" "$key_arn" "$role_arn" "$desired" <<'PY'
 import json, subprocess, sys
-bucket, key_arn, role_arn = sys.argv[1:4]
+bucket, key_arn, role_arn, desired = sys.argv[1], sys.argv[2], sys.argv[3], json.loads(sys.argv[4])
 def get(*args):
     return json.loads(subprocess.run(["aws", "s3api", *args, "--bucket", bucket, "--output", "json"],
                                      check=True, capture_output=True, text=True).stdout)
@@ -300,14 +301,17 @@ expect("SSE algorithm", enc["ApplyServerSideEncryptionByDefault"].get("SSEAlgori
 expect("SSE key", enc["ApplyServerSideEncryptionByDefault"].get("KMSMasterKeyID"), key_arn)
 expect("bucket key", enc.get("BucketKeyEnabled"), True)
 policy = json.loads(get("get-bucket-policy")["Policy"])
-sids = {s.get("Sid") for s in policy["Statement"]}
+statements = {s.get("Sid"): s for s in policy["Statement"]}
 for sid in ("GatewayPuts", "OnlyTheGatewayPuts", "DenyInsecureTransport", "DenyNotKms", "DenyNoSseHeader",
             "DenyWrongKey", "DenyNoKeyHeader", "DenyNoRetainUntil", "DenyNotCompliance", "DenyNoLockMode"):
-    if sid not in sids:
+    if sid not in statements:
         problems.append(f"bucket policy lacks statement {sid}")
-gw = [s for s in policy["Statement"] if s.get("Sid") == "GatewayPuts"]
-if gw:
-    expect("GatewayPuts principal", gw[0]["Principal"].get("AWS"), role_arn)
+# Content, not only presence: every statement just put must read back as it was sent.
+for s in desired["Statement"]:
+    if s["Sid"] in statements:
+        expect(f"bucket policy statement {s['Sid']}", statements[s["Sid"]], s)
+if "GatewayPuts" in statements:
+    expect("GatewayPuts principal", statements["GatewayPuts"]["Principal"].get("AWS"), role_arn)
 if problems:
     sys.exit("setup-locked-bucket.sh: configuration drifts from the spec:\n  " + "\n  ".join(problems))
 print("   ok: public access, ownership, versioning, Object Lock, SSE-KMS, bucket policy")

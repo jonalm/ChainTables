@@ -76,7 +76,10 @@ AWS_PROFILE=<admin profile> gateway/deploy.sh --bucket <bucket> --function <func
     --region <region> --role <execution role> --zip gateway/build/gateway-arm64.zip
 ```
 
-Generic and idempotent; every account-specific value is an argument with no default. `--reserved-concurrency <n>`
+Generic and idempotent; every account-specific value is an argument with no default. It merges
+the bucket policy by `Sid`, keeping statements it does not own, and refuses a bucket with
+Object Lock unless given both lock variables: redeploy a locked bucket with
+`setup-locked-bucket.sh` (ADR-0037). `--reserved-concurrency <n>`
 reserves (and so caps) the function's concurrent executions; it is off by default because an
 account at the minimum concurrency quota cannot reserve any. What it
 creates, the IAM contract a writer or reader must satisfy, the bucket policy, and how a

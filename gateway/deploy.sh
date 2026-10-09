@@ -16,7 +16,9 @@
 #   2. execution role: trust lambda.amazonaws.com; inline s3:PutObject on the bucket's keys
 #      and nothing else on S3; inline logs on its own log group;
 #   3. function: python3.13, handler.handler, the zip, CHAINTABLES_BUCKET plus every --env in
-#      the environment (a locked bucket sets CHAINTABLES_KMS_KEY_ARN and CHAINTABLES_RETENTION_DAYS);
+#      the environment, which it replaces; a bucket with Object Lock (a locked bucket) must get
+#      both CHAINTABLES_KMS_KEY_ARN and CHAINTABLES_RETENTION_DAYS, and a bucket without it
+#      neither, or the script refuses before changing anything (ADR-0037);
 #      with --reserved-concurrency, that many concurrent executions reserved, which also caps
 #      them (left as it is otherwise: an account with the minimum quota cannot reserve any);
 #   4. function URL with AuthType=AWS_IAM; for each --writer, resource-based grants of both
@@ -26,7 +28,9 @@
 #      permission set already grants both needs no --writer; a cross-account one does;
 #   5. bucket policy: the execution role may PutObject; every other principal is denied
 #      PutObject; each --reader and --writer may GetObject and ListBucket; every request
-#      without TLS is denied (DenyInsecureTransport, the same statement a locked bucket has);
+#      without TLS is denied (DenyInsecureTransport, the same statement a locked bucket has).
+#      Merged by Sid: the script owns GatewayPuts, OnlyTheGatewayPuts, DenyInsecureTransport
+#      and Read<n>, and keeps every other statement, such as a locked bucket's denies (ADR-0037);
 #   6. log retention, then a smoke invocation that proves the zip runs in the Lambda runtime
 #      (the handler boots, loads its policy, and refuses an unauthenticated PUT as 403 not_allowed).
 set -euo pipefail
@@ -50,7 +54,7 @@ while [ $# -gt 0 ]; do
         --log-retention) retention="$2"; shift 2 ;;
         --reserved-concurrency) concurrency="$2"; shift 2 ;;
         --no-smoke) smoke=0; shift ;;
-        -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,35p' "$0"; exit 0 ;;
         *) echo "deploy.sh: unknown argument $1" >&2; exit 2 ;;
     esac
 done
@@ -97,6 +101,25 @@ else
     else
         aws s3api create-bucket --bucket "$bucket" --create-bucket-configuration "LocationConstraint=$region" >/dev/null
     fi
+fi
+# A locked bucket's function must keep dressing every put, and a plain bucket's must not try
+# (S3 refuses lock headers on a bucket without Object Lock): refuse a mismatch before any change.
+if lock_out="$(aws s3api get-object-lock-configuration --bucket "$bucket" \
+        --query ObjectLockConfiguration.ObjectLockEnabled --output text 2>&1)"; then
+    lock="$lock_out"
+elif echo "$lock_out" | grep -q ObjectLockConfigurationNotFoundError; then
+    lock=none
+else
+    die "reading the Object Lock configuration of $bucket failed: $lock_out"
+fi
+lock_envs=0
+for e in ${envs[@]+"${envs[@]}"}; do
+    case "$e" in CHAINTABLES_KMS_KEY_ARN=?*|CHAINTABLES_RETENTION_DAYS=?*) lock_envs=$((lock_envs + 1)) ;; esac
+done
+if [ "$lock" = Enabled ]; then
+    [ "$lock_envs" = 2 ] || die "bucket $bucket has Object Lock, so it is a locked bucket, and deploying it without both --env CHAINTABLES_KMS_KEY_ARN=... and --env CHAINTABLES_RETENTION_DAYS=... would make the gateway put records with no retention: redeploy it with gateway/setup-locked-bucket.sh"
+else
+    [ "$lock_envs" = 0 ] || die "bucket $bucket has no Object Lock (got '$lock'), so S3 would refuse every locked put: drop the CHAINTABLES_KMS_KEY_ARN/CHAINTABLES_RETENTION_DAYS --env, or set up a locked bucket with gateway/setup-locked-bucket.sh"
 fi
 aws s3api put-public-access-block --bucket "$bucket" --public-access-block-configuration \
     BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
@@ -176,11 +199,18 @@ for w in ${writers[@]+"${writers[@]}"}; do
         --action lambda:InvokeFunction --principal "$w" --invoked-via-function-url >/dev/null
 done
 
-# 5. bucket policy
-say "putting bucket policy: PutObject for $role only; reads for ${#readers[@]} reader(s) and ${#writers[@]} writer(s); TLS only"
-policy="$(python3 - "$bucket_arn" "$role_arn" "$(json_array ${readers[@]+"${readers[@]}"} ${writers[@]+"${writers[@]}"})" <<'EOF'
-import json, sys
-bucket_arn, role_arn, principals = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])
+# 5. bucket policy, merged by Sid onto the one in place
+if existing_policy="$(aws s3api get-bucket-policy --bucket "$bucket" --query Policy --output text 2>&1)"; then
+    :
+elif echo "$existing_policy" | grep -q NoSuchBucketPolicy; then
+    existing_policy='{}'
+else
+    die "reading the bucket policy of $bucket failed: $existing_policy"
+fi
+say "putting bucket policy: PutObject for $role only; reads for ${#readers[@]} reader(s) and ${#writers[@]} writer(s); TLS only; other statements kept"
+policy="$(python3 - "$bucket_arn" "$role_arn" "$(json_array ${readers[@]+"${readers[@]}"} ${writers[@]+"${writers[@]}"})" "$existing_policy" <<'EOF'
+import json, re, sys
+bucket_arn, role_arn, principals, existing = sys.argv[1], sys.argv[2], json.loads(sys.argv[3]), json.loads(sys.argv[4])
 statements = [
     {"Sid": "GatewayPuts", "Effect": "Allow", "Principal": {"AWS": role_arn},
      "Action": "s3:PutObject", "Resource": f"{bucket_arn}/*"},
@@ -195,7 +225,15 @@ for n, arn in enumerate(principals, 1):
     statements.append({"Sid": f"Read{n}", "Effect": "Allow", "Principal": {"AWS": arn},
                        "Action": ["s3:GetObject", "s3:ListBucket"],
                        "Resource": [bucket_arn, f"{bucket_arn}/*"]})
-print(json.dumps({"Version": "2012-10-17", "Statement": statements}))
+# The statements of this script are replaced, Read<n> included so a dropped reader loses its grant;
+# every other statement (the denies of a locked bucket, a hand-added grant) is kept as it is.
+kept = existing.get("Statement", [])
+kept = [kept] if isinstance(kept, dict) else kept
+if any("Sid" not in s for s in kept):
+    sys.exit("deploy.sh: the bucket policy in place has a statement without a Sid, which cannot be merged; give it a Sid or remove it")
+ours = {"GatewayPuts", "OnlyTheGatewayPuts", "DenyInsecureTransport"}
+kept = [s for s in kept if s["Sid"] not in ours and not re.fullmatch(r"Read[0-9]+", s["Sid"])]
+print(json.dumps({"Version": "2012-10-17", "Statement": statements + kept}))
 EOF
 )"
 aws s3api put-bucket-policy --bucket "$bucket" --policy "$policy"
