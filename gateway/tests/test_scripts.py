@@ -191,6 +191,34 @@ def test_deploy_refuses_a_zip_without_a_handler(tmp_path):
     assert mutations(calls) == []
 
 
+# A grant's statement id is named by its principal (the first 8 hex digits of the SHA-256 of
+# the ARN), so a redeploy adds what is missing before it removes anything: a writer that
+# stays never loses its grant, not even for a moment.
+
+W1, W2 = "arn:aws:iam::444455556666:role/w1", "arn:aws:iam::444455556666:user/w2"
+W1_SID, W2_SID = "chaintables-writer-a260edbf", "chaintables-writer-4d2906b2"
+
+
+def grant_calls(calls):
+    return [(c[1], c[c.index("--statement-id") + 1]) for c in calls
+            if c[:2] in (["lambda", "add-permission"], ["lambda", "remove-permission"])]
+
+
+def test_deploy_adds_new_grants_before_it_removes_old_ones(tmp_path):
+    r, calls = run_deploy(tmp_path, "--writer", W1, "--writer", W2, lambda_policy=writer_grants(W1))
+    assert r.returncode == 0, r.stderr
+    assert grant_calls(calls) == [("add-permission", f"{W1_SID}-url"), ("add-permission", f"{W1_SID}-invoke"),
+                                  ("add-permission", f"{W2_SID}-url"), ("add-permission", f"{W2_SID}-invoke"),
+                                  ("remove-permission", "chaintables-writer-1-url"),
+                                  ("remove-permission", "chaintables-writer-1-invoke")]
+
+
+def test_deploy_leaves_a_grant_it_would_make_again_in_place(tmp_path):
+    r, calls = run_deploy(tmp_path, "--writer", W1, lambda_policy=writer_grants(W1, sids=[W1_SID]))
+    assert r.returncode == 0, r.stderr
+    assert grant_calls(calls) == []
+
+
 # A grant is revoked only on purpose: a principal with a grant from an earlier deployment
 # but missing from the arguments is a refusal, unless --revoke-unlisted says to drop it.
 

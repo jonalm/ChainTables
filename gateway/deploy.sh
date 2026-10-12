@@ -245,19 +245,28 @@ else
     url="$(aws lambda create-function-url-config --function-name "$function" --auth-type AWS_IAM \
         --invoke-mode BUFFERED --query FunctionUrl --output text)"
 fi
-# Drop every grant this script owns, then re-add one pair per --writer, so the resource
-# policy always reflects exactly the current argument list.
-for sid in $(python3 -c 'import json,sys; p=json.loads(sys.argv[1]); print(" ".join(s["Sid"] for s in p.get("Statement",[]) if s["Sid"].startswith("chaintables-writer-")))' "$existing_grants"); do
-    aws lambda remove-permission --function-name "$function" --statement-id "$sid"
-done
-i=0
+# One pair of grants per --writer, its statement ids named by the principal: add what is
+# missing first, then remove every chaintables-writer-* grant not wanted, so a writer that
+# stays keeps its grant throughout and the resource policy ends as the argument list.
+sid_of() { python3 -c 'import hashlib,sys; print("chaintables-writer-" + hashlib.sha256(sys.argv[1].encode()).hexdigest()[:8])' "$1"; }
+granted=" $(python3 -c 'import json,sys; p=json.loads(sys.argv[1]); print(" ".join(s["Sid"] for s in p.get("Statement",[]) if s["Sid"].startswith("chaintables-writer-")))' "$existing_grants") "
+wanted=" "
 for w in ${writers[@]+"${writers[@]}"}; do
-    i=$((i + 1))
-    say "granting writer $i invoke on the URL: $w"
-    aws lambda add-permission --function-name "$function" --statement-id "chaintables-writer-$i-url" \
-        --action lambda:InvokeFunctionUrl --principal "$w" --function-url-auth-type AWS_IAM >/dev/null
-    aws lambda add-permission --function-name "$function" --statement-id "chaintables-writer-$i-invoke" \
-        --action lambda:InvokeFunction --principal "$w" --invoked-via-function-url >/dev/null
+    sid="$(sid_of "$w")"
+    wanted="$wanted$sid-url $sid-invoke "
+    case "$granted" in *" $sid-url "*) ;; *)
+        say "granting writer invoke on the URL: $w"
+        aws lambda add-permission --function-name "$function" --statement-id "$sid-url" \
+            --action lambda:InvokeFunctionUrl --principal "$w" --function-url-auth-type AWS_IAM >/dev/null ;;
+    esac
+    case "$granted" in *" $sid-invoke "*) ;; *)
+        aws lambda add-permission --function-name "$function" --statement-id "$sid-invoke" \
+            --action lambda:InvokeFunction --principal "$w" --invoked-via-function-url >/dev/null ;;
+    esac
+    granted="$granted$sid-url $sid-invoke "  # a writer given twice is granted once
+done
+for sid in $granted; do
+    case "$wanted" in *" $sid "*) ;; *) aws lambda remove-permission --function-name "$function" --statement-id "$sid" ;; esac
 done
 
 # 5. bucket policy, merged by Sid onto the one read before any change
