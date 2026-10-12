@@ -158,7 +158,8 @@ class Policy:
     def from_dict(cls, doc) -> "Policy":
         if not isinstance(doc, dict):
             raise PolicyError("policy is not a JSON object")
-        if doc.get("format_version") != POLICY_FORMAT_VERSION:
+        # `type is int`: True and 1.0 compare equal to 1 but are not a format version
+        if type(doc.get("format_version")) is not int or doc["format_version"] != POLICY_FORMAT_VERSION:
             raise PolicyError(f"policy format_version is {doc.get('format_version')!r}; this gateway reads {POLICY_FORMAT_VERSION}")
         unknown = set(doc) - {"format_version", "rules"}
         if unknown:

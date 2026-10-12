@@ -93,6 +93,8 @@ def test_file_round_trip(tmp_path):
     ([], "not a JSON object"),
     ({"rules": []}, "format_version"),
     ({"format_version": 2, "rules": []}, "format_version is 2"),
+    ({"format_version": True, "rules": []}, "format_version is True"),
+    ({"format_version": 1.0, "rules": []}, "format_version is 1.0"),
     ({"format_version": 1, "rules": [], "extra": 1}, "unknown fields ['extra']"),
     ({"format_version": 1, "rules": {}}, "'rules' is not a list"),
     ({"format_version": 1, "rules": [{"prefix": "a"}]}, "rule 0"),
