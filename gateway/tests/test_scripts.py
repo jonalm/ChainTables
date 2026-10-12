@@ -65,7 +65,7 @@ def test_bucket_policy_refuses_every_put_but_the_gateways_locked_kms_put(policie
     s = by_sid(policies["bucket policy (bkt), merged onto what gateway/deploy.sh writes"])
     assert set(s) == {"GatewayPuts", "OnlyTheGatewayPuts", "DenyInsecureTransport", "DenyNotKms", "DenyNoSseHeader",
                       "DenyWrongKey", "DenyNoKeyHeader", "DenyNoRetainUntil", "DenyNotCompliance", "DenyNoLockMode",
-                      "DenyDeleteMarkers"}
+                      "DenyDeleteMarkers", "DenyLifecycleChanges"}
     assert s["GatewayPuts"]["Principal"]["AWS"] == "arn:aws:iam::111122223333:role/gw-role"
     assert s["OnlyTheGatewayPuts"]["Condition"] == {"ArnNotEquals": {"aws:PrincipalArn": "arn:aws:iam::111122223333:role/gw-role"}}
     assert s["DenyInsecureTransport"]["Condition"] == {"Bool": {"aws:SecureTransport": "false"}}
@@ -73,6 +73,9 @@ def test_bucket_policy_refuses_every_put_but_the_gateways_locked_kms_put(policie
     # a delete marker would hide a locked slot and let the gateway fill it again (#74)
     assert s["DenyDeleteMarkers"] == {"Sid": "DenyDeleteMarkers", "Effect": "Deny", "Principal": "*",
                                       "Action": "s3:DeleteObject", "Resource": "arn:aws:s3:::bkt/*"}
+    # a lifecycle rule expiring current versions adds the same markers, as S3 itself (ADR-0042)
+    assert s["DenyLifecycleChanges"] == {"Sid": "DenyLifecycleChanges", "Effect": "Deny", "Principal": "*",
+                                         "Action": "s3:PutLifecycleConfiguration", "Resource": "arn:aws:s3:::bkt"}
     assert all(s[sid]["Effect"] == "Deny" for sid in s if sid != "GatewayPuts")
 
 
@@ -97,8 +100,8 @@ def test_print_policies_without_a_required_argument_fails():
 # policy and the function's resource policy are files in FAKE_AWS_STATE (`lock`,
 # `bucket-policy`, `lambda-policy`); absent or empty, there is none and the fake fails as AWS
 # does; `denied` fails as AWS does for a caller without the right. A put-bucket-policy is
-# kept, so a later read sees it. Every put-object and delete-object is denied, as the locked
-# bucket's policy denies the probes.
+# kept, so a later read sees it. Every put-object, delete-object and lifecycle put is denied,
+# as the locked bucket's policy denies the probes, unless the file `lifecycle-allowed` exists.
 FAKE_AWS = r"""#!/usr/bin/env python3
 import json, os, sys
 args = sys.argv[1:]
@@ -158,6 +161,9 @@ elif cmd == "s3api get-bucket-encryption":
         "SSEAlgorithm": "aws:kms", "KMSMasterKeyID": KEY_ARN}, "BucketKeyEnabled": True}]}})
 elif cmd == "s3api get-bucket-lifecycle-configuration":
     fail("NoSuchLifecycleConfiguration", "GetBucketLifecycleConfiguration")
+elif cmd == "s3api put-bucket-lifecycle-configuration":
+    if not os.path.exists(os.path.join(state, "lifecycle-allowed")):
+        fail("AccessDenied", "PutBucketLifecycleConfiguration")
 elif cmd in ("s3api put-object", "s3api delete-object"):
     fail("AccessDenied", "PutObject" if args[1] == "put-object" else "DeleteObject")
 elif cmd == "kms list-aliases":
@@ -172,7 +178,7 @@ def fake_aws(tmp_path, lock="", bucket_policy="", lambda_policy=""):
     (tmp_path / "aws").write_text(FAKE_AWS)
     (tmp_path / "aws").chmod(0o755)
     state = tmp_path / "state"
-    state.mkdir()
+    state.mkdir(exist_ok=True)
     for name, v in (("lock", lock), ("bucket-policy", bucket_policy), ("lambda-policy", lambda_policy)):
         (state / name).write_text(v)
     log = tmp_path / "log"
@@ -360,7 +366,7 @@ def test_deploy_keeps_every_statement_it_does_not_own(tmp_path):
     assert r.returncode == 0, r.stderr
     after = by_sid(put_policy(calls))
     lock_denies = {sid: st for sid, st in by_sid(before).items() if sid.startswith("Deny") and sid != "DenyInsecureTransport"}
-    assert len(lock_denies) == 8
+    assert len(lock_denies) == 9
     for sid, st in lock_denies.items():
         assert after[sid] == st
     # its own statements are rewritten from the arguments: the stale Read3 is gone
@@ -478,7 +484,11 @@ def test_setup_on_a_fresh_locked_bucket_passes_its_own_verification(tmp_path):
     assert "ok: public access, ownership, versioning, Object Lock, SSE-KMS, bucket policy, lifecycle" in r.stdout
     assert set(by_sid(held)) == {"GatewayPuts", "OnlyTheGatewayPuts", "DenyInsecureTransport", "DenyNotKms",
                                  "DenyNoSseHeader", "DenyWrongKey", "DenyNoKeyHeader", "DenyNoRetainUntil",
-                                 "DenyNotCompliance", "DenyNoLockMode", "DenyDeleteMarkers"}
+                                 "DenyNotCompliance", "DenyNoLockMode", "DenyDeleteMarkers", "DenyLifecycleChanges"}
+    # the lifecycle probe changes nothing even if it were let through: one disabled rule
+    (probe,) = [c for c in calls if c[:2] == ["s3api", "put-bucket-lifecycle-configuration"]]
+    rules = json.loads(probe[probe.index("--lifecycle-configuration") + 1])["Rules"]
+    assert [r["Status"] for r in rules] == ["Disabled"]
 
 
 def test_setup_keeps_the_writers_and_readers_it_is_given(tmp_path):
@@ -522,3 +532,11 @@ def test_setup_fails_when_the_bucket_policy_cannot_be_read(tmp_path):
     assert r.returncode != 0
     assert "reading the bucket policy of bkt failed" in r.stderr and "AccessDenied" in r.stderr
     assert not [c for c in calls if c[:2] == ["s3api", "put-bucket-policy"]]
+
+
+def test_setup_fails_when_a_lifecycle_change_is_not_denied(tmp_path):
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state" / "lifecycle-allowed").write_text("")
+    r, calls, held = run_setup(tmp_path)
+    assert r.returncode != 0
+    assert "DenyLifecycleChanges is not in force" in r.stderr

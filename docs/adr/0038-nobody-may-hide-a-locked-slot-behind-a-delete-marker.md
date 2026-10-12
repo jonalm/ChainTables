@@ -46,6 +46,8 @@ the issue asked for. It runs on every setup, against the real bucket.
 - **Deny `s3:PutLifecycleConfiguration`.** That would also block harmless
   rules, and an administrator could remove the deny. Rejected in favour of
   the verification.
+  (*Amended by ADR-0042*: the verification runs only with the setup, so the
+  lifecycle configuration is now denied too.)
 
 ## Consequences
 

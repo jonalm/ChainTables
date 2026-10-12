@@ -55,15 +55,16 @@
 #        DenyNoRetainUntil                   PutObject unless x-amz-object-lock-retain-until-date is set
 #        DenyNotCompliance / DenyNoLockMode  PutObject unless x-amz-object-lock-mode = COMPLIANCE
 #        DenyDeleteMarkers                   DeleteObject, for every principal
+#        DenyLifecycleChanges                PutLifecycleConfiguration (which also deletes one),
+#                                            for every principal
 #      (StringNotEquals and Null are separate statements on purpose: a missing header
 #      must be denied under either evaluation rule, and two keys in one Null block AND.)
 #      A DeleteObject without a version id is allowed by Object Lock: it adds a delete
 #      marker, after which the slot reads as absent and the gateway fills it again. The
-#      deny has no exception; break glass by editing the bucket policy (ADR-0038). For the
-#      same reason the verification refuses a lifecycle rule that expires current
-#      versions, which adds the same markers as S3 itself, where no bucket policy reaches.
-#      (s3:PutLifecycleConfiguration could be denied, but that would also refuse harmless
-#      rules; ADR-0038 chose the verification instead.)
+#      deny has no exception; break glass by editing the bucket policy (ADR-0038). A
+#      lifecycle rule that expires current versions adds the same markers as S3 itself,
+#      where no bucket policy reaches, so the lifecycle configuration cannot be changed
+#      either (ADR-0042), and the verification refuses such a rule already in place.
 #
 # Per-object contract the writer (the gateway, the bucket's only PutObject principal)
 # satisfies in its locked-bucket mode; a put without it is refused by S3 (502 s3_refused):
@@ -179,6 +180,7 @@ ours = [
     deny("DenyNotCompliance", "s3:PutObject", objects, {"StringNotEquals": {"s3:object-lock-mode": "COMPLIANCE"}}),
     deny("DenyNoLockMode", "s3:PutObject", objects, {"Null": {"s3:object-lock-mode": "true"}}),
     deny("DenyDeleteMarkers", "s3:DeleteObject", objects),
+    deny("DenyLifecycleChanges", "s3:PutLifecycleConfiguration", bucket_arn),
 ]
 mine = {s["Sid"] for s in ours}
 kept = [s for s in existing.get("Statement", []) if s.get("Sid") not in mine]
@@ -348,7 +350,7 @@ policy = json.loads(get("get-bucket-policy")["Policy"])
 statements = {s.get("Sid"): s for s in policy["Statement"]}
 for sid in ("GatewayPuts", "OnlyTheGatewayPuts", "DenyInsecureTransport", "DenyNotKms", "DenyNoSseHeader",
             "DenyWrongKey", "DenyNoKeyHeader", "DenyNoRetainUntil", "DenyNotCompliance", "DenyNoLockMode",
-            "DenyDeleteMarkers"):
+            "DenyDeleteMarkers", "DenyLifecycleChanges"):
     if sid not in statements:
         problems.append(f"bucket policy lacks statement {sid}")
 # Content, not only presence: every statement just put must read back as it was sent.
@@ -390,6 +392,23 @@ elif echo "$probe" | grep -q AccessDenied; then
     echo "   ok: AccessDenied"
 else
     die "the delete probe failed for a reason other than AccessDenied: $probe"
+fi
+say "probing: a lifecycle change as $caller_arn must be denied"
+# The probe would change nothing if let through: it puts back the configuration in place, or,
+# with none, one disabled rule that would only abort stale multipart uploads under probe/.
+if lc="$(aws s3api get-bucket-lifecycle-configuration --bucket "$bucket" --output json 2>&1)"; then
+    probe_lc="$(python3 -c 'import json,sys; print(json.dumps({"Rules": json.loads(sys.argv[1])["Rules"]}))' "$lc")"
+elif echo "$lc" | grep -q NoSuchLifecycleConfiguration; then
+    probe_lc='{"Rules":[{"ID":"chaintables-probe","Status":"Disabled","Filter":{"Prefix":"probe/"},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}}]}'
+else
+    die "reading the lifecycle configuration of $bucket failed: $lc"
+fi
+if probe="$(aws s3api put-bucket-lifecycle-configuration --bucket "$bucket" --lifecycle-configuration "$probe_lc" 2>&1)"; then
+    die "a lifecycle change succeeded; DenyLifecycleChanges is not in force (the configuration is now $probe_lc)"
+elif echo "$probe" | grep -q AccessDenied; then
+    echo "   ok: AccessDenied"
+else
+    die "the lifecycle probe failed for a reason other than AccessDenied: $probe"
 fi
 
 # ---------------------------------------------------------------------------- 7. facts
