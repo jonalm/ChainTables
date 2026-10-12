@@ -24,6 +24,7 @@ end
 GWT.is_aws(s::RacingGateway) = GWT.is_aws(s.inner)
 GWT.record_cap(s::RacingGateway) = GWT.record_cap(s.inner)
 GWT.record_author(s::RacingGateway) = GWT.record_author(s.inner)
+GWT.cache_namespace(s::RacingGateway) = GWT.cache_namespace(s.inner)
 GWT.fetch_object(s::RacingGateway, key::AbstractString) = fetch_object(s.inner, key)
 GWT.stat_object(s::RacingGateway, key::AbstractString) = stat_object(s.inner, key)
 GWT.list_objects(s::RacingGateway, prefix::AbstractString; start_after = nothing) = list_objects(s.inner, prefix; start_after)
@@ -38,8 +39,8 @@ end
     bucket = gwbucket.name
     listed = config.prefix                       # a prefix the policy lists the caller under
     unlisted = config.unlisted_prefix            # one it does not
-    run = bytes2hex(rand(UInt8, 8))
-    prefix = "$listed/$run"
+    run_id = bytes2hex(rand(UInt8, 8))
+    prefix = "$listed/$run_id"
     mktempdir() do dir
         cache_dir = joinpath(dir, "cache")
         chain = Chain(gwbucket, prefix; cache_dir)
@@ -122,11 +123,11 @@ end
         @test !success(p) && occursin("AccessDeniedException", String(take!(err)))
         @test stat_object(store, key3) === nothing
         # a chain under a prefix the policy does not list the caller under: not_allowed at slot 0
-        denied = Chain(gwbucket, "$unlisted/$run"; cache_dir)
+        denied = Chain(gwbucket, "$unlisted/$run_id"; cache_dir)
         e = try GWT.create_chain(denied); nothing catch e; e end
         @test e isa WriteRefusedError && e.reason == "not_allowed" && e.slot == 0 && e.caller == author
         @test e.key == GWT.slot_key(denied, 0) && stat_object(denied.store, e.key) === nothing
-        @test startswith(sprint(showerror, e), "WriteRefusedError: write refused for slot 0 of chain $(e.chain_id) at $bucket/$unlisted/$run: ")
+        @test startswith(sprint(showerror, e), "WriteRefusedError: write refused for slot 0 of chain $(e.chain_id) at $bucket/$unlisted/$run_id: ")
         @test occursin("not_allowed: ", sprint(showerror, e)) && occursin("ask the bucket's operator to add the name to the gateway policy", sprint(showerror, e))
         # the cap: a record over 4 MiB is refused at commit before any put; the copy stands at its head
         # (c's store is the wrapper, and the message names the store it was asked about)
