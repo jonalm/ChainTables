@@ -111,6 +111,7 @@ read-back the authority, and a cache file is not one.
   of slot N per sync, but in practice the cache serves it, so a rewrite of
   slot N alone goes unseen until the next record. That is a separate gap in
   rewrite detection, not a cache-damage problem. Left for its own issue.
+  *Adopted by ADR-0041* (#84).
 
 ## Consequences
 

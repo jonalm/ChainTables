@@ -158,10 +158,10 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             @test store.calls[2:end] == [(:stat_object, "p/000000000000"), (:stat_object, "p/000000000001"),
                                          (:fetch_object, "p/000000000000")]
             @test isfile(record_path(chain.cache, chain.store, "bkt", "p/000000000000"))
-            # nothing new: applied = 0, one probe, the head's own slot served from the cache
+            # nothing new: applied = 0, the head's own slot asked of the store past the cache (ADR-0041), one probe
             n = length(store.calls)
             @test CT.sync!(copy) == (; applied = 0, slot = 0, transaction_hash = created.transaction_hash)
-            @test store.calls[n+1:end] == [(:stat_object, "p/000000000001")]
+            @test store.calls[n+1:end] == [(:fetch_object, "p/000000000000"), (:stat_object, "p/000000000001")]
             # the chain knows its id from the cached genesis, so open checks a bound copy against it
             @test CT.expected_chain_id(chain) == created.chain_id
             @test CT.expected_chain_id(Chain("bkt", "p"; store, cache_dir = joinpath(dir, "cold"))) === nothing
@@ -354,7 +354,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             @test refused(() -> CT.commit!(w)) == "commit!(w): op 1 (delete on \"samples\"): delete names a key that is absent: (9,)"
             @test unchanged()
             @test isequal(rows_of(copy, "samples"), [Any[1, "a", 1.5], Any[2, "b", missing]])
-            # no put was attempted by any of them; each cost the pre-check (cached) and one preflight probe
+            # no put was attempted by any of them; each cost the pre-check (one fetch, ADR-0041) and one preflight probe
             @test puts(store, "p/000000000002") == 0
             @test count(==((:stat_object, "p/000000000002")), store.calls) == 3
             # an empty builder; a comment that is not text; a builder over bare content
@@ -614,9 +614,10 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             CT.commit!(w)
             @test CT.sync!(copy).applied == 1
             @test isfile(record_path(chain.cache, chain.store, "bkt", "p/000000000002"))
-            # copy committed slot 1, so it was cached; it was the top of other's sync, which nothing above
-            # vouched for, so that sync asked the store for it once (ADR-0040), and nothing else did
-            @test count(==((:fetch_object, "p/000000000001")), store.calls) == 1
+            # copy committed slot 1, so it was cached; the store was asked for it as the top of other's sync,
+            # which nothing above vouched for (ADR-0040), and as the head's own slot by copy's two syncs and
+            # other's commit (ADR-0041), and by nothing else
+            @test count(==((:fetch_object, "p/000000000001")), store.calls) == 4
             close(copy); close(other)
         end
     end
@@ -634,14 +635,12 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             key1 = "p/000000000001"
             good = store.objects[key1]
             cached = record_path(chain.cache, chain.store, "bkt", key1)
-            # while the cache holds slot 1, the bucket is not consulted for it (ADR-0010, ADR-0014)
+            # symptom one: the head's slot fetches bytes of another hash, though the cache holds the
+            # head's own (ADR-0041)
             other = Ops.encode_record(Record(CT.chain_id_bytes(cid), 1, Ops.transaction_hash(store.objects["p/000000000000"]),
                                              copy.head.state_fingerprint, Client(nothing, nothing, "L", "J", 1), "rewritten",
                                              Ops.decode_record(good; slot = 1).ops))
             plant!(store, key1, other)
-            @test CT.sync!(copy).applied == 0
-            # symptom one: the head's slot fetches bytes of another hash
-            rm(cached)
             err = caught(() -> CT.sync!(copy))
             @test err isa RewrittenChainError
             @test sprint(showerror, err) == "RewrittenChainError: rewritten chain: slot 1 of chain $cid at bkt/p holds a record " *
@@ -649,6 +648,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
                 "bucket was written from outside the protocol and nothing heals it. The local copy stays readable and never " *
                 "commits onto this chain."
             @test (err.chain_id, err.slot, err.expected, err.found) == (cid, 1, th1, Ops.transaction_hash(other))
+            @test read(cached) == good                                         # the store's failing bytes are not cached
             @test CT.head(copy).slot == 1 && CT.tables(copy) == ["samples"]
             @test isequal(rows_of(copy, "samples"), [Any[1, "a", 1.5], Any[2, "b", missing]])
             @test_throws RewrittenChainError CT.sync!(copy)                    # never healed
@@ -658,13 +658,11 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             @test !haskey(store.objects, "p/000000000002")
             # symptom one, bytes that are no record at all: still rewritten, not wrong chain
             plant!(store, key1, b"not a record")
-            rm(cached)
             err = caught(() -> CT.sync!(copy))
             @test err isa RewrittenChainError
             @test (err.chain_id, err.slot, err.expected, err.found) == (cid, 1, th1, Ops.transaction_hash(b"not a record"))
             # symptom two: the head's slot is absent
             delete!(store.objects, key1)
-            isfile(cached) && rm(cached)
             err = caught(() -> CT.sync!(copy))
             @test err isa RewrittenChainError
             @test sprint(showerror, err) == "RewrittenChainError: rewritten chain: slot 1 — the head of the local copy at " *
@@ -729,6 +727,50 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             close(wrong)
             # with q's genesis cached, open itself refuses
             @test_throws WrongChainError CT.open(chainq, copy.path)
+        end
+    end
+
+    # A warm cache is no proof that the head is still on the chain (ADR-0041, #84): the head's
+    # own slot is asked of the store on every sync! and commit!.
+    @testset "a bound copy over an emptied or reused prefix" begin
+        mktempdir() do dir
+            # the prefix emptied under a copy bound at slot 1, whose cache holds slots 0 and 1
+            store, chain, copy = seeded(dir)
+            cid = copy.head.chain_id
+            empty!(store.objects); empty!(store.modified)
+            err = caught(() -> CT.sync!(copy))
+            @test err isa RewrittenChainError
+            @test (err.chain_id, err.slot, err.found) == (cid, 1, nothing)
+            w = CT.write_builder(copy)
+            CT.insert_rows!(w, :samples, [(id = 3, label = "c", mass = 3.0)])
+            @test_throws RewrittenChainError CT.commit!(w)
+            @test isempty(store.objects)                                       # no orphan slot 2
+
+            # the prefix refilled with another chain, C2, at slots 0 and 1, by a writer with its own cache
+            c2 = Chain("bkt", "p"; store, cache_dir = joinpath(dir, "c2cache"), record_host = false, record_user = false)
+            created2 = CT.create_chain(c2)
+            writer = CT.open(c2, joinpath(dir, "c2"))
+            CT.sync!(writer)
+            w2 = CT.write_builder(writer)
+            declare!(w2)
+            CT.insert_rows!(w2, :samples, [(id = 9, label = "c2", mass = 9.0)])
+            CT.commit!(w2)
+            held = Dict(store.objects)                                        # `copy` is the local copy here
+            err = caught(() -> CT.sync!(copy))
+            @test err isa WrongChainError
+            @test (err.path, err.bound, err.opened) == (copy.path, cid, created2.chain_id)
+            w = CT.write_builder(copy)
+            CT.insert_rows!(w, :samples, [(id = 3, label = "c", mass = 3.0)])
+            @test_throws WrongChainError CT.commit!(w)
+            @test store.objects == held                                        # C2 is untouched
+            # and C2 lives on: its next commit and sync! see only its own records
+            w2 = CT.write_builder(writer)
+            CT.insert_rows!(w2, :samples, [(id = 10, label = "c2", mass = 10.0)])
+            @test CT.commit!(w2).slot == 2
+            reader = CT.open(c2, joinpath(dir, "c2reader"))
+            @test CT.sync!(reader).slot == 2
+            @test isequal(rows_of(reader, "samples"), [Any[9, "c2", 9.0], Any[10, "c2", 10.0]])
+            close(reader); close(writer); close(copy)
         end
     end
 

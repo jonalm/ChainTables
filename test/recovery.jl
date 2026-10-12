@@ -389,7 +389,7 @@ using SHA: sha256
             n = length(store.calls)
             a = CT.as_of(chain, 2; path = p)
             @test CT.head(a).slot == 2 && read(joinpath(p, "heads", "000000000002")) == hb   # the same head file
-            @test isempty(store.calls[n+1:end])                                 # its record came from the cache
+            @test store.calls[n+1:end] == [(:fetch_object, slotkey(2))]         # its own slot asked of the store (ADR-0041)
             close(a)
             # pinned below the target: replayed forward, still pinned
             a = CT.as_of(chain, 3; path = p)

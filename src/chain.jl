@@ -306,21 +306,19 @@ end
 # sync! (ADR-0013, ADR-0012, ADR-0014)
 # ---------------------------------------------------------------------------
 
-# The head's own slot, fetched through the record cache and held against the head
-# (ADR-0014): absent, or bytes of another hash, is a rewritten chain — or, when the
-# record there names another chain, the wrong chain. Cached bytes of another hash are
-# fetched again past the cache first, and replace the file if they are the head's: a
-# damaged cache file is not the chain's word (ADR-0040). Returns the record's bytes.
+# The head's own slot, fetched from the store past the record cache and held against
+# the head (ADR-0014, ADR-0041): absent, or bytes of another hash, is a rewritten chain
+# — or, when the record there names another chain, the wrong chain. A warm cache is no
+# proof the head is still on the chain: the prefix may have been emptied or reused
+# since. Bytes that are the head's replace a cache file that differs (ADR-0040).
+# Returns the record's bytes.
 function check_head_slot(copy::LocalCopy, chain::Chain)
     h = copy.head
     where = location(chain)
     key = slot_key(chain, h.slot)
-    bytes, cached = fetch_record_from(chain.cache, chain.store, chain.bucket, key)
-    if cached && Ops.transaction_hash(bytes) != h.transaction_hash
-        bytes = fetch_object(chain.store, key)
-        bytes === nothing || Ops.transaction_hash(bytes) != h.transaction_hash ||
-            heal_record!(chain.cache, chain.store, chain.bucket, key, bytes)
-    end
+    bytes = fetch_object(chain.store, key)
+    bytes === nothing || Ops.transaction_hash(bytes) != h.transaction_hash ||
+        heal_record!(chain.cache, chain.store, chain.bucket, key, bytes)
     bytes === nothing && throw(RewrittenChainError("rewritten chain: slot $(h.slot) — the head of the local copy at " *
         "$(copy.path), chain $(h.chain_id) — is absent at $where. Either the chain was truncated from outside the " *
         "protocol, or this is not the chain's bucket and prefix; neither is healed. The local copy stays readable; " *
@@ -350,15 +348,15 @@ end
 """
     sync!(copy) -> (; applied, slot, transaction_hash::TransactionHash)
 
-Bring the local copy up to the chain's head (ADR-0013): fetch the head's own slot and
-hold it against the head (ADR-0014 — `RewrittenChainError`, or `WrongChainError` when
-the record there names another chain), gallop for the chain head from the slot above
-(ADR-0012), fetch the tail through the record cache `read_ahead` records ahead, apply
-each record in slot order once [`read_forward`](@ref) has held it against the chain
-(ADR-0040: a cached record waits for a record the store returned to name it, and a hit
-that fails is fetched again before the chain is blamed), and checkpoint — always at the
-end, and mid-replay whenever the apply time since the last checkpoint exceeds the last
-checkpoint's duration (ADR-0023).
+Bring the local copy up to the chain's head (ADR-0013): fetch the head's own slot from
+the store and hold it against the head (ADR-0014, ADR-0041 — `RewrittenChainError`, or
+`WrongChainError` when the record there names another chain), gallop for the chain head
+from the slot above (ADR-0012), fetch the tail through the record cache `read_ahead`
+records ahead, apply each record in slot order once [`read_forward`](@ref) has held it
+against the chain (ADR-0040: a cached record waits for a record the store returned to
+name it, and a hit that fails is fetched again before the chain is blamed), and
+checkpoint — always at the end, and mid-replay whenever the apply time since the last
+checkpoint exceeds the last checkpoint's duration (ADR-0023).
 Every checkpoint's fingerprint is verified against its record. Nothing new is
 `applied = 0`, never an error, once the copy has a head; a copy with no head against a
 prefix with no slot 0 raises `ChainNotFoundError`, which names both a wrong location and
@@ -656,10 +654,10 @@ Commit the builder's ops as one transaction record at the slot above the copy's 
 (ADR-0002, ADR-0009). In order: the builder is spent (a second `commit!` is
 `WriteBuilderError`, the forbidden retry written by hand); an empty builder is refused
 (only genesis carries zero ops, and `create_chain` writes it); a builder taken before a
-`sync!` moved the copy raises `StaleHeadError`; the head's own slot is fetched and held
-against the head (ADR-0014) and its record's fingerprint against the head's (ADR-0007's
-pre-check); a probe of the next slot finding it taken is `StaleHeadError` naming the
-chain's head — nothing applied, nothing written. Then the ops are applied to the model —
+`sync!` moved the copy raises `StaleHeadError`; the head's own slot is fetched from the
+store and held against the head (ADR-0014, ADR-0041) and its record's fingerprint
+against the head's (ADR-0007's pre-check); a probe of the next slot finding it taken is
+`StaleHeadError` naming the chain's head — nothing applied, nothing written. Then the ops are applied to the model —
 the state gate: insert on a present key, update or delete on an absent one, refused as
 `WriteBuilderError` naming the op, through the same checks apply runs (ADR-0025) — the
 touched tables' files are written, the fingerprint is taken from them, the record is
@@ -752,8 +750,8 @@ function commit!(w::WriteBuilder; comment = nothing)
     return (; slot, transaction_hash = TransactionHash(th), state_fingerprint = StateFingerprint(staged.state_fingerprint))
 end
 
-# The head against its own record (ADR-0007, ADR-0014): the slot is fetched through the
-# cache and held against the head (`check_head_slot`), then the record's fingerprint
+# The head against its own record (ADR-0007, ADR-0014): the slot is fetched from the
+# store and held against the head (`check_head_slot`, ADR-0041), then the record's fingerprint
 # against the head's. Returns the record; `next` is the caller's next move for the message.
 function check_head_record(copy::LocalCopy, chain::Chain, next)
     h = copy.head
