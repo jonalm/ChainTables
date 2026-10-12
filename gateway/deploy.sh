@@ -10,6 +10,7 @@
 # each step creates what is missing or updates what exists, so re-running after a rebuild
 # or a policy change is the deployment procedure. Credentials come from the ambient AWS CLI
 # configuration (AWS_PROFILE and friends) and must belong to an administrator of the account.
+# It refuses a zip whose handler.py is not this directory's: rebuild after every change.
 #
 # What it does, in order (docs/gateway-setup.md has the IAM contract this establishes):
 #   1. bucket: create if absent, block all public access;
@@ -69,6 +70,18 @@ case "$concurrency" in "") ;; *[!0-9]*|0) die "--reserved-concurrency must be a 
 [ -f "$zip" ] || die "zip $zip not found; build it with gateway/build.sh --arch $arch --policy <private policy file>"
 command -v aws >/dev/null || die "the AWS CLI is required"
 command -v python3 >/dev/null || die "python3 is required (JSON assembly)"
+here="$(cd "$(dirname "$0")" && pwd)"
+# A zip from before the last change to handler.py would deploy old code under a new script.
+python3 - "$zip" "$here/handler.py" <<'EOF'
+import sys, zipfile
+zip_path, handler = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(zip_path) as z:
+    if "handler.py" not in z.namelist():
+        sys.exit(f"deploy.sh: zip {zip_path} holds no handler.py; build it with gateway/build.sh")
+    shipped = z.read("handler.py")
+if shipped != open(handler, "rb").read():
+    sys.exit(f"deploy.sh: the handler.py in zip {zip_path} differs from {handler}; rebuild it with gateway/build.sh")
+EOF
 for a in ${writers[@]+"${writers[@]}"} ${readers[@]+"${readers[@]}"}; do
     case "$a" in arn:*:iam::*) ;; *) die "--writer/--reader takes an IAM principal ARN, not $a" ;; esac
 done

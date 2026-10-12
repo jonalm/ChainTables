@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import zipfile
 
 import pytest
 
@@ -106,11 +107,22 @@ LOCK_ENV = ["--env", "CHAINTABLES_KMS_KEY_ARN=arn:aws:kms:eu-north-1:11112222333
             "--env", "CHAINTABLES_RETENTION_DAYS=7"]
 
 
-def run_deploy(tmp_path, *args, lock="", bucket_policy=""):
+def write_zip(path, handler_source=None):
+    """A deployment zip holding handler.py: by default the repository's, as build.sh would; none if False."""
+    if handler_source is None:
+        with open(os.path.join(HERE, "handler.py"), "rb") as f:
+            handler_source = f.read()
+    with zipfile.ZipFile(path, "w") as z:
+        if handler_source is not False:
+            z.writestr("handler.py", handler_source)
+        z.writestr("policy.json", "{}")
+
+
+def run_deploy(tmp_path, *args, lock="", bucket_policy="", handler_source=None):
     """deploy.sh against the fake: returns the completed process and the logged calls."""
     (tmp_path / "aws").write_text(FAKE_AWS)
     (tmp_path / "aws").chmod(0o755)
-    (tmp_path / "gw.zip").write_bytes(b"zip")
+    write_zip(tmp_path / "gw.zip", handler_source)
     log = tmp_path / "log"
     log.write_text("")
     r = subprocess.run(
@@ -149,6 +161,19 @@ def test_deploy_grants_writers_invoke_only_via_the_function_url(tmp_path):
         else:
             # unconditioned, a writer could call the Invoke API with a forged authorizer (#68)
             assert action == "lambda:InvokeFunction" and "--invoked-via-function-url" in c
+
+
+def test_deploy_refuses_a_zip_built_from_another_handler(tmp_path):
+    r, calls = run_deploy(tmp_path, handler_source=b"# an older gateway\n")
+    assert r.returncode != 0
+    assert "the handler.py in zip" in r.stderr and "differs from" in r.stderr and "gateway/build.sh" in r.stderr
+    assert mutations(calls) == []
+
+
+def test_deploy_refuses_a_zip_without_a_handler(tmp_path):
+    r, calls = run_deploy(tmp_path, handler_source=False)
+    assert r.returncode != 0 and "holds no handler.py" in r.stderr
+    assert mutations(calls) == []
 
 
 # Re-running deploy.sh on its own must not turn a locked bucket back into a plain one (#69, ADR-0037).
