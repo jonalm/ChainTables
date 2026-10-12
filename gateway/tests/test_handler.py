@@ -135,6 +135,21 @@ def test_allowed_author_fills_the_slot(gateway, s3):
     assert (status, out["code"]) == (200, "created")
 
 
+# The Lambda runtime's text log format leaves the root logger at WARNING, so the audit
+# lines are INFO only if the gateway sets its own level; caplog sees what CloudWatch would.
+
+def test_a_created_slot_is_logged_with_its_author(gateway, s3, caplog):
+    body = record()
+    s3.put_succeeds("teams/alpha/000000000003", body)
+    gateway.handle(event(body=body))
+    assert f"created teams/alpha/000000000003 by alice@example.com ({len(body)} bytes)" in caplog.messages
+
+
+def test_a_refusal_is_logged(gateway, caplog):
+    gateway.handle(event(body=record(user="mallory@example.com")))
+    assert [m for m in caplog.messages if m.startswith("refused 403 author_mismatch")]
+
+
 def test_record_of_exactly_4mib_is_accepted(gateway, s3):
     n = 4 * 1024 * 1024 - 200
     for _ in range(3):  # the text-string length header grows with n; converge on the exact size

@@ -62,6 +62,9 @@ import cbor2
 from botocore.exceptions import BotoCoreError, ClientError
 
 log = logging.getLogger("chaintables.gateway")
+# The audit trail (`created <key> by <name>`, every refusal) is INFO; the Lambda runtime's
+# text log format leaves the root logger at WARNING, which would drop it.
+log.setLevel(logging.INFO)
 
 MAX_RECORD_BYTES = 4 * 1024 * 1024
 POLICY_FORMAT_VERSION = 1
