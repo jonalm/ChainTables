@@ -180,7 +180,7 @@ EOF
 unlisted="$(echo "$unlisted" | sort -u)"
 if [ -n "$unlisted" ] && [ "$revoke_unlisted" = 0 ]; then
     die "an earlier deployment granted these principals, which are not given now:
-$(echo "$unlisted" | sed 's/^/    /')
+    ${unlisted//$'\n'/$'\n'    }
 pass each again as --writer/--reader to keep it, or --revoke-unlisted to revoke them"
 fi
 aws s3api put-public-access-block --bucket "$bucket" --public-access-block-configuration \

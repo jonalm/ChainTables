@@ -72,8 +72,11 @@ gateway/build.sh --arch arm64 --policy ~/private/policy.json
 
 Writes `gateway/build/gateway-arm64.zip` from the locked dependencies, resolved for the
 Lambda platform (`manylinux_2_28`, which the Amazon Linux 2023 runtime satisfies; Python 3.13 by default), with `boto3` vendored so the
-gateway does not depend on the runtime's copy. `--arch x86_64` for an x86 function. Without
-`--policy` the zip has no policy and the deployment must set `CHAINTABLES_POLICY`.
+gateway does not depend on the runtime's copy. `--arch x86_64` for an x86 function. A
+deployable zip needs `--policy`: without it the zip holds no policy, and the gateway refuses
+to start (the smoke invocation of `deploy.sh` fails) unless `CHAINTABLES_POLICY` names a
+policy file the function can read from somewhere else, such as a layer. `build.sh` loads the
+policy as the gateway will, so a malformed one fails the build, not the cold start.
 
 ## Deploy
 
