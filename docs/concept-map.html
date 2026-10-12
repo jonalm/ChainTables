@@ -1,0 +1,487 @@
+<meta charset="utf-8">
+<title>ChainTables Concept Map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one wide concept diagram (bucket | between | client) with a sticky detail panel; reference sections below. */
+:root {
+  --bg: #eceff2; --paper: #f8fafb; --ink: #17212b; --muted: #5a6773; --line: #b3bdc6;
+  --zone: #e3e8ec; --node: #ffffff; --accent: #1f4e8c;
+  --sync: #0d7480; --commit: #b9500f; --read: #6a48b5;
+  --bad: #a3262a;
+  --f-display: "Schibsted Grotesk", "Helvetica Neue", Arial, sans-serif;
+  --f-body: "Schibsted Grotesk", "Helvetica Neue", Arial, sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0f151b; --paper: #151e26; --ink: #e2e8ed; --muted: #94a2ae; --line: #3c4955;
+  --zone: #18232c; --node: #1c2832; --accent: #82b2ff;
+  --sync: #3dbfc8; --commit: #f08b4c; --read: #ab8ef2; --bad: #f07a7d; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #0f151b; --paper: #151e26; --ink: #e2e8ed; --muted: #94a2ae; --line: #3c4955;
+  --zone: #18232c; --node: #1c2832; --accent: #82b2ff;
+  --sync: #3dbfc8; --commit: #f08b4c; --read: #ab8ef2; --bad: #f07a7d; color-scheme: dark }
+
+* { box-sizing: border-box }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 var(--f-body); }
+.wrap { max-width: 1520px; margin: 0 auto; padding-inline: 20px; padding-block: 28px 64px; display: grid; gap: 28px }
+@media (max-width: 600px) { .wrap { padding-inline: 16px } }
+header h1 { font: 700 clamp(26px, 3.4vw, 38px)/1.1 var(--f-display); margin: 0 0 8px; letter-spacing: -0.015em; text-wrap: balance }
+header p { margin: 0; max-width: 72ch; color: var(--muted) }
+header p b { color: var(--ink); font-weight: 600 }
+code, .mono { font-family: var(--f-mono); font-size: 0.86em }
+
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center }
+.toolbar .lbl { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin-right: 4px }
+.flow-btn { font: 500 14px var(--f-body); color: var(--ink); background: var(--paper); border: 1.5px solid var(--line);
+  border-radius: 999px; padding: 6px 14px; cursor: pointer; display: inline-flex; gap: 8px; align-items: center }
+.flow-btn .sw { width: 10px; height: 10px; border-radius: 50%; background: var(--c, var(--muted)) }
+.flow-btn[aria-pressed="true"] { border-color: var(--c, var(--ink)); box-shadow: inset 0 0 0 1px var(--c, var(--ink)) }
+.flow-btn:focus-visible, .node:focus-visible, .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+
+.stage { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 20px; align-items: start }
+@media (max-width: 1100px) { .stage { grid-template-columns: minmax(0, 1fr) } }
+.diagram { background: var(--paper); border: 1px solid var(--line); border-radius: 6px; overflow-x: auto; min-width: 0 }
+.diagram svg { display: block; width: 100%; min-width: 1040px; height: auto }
+
+.panel { background: var(--paper); border: 1px solid var(--line); border-radius: 6px; padding: 20px; position: sticky;
+  top: calc(env(safe-area-inset-top, 0px) + 16px); min-width: 0; display: grid; gap: 12px; scroll-margin-top: 16px }
+.panel .eyebrow { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted) }
+.panel h2 { font: 700 22px/1.2 var(--f-display); margin: 0; text-wrap: balance }
+.panel .julia { font-family: var(--f-mono); font-size: 12.5px; color: var(--accent) }
+.panel p { margin: 0 }
+.panel .avoid { font-size: 13px; color: var(--muted) }
+.panel .avoid s { text-decoration-color: var(--bad) }
+.chips { display: flex; flex-wrap: wrap; gap: 6px }
+.chip { font: 500 12.5px var(--f-body); background: var(--zone); color: var(--ink); border: 1px solid var(--line);
+  border-radius: 4px; padding: 3px 8px; cursor: pointer; text-decoration: none }
+a.chip { font-family: var(--f-mono); font-size: 11.5px }
+.steps { margin: 0; padding-left: 22px; display: grid; gap: 6px; font-size: 14px }
+.steps li::marker { color: var(--c); font-weight: 700 }
+
+/* SVG */
+.zone-bg { fill: var(--zone) }
+.zone-lbl { font: 600 11px var(--f-body); letter-spacing: .12em; fill: var(--muted); text-transform: uppercase }
+.edge path { fill: none; stroke: var(--line); stroke-width: 1.4 }
+.edge text { font: 10.5px var(--f-body); fill: var(--muted); stroke: var(--paper); stroke-width: 4px; paint-order: stroke; stroke-linejoin: round }
+.node rect { fill: var(--node); stroke: var(--line); stroke-width: 1.3 }
+.node text { font: 600 13px var(--f-body); fill: var(--ink); pointer-events: none }
+.node .sub { font: 400 10px var(--f-mono); fill: var(--muted) }
+.node { cursor: pointer; outline: none }
+.node:hover rect { stroke: var(--accent) }
+.node.sel rect { stroke: var(--accent); stroke-width: 2.5 }
+.slotbox rect { fill: var(--node); stroke: var(--ink); stroke-width: 1.3 }
+.slotbox.next rect { stroke-dasharray: 4 3; stroke: var(--muted) }
+.slotbox text { font: 500 10.5px var(--f-mono); fill: var(--ink) }
+.prevh { stroke: var(--ink); stroke-width: 1.2; fill: none }
+svg .dim { opacity: .18; transition: opacity .2s }
+svg .lit path { stroke: var(--c); stroke-width: 2.4 }
+svg .edge.lit text { fill: var(--c) }
+svg .node.lit rect { stroke: var(--c); stroke-width: 2.2 }
+@media (prefers-reduced-motion: reduce) { svg .dim { transition: none } }
+
+/* Reference sections */
+.refs { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 20px }
+section.card { background: var(--paper); border: 1px solid var(--line); border-radius: 6px; padding: 20px; min-width: 0; display: grid; gap: 12px; align-content: start }
+section.card h3 { font: 700 18px/1.25 var(--f-display); margin: 0 }
+section.card p { margin: 0; max-width: 68ch }
+pre { margin: 0; font: 12.5px/1.6 var(--f-mono); background: var(--zone); padding: 14px; border-radius: 4px; overflow-x: auto }
+pre .c { color: var(--muted) }
+pre .k { color: var(--accent) }
+.tbl { overflow-x: auto }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; min-width: 680px }
+th, td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--line) }
+th { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 600 }
+td:first-child { font-weight: 600; white-space: nowrap }
+td code { color: var(--bad) }
+tbody th { font-size: 11px; color: var(--muted); padding-top: 16px; text-transform: uppercase; letter-spacing: .08em }
+.wide { grid-column: 1 / -1 }
+footer { color: var(--muted); font-size: 13px }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>ChainTables Concept Map</h1>
+    <p>Several clients agree on a set of tables <b>without a server</b>. The agreement is an append-only, hash-chained sequence of immutable <b>transaction records</b> in an S3 bucket. Each client replays that sequence into its own <b>local copy</b> and reads it through <b>table views</b>. A commit is one put-if-absent to the next slot: the first writer wins, and the loser raises. Click any box for its definition, or pick a path to trace it.</p>
+  </header>
+
+  <div class="toolbar" role="group" aria-label="Highlight a path">
+    <span class="lbl">Trace</span>
+    <button class="flow-btn" data-flow="" aria-pressed="true">Everything</button>
+    <button class="flow-btn" data-flow="sync" style="--c: var(--sync)" aria-pressed="false"><span class="sw"></span>sync!</button>
+    <button class="flow-btn" data-flow="commit" style="--c: var(--commit)" aria-pressed="false"><span class="sw"></span>write + commit!</button>
+    <button class="flow-btn" data-flow="read" style="--c: var(--read)" aria-pressed="false"><span class="sw"></span>read + as_of</button>
+  </div>
+
+  <div class="stage">
+    <div class="diagram"><svg id="map" viewBox="0 0 1380 800" role="group" aria-label="Diagram of ChainTables concepts and how they connect"></svg></div>
+    <aside class="panel" id="panel" aria-live="polite"></aside>
+  </div>
+
+  <div class="refs">
+    <section class="card">
+      <h3>Anatomy of a transaction record</h3>
+      <p>One deterministic-CBOR map at key <code>&lt;prefix&gt;/000000000042</code>. Every stored byte is hashed. Nothing inside the record names its own hash; the <em>next</em> record does.</p>
+<pre><span class="c">; ADR-0006. The encoder sorts keys; this order is expository. ? = optional</span>
+{
+  <span class="k">"format_version"</span>:    1,
+  <span class="k">"chain_id"</span>:          h'&lt;16&gt;',  <span class="c">; minted at slot 0</span>
+  <span class="k">"slot"</span>:              42,
+  <span class="k">"prev_hash"</span>:         h'&lt;32&gt;',  <span class="c">; absent at slot 0</span>
+  <span class="k">"state_fingerprint"</span>: h'&lt;32&gt;',  <span class="c">; content after apply</span>
+  <span class="k">"client"</span>:  { "user"?: <span class="c">author</span>, "host"?, "lib", "julia", "time_ms" },
+  <span class="k">"comment"</span>?: "…",                <span class="c">; never read by software</span>
+  <span class="k">"ops"</span>:     [ … ]                 <span class="c">; 0 at genesis, ≥1 after</span>
+}
+
+transaction_hash  = SHA-256("chaintables/v1/txn" ‖ stored bytes)
+table_hash        = SHA-256("chaintables/v1/fp-table" ‖ cbor([shape, rows]))
+state_fingerprint = SHA-256("chaintables/v1/fp" ‖ cbor([[name, table_hash], …]))</pre>
+      <p>The seven ops: <code>create_table</code>, <code>add_column</code>, <code>drop_column</code>, <code>drop_table</code>, <code>insert</code>, <code>update</code>, <code>delete</code>. They hold literal typed values and name rows by primary key, and they carry no row slot. In a table file and in the fingerprint, each row is <code>[cells…, row_slot]</code>.</p>
+    </section>
+
+    <section class="card">
+      <h3>The local copy on disk</h3>
+      <p>Derived state that can always be rebuilt from the chain, so all of it may be deleted. A table file holds exactly the bytes its <code>table_hash</code> covers, so its name is proof of its content.</p>
+<pre>mycopy/
+├── heads/
+│   └── 000000000042     <span class="c">the head file, named by slot,</span>
+│                        <span class="c">written after every table file it names</span>
+├── tables/
+│   ├── 3f9a…c21e        <span class="c">table file = sha256 of its own bytes</span>
+│   ├── 7b02…e8d4        <span class="c">a table a checkpoint left unchanged</span>
+│   └── a5c7…10f9        <span class="c">keeps its file</span>
+└── pin                  <span class="c">present iff the copy is pinned</span>
+
+&lt;depot&gt;/chaintables/records/&lt;ns&gt;/&lt;bucket&gt;/&lt;key&gt;
+                         <span class="c">record cache, machine-wide</span>
+                         <span class="c">(or $CHAINTABLES_CACHE_DIR, or Chain(…; cache_dir))</span></pre>
+      <p>Verifying a table means hashing a file. The fingerprint check then compares the head's table list against the record's <code>state_fingerprint</code>.</p>
+    </section>
+
+    <section class="card wide">
+      <h3>When things go wrong</h3>
+      <p>Each failure has its own name because each one has a different culprit and a different next move. Recovery is always explicit, and nothing heals silently (ADR-0014, ADR-0020).</p>
+      <div class="tbl"><table>
+        <thead><tr><th>Concept</th><th>What happened</th><th>Whose fault</th><th>Raised as</th><th>Next move</th></tr></thead>
+        <tbody>
+          <tr><th colspan="5">Writing</th></tr>
+          <tr><td>Lost race</td><td>Another client filled the slot first (in <code>commit!</code> or <code>create_chain</code>)</td><td>Nobody: normal contention</td><td><code>LostRaceError</code></td><td>Sync, build a new builder. The spent one is never re-run</td></tr>
+          <tr><td>Stale head</td><td>The builder's head is behind the chain, or behind the copy after a sync</td><td>Nobody: the copy has moved on</td><td><code>StaleHeadError</code></td><td><code>sync!(copy)</code>, then build again</td></tr>
+          <tr><td>Bad builder use</td><td>A structural mistake in a builder call, the state gate at commit, a spent or empty builder, or a record over the cap</td><td>The calling code</td><td><code>WriteBuilderError</code></td><td>Fix the call; build again with <code>write_builder(copy)</code></td></tr>
+          <tr><td>Pinned copy</td><td><code>sync!</code>, <code>commit!</code> or <code>write_builder</code> on a pinned copy</td><td>The calling code</td><td><code>PinnedCopyError</code></td><td><code>unpin!(copy)</code></td></tr>
+          <tr><td>Unsupported store</td><td>A commit to a store that is not AWS S3</td><td>The deployment</td><td><code>UnsupportedStoreError</code></td><td>Set <code>assume_first_writer_wins</code> only if you can promise it</td></tr>
+          <tr><td>Refused write</td><td>The gateway or AWS refused the put (permission, author, or S3 4xx)</td><td>Permissions, author or deployment</td><td><code>WriteRefusedError</code></td><td>Read the <code>reason</code>. Nothing is retried</td></tr>
+          <tr><td>Gateway mismatch</td><td>The gateway filled a different bucket than the one this chain reads</td><td>The <code>Bucket</code> description</td><td><code>GatewayMismatchError</code></td><td>Fix the bucket value</td></tr>
+          <tr><th colspan="5">Opening a copy</th></tr>
+          <tr><td>Chain not found</td><td>A first <code>sync!</code> found no slot 0 at the prefix</td><td>Deliberately uncertain: wrong address, or never created</td><td><code>ChainNotFoundError</code></td><td>Check bucket and prefix, or <code>create_chain</code></td></tr>
+          <tr><td>Wrong chain</td><td><code>open</code> on a directory bound to another chain</td><td>The calling code</td><td><code>WrongChainError</code></td><td>Use another directory</td></tr>
+          <tr><td>Not a local copy</td><td><code>open</code> on a directory that isn't one of ours</td><td>The calling code</td><td><code>NotALocalCopyError</code></td><td>Use an empty or ChainTables directory</td></tr>
+          <tr><td>Layout version</td><td>The copy was written by a newer client</td><td>Version skew</td><td><code>LayoutVersionError</code></td><td>Upgrade, or rebuild. Never migrated</td></tr>
+          <tr><th colspan="5">Integrity</th></tr>
+          <tr><td>Damaged copy</td><td>A table file doesn't hash to its name, a named file is missing, or the head disagrees with itself</td><td>The local disk</td><td><code>LocalCopyInconsistentError</code> (open, load), <code>FingerprintMismatchError</code> (<code>verify</code>)</td><td><code>repair!(copy)</code>, or delete and rebuild. Found by hashing, never by replay</td></tr>
+          <tr><td>Damaged record cache</td><td><code>verify(copy; full=true)</code> found a cached record missing, or not hashing to what the chain names</td><td>The cache, not the chain</td><td><code>RecordCacheError</code></td><td><code>repair!(copy)</code>. <code>sync!</code> refetches such records itself (ADR-0040)</td></tr>
+          <tr><td>Divergence</td><td>Same records, different content: a checkpoint's or pre-check's fingerprint mismatch that <code>repair!</code> cannot resolve</td><td>Undecided: this machine or the committers</td><td><code>FingerprintMismatchError</code>, then <code>DivergenceError</code> from <code>repair!</code></td><td><code>repair!(copy)</code>. If it raises <code>DivergenceError</code>, the copy stays readable and never commits</td></tr>
+          <tr><td>Rewritten chain</td><td>A slot's bytes changed, an applied slot vanished, or a record names the wrong parent</td><td>An actor outside the protocol</td><td><code>RewrittenChainError</code></td><td>Never healed by any client</td></tr>
+          <tr><td>Malformed record</td><td>Bytes hash correctly, but the ops break the format or the content</td><td>The committer's bug</td><td><code>MalformedRecordError</code></td><td>The chain is dead beyond that slot</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+  </div>
+
+  <footer>Built from <code>CONTEXT.md</code>, <code>README.md</code>, <code>docs/adr/</code> and <code>src/</code> at commit 32f1876, and checked by an independent review. Terms follow the glossary; ADR links go to <code>jonalm/ChainTables</code> on GitHub.</footer>
+</div>
+
+<script>
+const ADR = {"0001":"0001-write-builder-is-plain-functions","0002":"0002-commit-is-a-conditional-put-to-a-sequence-numbered-slot","0003":"0003-the-schema-declares-shape-never-policy","0005":"0005-ops-name-rows-by-primary-key","0006":"0006-a-record-is-one-cbor-map-hashed-as-stored-bytes","0007":"0007-the-state-fingerprint-is-a-two-level-hash-recomputed-in-full","0009":"0009-the-head-file-is-written-after-the-conditional-put","0010":"0010-s3sqlite-owns-its-s3-client-and-its-record-cache","0011":"0011-a-chain-is-flat-slot-keys-plus-reserved-names","0012":"0012-head-discovery-gallops-and-every-object-is-write-once","0013":"0013-apply-is-per-record-in-memory-and-checkpoints-are-amortized","0014":"0014-recovery-is-always-explicit","0015":"0015-as-of-addresses-slots-never-time","0016":"0016-v1-claims-aws-s3-only-and-the-gate-is-on-commit","0019":"0019-the-public-surface-is-two-types-and-nothing-is-exported","0022":"0022-content-lives-in-a-julia-model-and-determinism-rests-on-the-encoder","0023":"0023-the-local-copy-is-hash-named-table-files-and-a-slot-named-head","0024":"0024-the-read-surface-is-a-table-view-fixed-at-its-head","0025":"0025-ops-and-rows-are-typed-values-ordered-by-key-and-apply-re-validates","0028":"0028-a-gateway-bucket-verifies-the-author-and-nothing-else","0029":"0029-a-bucket-value-pairs-what-must-agree-and-login-is-always-asked-for","0031":"0031-the-prefix-is-opaque-and-locking-a-bucket-adds-no-layout","0032":"0032-every-row-carries-the-slot-of-the-last-record-that-changed-it","0034":"0034-a-prefix-segment-is-portable-to-every-filesystem","0035":"0035-the-gateway-refuses-a-record-the-clients-would-refuse","0036":"0036-only-the-function-url-may-invoke-the-gateway","0037":"0037-a-redeploy-never-unlocks-a-locked-bucket","0038":"0038-nobody-may-hide-a-locked-slot-behind-a-delete-marker","0039":"0039-a-policy-rule-may-pin-the-callers-account-and-role","0040":"0040-the-record-cache-is-not-the-chains-word"};
+const adrUrl = n => `https://github.com/jonalm/ChainTables/blob/main/docs/adr/${ADR[n]}.md`;
+
+// x, y = centre in diagram coordinates; w defaults to 160.
+const N = {
+  bucket: {x:115,y:70, label:"Bucket", jl:"ChainTables.Bucket", adr:["0029"], avoid:"site, deployment, chain config, environment",
+    def:"Where chains live: one S3 bucket holds many chains, each under its own prefix. Also the plain-data value that describes one: name, region, gateway (if any) and profile. Those facts must agree, so they travel together. It holds no credentials and does no I/O."},
+  gateway: {x:325,y:70, label:"Gateway", sub:"Lambda function", adr:["0028","0035","0036","0037","0038","0039"], avoid:"server, proxy, API, write service",
+    def:"The one function that may fill a slot in a gateway bucket. It checks that the caller may write under the prefix and that the record's author is the caller, and it refuses bytes no client could decode. It does not validate content: a malformed record is still the committer's bug. It never authors, and it is on the commit path only; reads go straight to the bucket. A chain copied to a plain bucket is the same chain. Clients reach it through Chain(…; gateway = url)."},
+  prefix: {x:115,y:150, label:"Prefix", sub:"experiments/run-7", adr:["0031","0034"], avoid:"chain name, path, folder",
+    def:"Where a chain lives inside a bucket. (bucket, prefix) is its full address. Opaque text: slashes mean nothing, and nested prefixes hold unrelated chains. Segments are lowercase and portable to every filesystem because slot keys become record-cache paths."},
+  chain: {x:325,y:150, label:"Chain", jl:"ChainTables.Chain", adr:["0011","0019"], avoid:"log, stream, ledger, history",
+    def:"The totally ordered, append-only sequence of transaction records under one prefix. The Julia Chain value is its location and configuration: constructing one does no I/O. Only create_chain writes slot 0."},
+  chainid: {x:100,y:225,w:140, label:"Chain id", adr:["0011"], avoid:"prefix, path, name, uuid",
+    def:"What a chain is called. Minted at creation and carried in every record. A chain copied elsewhere keeps its id. The id says which chain; the prefix says where it is."},
+  reserved: {x:340,y:225,w:140, label:"Reserved name", adr:["0011"], avoid:"metadata object, sidecar",
+    def:"Anything under a prefix that is not a twelve-digit slot key. Clients ignore it, so whatever a later version keeps there cannot break an earlier one."},
+  slot: {x:210,y:300,w:370,h:46, label:"Slot", strip:true, adr:["0002","0011","0012"], avoid:"index, offset, sequence",
+    def:"One position in the chain, at key <prefix>/000000000042. At most one record ever occupies a slot, a record never moves, and there are no gaps. Head discovery gallops over slot keys with stat probes, and every object is write-once."},
+  record: {x:210,y:395,w:250,h:44, label:"Transaction record", sub:"one CBOR map, immutable", jl:"Record", adr:["0006","0025"], avoid:"commit object, changeset, event, patch",
+    def:"One immutable object in the chain. It holds the ops of one commit, the previous record's hash, the state fingerprint after apply, the author and an optional comment. Genesis (slot 0) has zero ops; every later record has at least one. The record is the only grouping of ops."},
+  txhash: {x:80,y:475,w:120, label:"Transaction hash", jl:"TransactionHash", adr:["0006"], avoid:"record hash, digest, id",
+    def:"SHA-256 of a record's stored bytes, with a domain separator. The next record carries it as prev_hash; a record never carries its own. No client ever re-encodes another's bytes, so the hash is checked by rehashing what was received."},
+  author: {x:210,y:475,w:110, label:"Author", sub:"client.user", adr:["0028"], avoid:"committer, owner, principal",
+    def:"Who committed a record. On a plain bucket it is advisory: whatever the process said. On a gateway bucket the gateway verifies it equals the caller before the slot is filled."},
+  op: {x:340,y:475,w:110, label:"Op", sub:"7 kinds", jl:"Op", adr:["0005","0025"], avoid:"statement, command, mutation, query",
+    def:"One structured change inside a record: create_table, add_column, drop_column, drop_table, insert, update or delete. It holds literal typed values only and is applied without evaluating anything. It is never query-language text. Apply re-validates every op."},
+  deleterows: {x:340,y:555,w:110, label:"Delete rows", adr:["0025"], avoid:"bare delete, drop, purge",
+    def:"An op that removes a named row set from the content. It never destroys a transaction record; the chain only grows."},
+  guarantee: {x:115,y:640,w:170, label:"Assumed guarantee", sub:"assume_first_writer_wins", adr:["0016"], avoid:"override, flag, unsafe mode",
+    def:"A promise about the environment that ChainTables cannot check, made by setting a named field. It lets a client commit to a non-AWS store, where commit would otherwise raise UnsupportedStoreError. Named for the promise, not for the rule it lifts."},
+
+  profile: {x:590,y:70, label:"Profile", sub:"AWS CLI profile name", adr:["0029"], avoid:"account, credentials, role",
+    def:"The name of an AWS CLI profile on one user's machine. Its login yields the credentials a client signs with, scoped to one bucket and its gateway. A name, never credentials."},
+  login: {x:590,y:140, label:"Login", jl:"sso_login(bucket)", adr:["0029"], avoid:"sign-in, authentication, refresh",
+    def:"Starting the AWS CLI session behind a profile. It opens a browser and blocks, so it is always asked for. No sync, commit or read triggers one; an expired session raises instead."},
+  objectstore: {x:590,y:215,w:240, label:"Object store", sub:"fetch · put-if-absent · stat · list", jl:"AbstractObjectStore", adr:["0010","0016"], avoid:"backend, adapter, driver",
+    def:"The four operations ChainTables needs of a bucket, defined as ChainTables' own interface so that implementations are interchangeable: the S3 client, GatewayObjectStore (puts go through the gateway) and Testing.InMemoryObjectStore. There is no delete. Put-if-absent carries the whole design: a store that overwrites instead of failing splits the chain, which is why only AWS S3 is supported."},
+  recordcache: {x:590,y:300, label:"Record cache", sub:"machine-wide, disposable", adr:["0010","0040"], avoid:"blob cache, mirror, store",
+    def:"The machine-wide directory of fetched records, keyed by namespace, bucket and key. A hit is never re-asked of the store, because a slot's bytes are immutable by protocol. It is still not the chain's word: a cached record is applied only once a record from the store names it, and sync! refetches a failing hit before blaming the chain."},
+  statefp: {x:590,y:395, label:"State fingerprint", sub:"two-level hash of content", jl:"StateFingerprint", adr:["0007"], avoid:"checksum, merkle root, state hash",
+    def:"A canonical hash of all content after a record is applied: every table's shape and rows, each row with its row slot. The committer stamps it into the record. Other clients compare it at each checkpoint, not after every record. A mismatch is divergence. It hashes derived content; the transaction hash covers stored bytes."},
+  commit: {x:590,y:640, label:"Commit", jl:"commit!(w)", adr:["0002","0009","0016"], avoid:"push, upload, write, publish",
+    def:"Adding a record to the chain: one conditional put to the next slot. It succeeds only if nobody claimed that slot first. A lost race raises LostRaceError and is never retried. Commit does not sync; a stale head raises StaleHeadError. The new head file is written only after the put succeeds."},
+
+  client: {x:890,y:70, label:"Client", sub:"one process", adr:["0019"], avoid:"user, node, peer, replica",
+    def:"One process with its own local copy and access to the machine's record cache. Clients never talk to each other. They agree only through the chain."},
+  sync: {x:890,y:215, label:"Sync", jl:"sync!(copy)", adr:["0012","0013","0040"], avoid:"pull, update, refresh",
+    def:"Bringing a local copy up to the chain's head: check that the copy's own head record is still there, find the chain's head with stat probes, fetch the records after it and replay them. Always asked for, never implicit, and true only as of the moment it finished."},
+  head: {x:1085,y:215,w:120, label:"Head", adr:["0013"], avoid:"tip, latest, current, HEAD",
+    def:"The last transaction record a given client has applied, recorded in its head file. The chain's own head is its last record; a client's head lags it until the next sync. A write builder is bound to the copy's head, which is what StaleHeadError compares."},
+  determinism: {x:1280,y:215, w:170, label:"Replay determinism", adr:["0022"], avoid:"reproducibility, idempotency",
+    def:"Every client applying the same records gets the same content and the same fingerprint. It depends only on the record format and the frozen encoder, not on the machine, so it holds wherever the package runs."},
+  replay: {x:890,y:300, label:"Replay", jl:"Ops.apply!", adr:["0013","0022"], avoid:"materialize, rehydrate, project",
+    def:"Applying the ops of a run of records, in chain order, to an in-memory model of the content. Shape is derived the same way, so replaying to an earlier point gives the shape every table had then."},
+  checkpoint: {x:1085,y:300, label:"Checkpoint", adr:["0013"], avoid:"flush, save, snapshot",
+    def:"Writing the table files and a head file for the record a replay has reached. It happens at the end of a replay and at amortized points in long ones, and it is where the fingerprint is compared with the record's."},
+  localcopy: {x:890,y:400, label:"Local copy", jl:"ChainTables.open(chain, dir)", adr:["0023"], avoid:"database, cache, mirror, replica",
+    def:"The directory a client builds by replay: one table file per table and one head file. Derived state, always rebuildable, all of it deletable. Its layout version is local, never a property of the chain: a client that meets another layout version rebuilds or refuses, and never migrates."},
+  headfile: {x:1085,y:400, label:"Head file", sub:"heads/000000000042", adr:["0023","0009"], avoid:"manifest, index, catalog",
+    def:"Says which record the content is the result of and which table file holds each table. Named by slot, written once, and written after every table file it names, so a head that exists names complete files. Everything a client keeps for itself lives here."},
+  tablefile: {x:1280,y:400, label:"Table file", sub:"tables/<sha256>", adr:["0023","0007"], avoid:"data file, page, segment",
+    def:"One table's content: exactly the bytes its table_hash covers, so the file is named by its own hash. Written once, never changed. A changed table gets a new file, and tables with identical content share one."},
+  tableview: {x:890,y:490, label:"Table view", jl:"table(copy, :name)", adr:["0024"], avoid:"snapshot, query result, cursor, dataframe",
+    def:"A read of one table, fixed at the head the copy had when the view was taken. It is the only way to read content, and it implements Tables.jl. A later sync or commit leaves existing views unchanged, and nothing done to a view reaches the copy."},
+  rowslot: {x:1085,y:490, label:"Row slot", jl:"table_with_slots(v)._slot", adr:["0032"], avoid:"version, revision, timestamp, etag",
+    def:"The slot of the last record that changed a row's cells: an insert or update naming it, or a column op on its table. It is content, stored with the row and inside the fingerprint. Never 0, never above the head."},
+  pinned: {x:1280,y:490, label:"Pinned copy", jl:"pin! / unpin!", adr:["0015"], avoid:"snapshot, frozen copy",
+    def:"A local copy deliberately held at a chosen record. It never advances and never commits until unpinned: sync!, commit! and write_builder raise PinnedCopyError."},
+  pitr: {x:1280,y:575, w:170, label:"Point-in-time rebuild", jl:"as_of(chain, slot)", adr:["0015"], avoid:"time travel, checkout",
+    def:"A replay that stops at a chosen record, by slot or transaction hash and never by wall-clock time, producing the copy as it stood then."},
+  writebuilder: {x:890,y:640, label:"Write builder", jl:"write_builder(copy)", adr:["0001"], avoid:"DSL, query builder, ORM",
+    def:"The only way to create a record. Made from a local copy and bound to its head, it is a value that collects the ops of one record through plain functions (create_table!, insert_rows!, update_rows!, delete_rows!). Structural mistakes fail in the call that makes them. Committing consumes it, and it is never re-run."},
+  rowset: {x:1085,y:640, label:"Row set", adr:["0005"], avoid:"predicate, filter, where clause",
+    def:"The explicit rows an op names, computed by the client against its own local copy before the record exists. A record carries the rows found, never the condition that found them."},
+  shape: {x:890,y:730, label:"Shape", jl:"column! / primary_key!", adr:["0003"], avoid:"schema, DDL, layout",
+    def:"What a table declaration may state: columns, their value types, nullability and the primary key. No defaults. Anything that restricts which content is allowed is policy, and the chain carries no policy."},
+  valuetype: {x:1085,y:730, label:"Value type", sub:"int64·float64·text·bytes", adr:["0025"], avoid:"storage class, column type",
+    def:"One of the four kinds a column may hold: int64, float64, text or bytes. Each admits its whole domain (float64 includes NaN and ±Inf). Null belongs to none of them."},
+  typedvalue: {x:1280,y:730, label:"Typed value", adr:["0022","0025"], avoid:"literal, raw value, cell",
+    def:"A value of one of the four value types. It goes from record to fingerprint without being converted, rendered or parsed. Null is not a typed value: it is the absence a nullable column allows, read as missing."},
+};
+
+// [from, to, label, flows, opts]
+// opts: p:[x1,y1,x2,y2] fixed endpoints; bend:dy vertical curve; q:[cx,cy,x1,y1,x2,y2] explicit curve;
+//       at:[x,y] label position; anchor: text-anchor; dash: dashed line
+const E = [
+  ["bucket","gateway","pairs 1:1",[]],
+  ["bucket","profile","reached with",[],{bend:-30}],
+  ["bucket","chain","holds many",[]],
+  ["chain","prefix","lives at",[]],
+  ["chainid","chain","names",[]],
+  ["reserved","chain","ignored, under prefix",[]],
+  ["chain","slot","ordered slots",[],{p:[292,170,214,277], at:[220,224]}],
+  ["slot","record","≤ 1 per slot",["sync"],{p:[262,323,262,373], at:[262,351]}],
+  ["record","txhash","hashed as bytes",[]],
+  ["record","author","",[]],
+  ["record","op","carries",[]],
+  ["op","deleterows","e.g.",[]],
+  ["record","statefp","carries",["sync","commit"]],
+  ["profile","login","session from",[],{at:[598,110], anchor:"start"}],
+  ["login","objectstore","signs with",[],{at:[598,180], anchor:"start"}],
+  ["objectstore","slot","4 ops",["sync","commit"],{p:[470,222,388,290]}],
+  ["objectstore","gateway","puts via",["commit"],{p:[480,193,398,90]}],
+  ["objectstore","recordcache","fetched into",["sync"],{at:[598,262], anchor:"start"}],
+  ["client","sync","asks for",["sync"]],
+  ["sync","objectstore","probe, fetch",["sync"]],
+  ["sync","head","advances",["sync"]],
+  ["recordcache","replay","hash-checked",["sync"]],
+  ["sync","replay","then",["sync"]],
+  ["determinism","replay","property of",[]],
+  ["replay","checkpoint","",["sync"]],
+  ["checkpoint","statefp","compared with",["sync"],{p:[1010,320,674,395], at:[842,356]}],
+  ["checkpoint","localcopy","writes",["sync"]],
+  ["localcopy","headfile","",["sync","read"]],
+  ["headfile","tablefile","names",["sync","read"],{at:[1182,388]}],
+  ["localcopy","tableview","read via",["read","commit"]],
+  ["tableview","rowslot","opt-in",["read"]],
+  ["localcopy","pinned","held at a slot",["read"]],
+  ["pitr","pinned","as_of",["read"]],
+  ["localcopy","writebuilder","",["commit"],{q:[742,520,812,421,812,619]}],
+  ["tableview","rowset","rows found here",["commit"]],
+  ["writebuilder","rowset","",["commit"]],
+  ["writebuilder","commit","consumed by",["commit"]],
+  ["commit","statefp","stamps",["commit"],{at:[590,519]}],
+  ["commit","slot","put-if-absent → next slot",["commit"],{p:[515,621,357,324], at:[468,531]}],
+  ["guarantee","commit","permits non-AWS",[]],
+  ["writebuilder","shape","declares",["commit"]],
+  ["shape","valuetype","",[]],
+  ["valuetype","typedvalue","admits",[]],
+  ["rowset","typedvalue","values are",["commit"]],
+];
+
+const FLOWS = {
+  sync: {color:"var(--sync)", nodes:["client","sync","head","objectstore","slot","record","recordcache","replay","statefp","checkpoint","localcopy","headfile","tablefile"],
+    title:"Tracing sync!", steps:[
+      "<code>sync!(copy)</code> is always asked for, never implicit.",
+      "Re-fetch the copy's own head slot. A record there with a different hash means a rewritten chain.",
+      "Find the chain's head by galloping stat probes over slot keys. Nothing is listed.",
+      "Fetch the records after the copy's head through the record cache. A cached record is used only once a record fetched from the store names it.",
+      "Check each record's chain id, and its <code>prev_hash</code> against the hash of the bytes before it.",
+      "Replay: apply each record's ops in memory, re-validating every op.",
+      "Checkpoint at the end, and at amortized points in a long replay: write the table files, then the head file that names them. Each checkpoint's fingerprint is compared with its record's; a mismatch is divergence."]},
+  commit: {color:"var(--commit)", nodes:["localcopy","tableview","writebuilder","rowset","shape","typedvalue","commit","statefp","record","slot","objectstore","gateway"],
+    title:"Tracing write + commit!", steps:[
+      "<code>write_builder(copy)</code> binds the copy's head. Content is read through table views, and row sets are computed there, against this copy.",
+      "Builder calls collect the ops. A structural mistake fails in the call that makes it.",
+      "<code>commit!(w)</code> refuses a spent or empty builder, or one behind the copy.",
+      "Pre-checks: re-fetch the head's record and compare its fingerprint with the head's, then stat the next slot. A taken slot is <code>StaleHeadError</code>, and nothing is applied.",
+      "Apply the ops (the state gate), write the touched table files, and stamp the fingerprint taken from them into the record.",
+      "Put-if-absent to the next slot, directly or through the gateway, which verifies the author.",
+      "Only after the put succeeds is the new head file written. If another client got the slot first: <code>LostRaceError</code>. The builder is spent; sync and build again."]},
+  read: {color:"var(--read)", nodes:["localcopy","headfile","tablefile","tableview","rowslot","pinned","pitr"],
+    title:"Tracing reads and as_of", steps:[
+      "<code>table(copy, :name)</code> returns a view fixed at the head the copy had when it was taken.",
+      "The head file names which table file holds the table; the file's name is its hash.",
+      "Later syncs and commits don't move existing views.",
+      "<code>table_with_slots</code> exposes each row's row slot.",
+      "<code>as_of(chain, slot)</code> rebuilds the content at an earlier record as a pinned copy, addressed by slot or transaction hash, never by time."]},
+};
+
+const svg = document.getElementById("map");
+const NS = "http://www.w3.org/2000/svg";
+const mk = (tag, attrs = {}, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; };
+for (const id in N) { const n = N[id]; n.id = id; n.w ??= 160; n.h ??= n.sub ? 44 : 38; }
+
+// Zones
+const ZONES = [[10,430,"S3 bucket · the agreed chain"],[445,745,"Between bucket and client"],[760,1370,"Client process · derived, local"]];
+const root = mk("g", {transform:"translate(0,18)"}, svg);
+for (const [a,b,t] of ZONES) {
+  mk("rect", {x:a, y:4, width:b-a, height:766, rx:4, class:"zone-bg"}, root);
+  mk("text", {x:a+12, y:22, class:"zone-lbl"}, root).textContent = t;
+}
+const defs = mk("defs", {}, svg);
+const marker = (name, color) => { const m = mk("marker", {id:name, viewBox:"0 0 10 10", refX:9, refY:5, markerWidth:7, markerHeight:7, orient:"auto-start-reverse"}, defs); mk("path", {d:"M0,0 L10,5 L0,10 z", style:`fill:${color}`}, m); };
+marker("ah", "var(--line)"); marker("ah-sync", "var(--sync)"); marker("ah-commit", "var(--commit)"); marker("ah-read", "var(--read)");
+
+function clip(n, tx, ty) {  // point on n's rect boundary towards (tx,ty)
+  const dx = tx - n.x, dy = ty - n.y, hw = n.w/2 + 3, hh = n.h/2 + 3;
+  const s = Math.min(Math.abs(dx) ? hw/Math.abs(dx) : Infinity, Math.abs(dy) ? hh/Math.abs(dy) : Infinity);
+  return [n.x + dx*s, n.y + dy*s];
+}
+
+const edgeG = mk("g", {}, root), nodeG = mk("g", {}, root);
+const edgeEls = E.map(([f,t,label,flows,o={}]) => {
+  const a = N[f], b = N[t], g = mk("g", {class:"edge"}, edgeG);
+  let d, lx, ly;
+  if (o.p) { const [x1,y1,x2,y2] = o.p; d = `M${x1},${y1} L${x2},${y2}`; lx = (x1+x2)/2; ly = (y1+y2)/2; }
+  else if (o.q) { const [cx,cy,x1,y1,x2,y2] = o.q; d = `M${x1},${y1} Q${cx},${cy} ${x2},${y2}`; lx = cx; ly = cy; }
+  else if (o.bend) {
+    const cx = (a.x+b.x)/2, cy = (a.y+b.y)/2 + o.bend*2;
+    const [x1,y1] = clip(a, cx, cy), [x2,y2] = clip(b, cx, cy);
+    d = `M${x1},${y1} Q${cx},${cy} ${x2},${y2}`; lx = cx; ly = (y1+y2)/4 + cy/2;
+  } else {
+    const [x1,y1] = clip(a, b.x, b.y), [x2,y2] = clip(b, a.x, a.y);
+    d = `M${x1},${y1} L${x2},${y2}`; lx = (x1+x2)/2; ly = (y1+y2)/2;
+  }
+  if (o.at) [lx, ly] = o.at;
+  const p = mk("path", {d, "marker-end":"url(#ah)"}, g);
+  if (label) mk("text", {x:lx, y:ly+3.5, "text-anchor":o.anchor || "middle"}, g).textContent = label;
+  return {g, p, f, t, flows};
+});
+
+// Slot strip
+const sl = N.slot, stripG = mk("g", {class:"node", tabindex:0, role:"button", "aria-label":"Slot", "data-id":"slot"}, nodeG);
+mk("rect", {x:sl.x-sl.w/2-6, y:sl.y-sl.h/2-6, width:sl.w+12, height:sl.h+12, rx:4, style:"fill:transparent;stroke:transparent"}, stripG);
+const boxes = [["…000","genesis"],["…001",""],["…002",""],["…003","next?"]];
+const bw = 76, gap = (sl.w - 4*bw)/3, x0 = sl.x - sl.w/2;
+boxes.forEach(([k,s],i) => {
+  const bx = x0 + i*(bw+gap), g = mk("g", {class:"slotbox" + (i===3?" next":"")}, stripG);
+  mk("rect", {x:bx, y:sl.y-sl.h/2, width:bw, height:sl.h, rx:3}, g);
+  mk("text", {x:bx+bw/2, y:sl.y-2, "text-anchor":"middle"}, g).textContent = k;
+  if (s) mk("text", {x:bx+bw/2, y:sl.y+13, "text-anchor":"middle", style:"fill:var(--muted);font-size:9.5px"}, g).textContent = s;
+  if (i > 0 && i < 3) mk("path", {d:`M${bx},${sl.y} L${bx-gap+2},${sl.y}`, class:"prevh", "marker-end":"url(#ah)"}, stripG);
+});
+mk("text", {x:x0+bw+gap/2, y:sl.y-sl.h/2-5, "text-anchor":"middle", style:"font:9.5px var(--f-mono);fill:var(--muted)"}, stripG).textContent = "prev_hash";
+mk("text", {x:x0, y:sl.y+sl.h/2+15, style:"font:600 12px var(--f-body);fill:var(--ink)"}, stripG).textContent = "Slots: <prefix>/000000000042";
+
+for (const id in N) {
+  const n = N[id]; if (n.strip) { n.el = stripG; continue; }
+  const g = mk("g", {class:"node", tabindex:0, role:"button", "aria-label":n.label, "data-id":id}, nodeG);
+  mk("rect", {x:n.x-n.w/2, y:n.y-n.h/2, width:n.w, height:n.h, rx:4}, g);
+  mk("text", {x:n.x, y:n.y + (n.sub ? -3 : 4.5), "text-anchor":"middle"}, g).textContent = n.label;
+  if (n.sub) mk("text", {x:n.x, y:n.y+12, "text-anchor":"middle", class:"sub"}, g).textContent = n.sub;
+  n.el = g;
+}
+
+// Interaction
+const panel = document.getElementById("panel");
+const narrow = window.matchMedia("(max-width: 1100px)");
+const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+let flow = "", sel = null;
+const esc = s => s.replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const reveal = () => { if (narrow.matches) panel.scrollIntoView({block:"start", behavior: reduced.matches ? "auto" : "smooth"}); };
+
+function neighbours(id) {
+  const out = new Set();
+  for (const [f,t] of E) { if (f===id) out.add(t); if (t===id) out.add(f); }
+  return [...out];
+}
+function showNode(id) {
+  sel = id; const n = N[id];
+  for (const k in N) N[k].el.classList.toggle("sel", k===id);
+  panel.innerHTML = `
+    <div class="eyebrow">Concept</div>
+    <h2>${esc(n.label)}</h2>
+    ${n.jl ? `<div class="julia">${esc(n.jl)}</div>` : ""}
+    <p>${esc(n.def)}</p>
+    <div class="avoid">Avoid: ${n.avoid.split(", ").map(w=>`<s>${esc(w)}</s>`).join(", ")}</div>
+    <div class="chips">${n.adr.map(a=>`<a class="chip" href="${adrUrl(a)}" target="_blank" rel="noopener">ADR-${a}</a>`).join("")}</div>
+    <div class="eyebrow">Connected to</div>
+    <div class="chips">${neighbours(id).map(k=>`<button class="chip" data-go="${k}">${esc(N[k].label)}</button>`).join("")}</div>`;
+}
+function showFlow(f) {
+  const F = FLOWS[f];
+  for (const k in N) N[k].el.classList.remove("sel");
+  panel.innerHTML = `<div class="eyebrow">Path</div><h2 style="color:${F.color}">${F.title}</h2>
+    <ol class="steps" style="--c:${F.color}">${F.steps.map(s=>`<li>${s}</li>`).join("")}</ol>
+    <p class="avoid">Click any box for its definition.</p>`;
+}
+function showIntro() {
+  panel.innerHTML = `<div class="eyebrow">How to read this</div><h2>Three places, one agreement</h2>
+    <p><b>Left:</b> the chain in S3, the only shared truth. It is immutable and only grows.</p>
+    <p><b>Middle:</b> what sits between bucket and client. The object store, whose four operations are the only way in and can be swapped for the gateway or a test store; the record cache of fetched records; and the fingerprint that a record carries and a client recomputes.</p>
+    <p><b>Right:</b> what one client derives for itself. All of it can be rebuilt from the chain.</p>
+    <p class="avoid">Pick a path above, or click a box.</p>`;
+}
+function applyFlow() {
+  const F = FLOWS[flow];
+  const lit = F ? new Set(F.nodes) : null;
+  for (const k in N) {
+    const el = N[k].el; el.classList.toggle("dim", !!F && !lit.has(k)); el.classList.toggle("lit", !!F && lit.has(k));
+    el.style.setProperty("--c", F ? F.color : "");
+  }
+  for (const e of edgeEls) {
+    const on = F && e.flows.includes(flow);
+    e.g.classList.toggle("dim", !!F && !on); e.g.classList.toggle("lit", !!on);
+    e.g.style.setProperty("--c", F ? F.color : "");
+    e.p.setAttribute("marker-end", on ? `url(#ah-${flow})` : "url(#ah)");
+  }
+}
+document.querySelectorAll(".flow-btn").forEach(b => b.addEventListener("click", () => {
+  flow = b.dataset.flow;
+  document.querySelectorAll(".flow-btn").forEach(x => x.setAttribute("aria-pressed", String(x===b)));
+  applyFlow(); flow ? showFlow(flow) : (sel ? showNode(sel) : showIntro());
+}));
+nodeG.addEventListener("click", e => { const g = e.target.closest(".node"); if (g) { showNode(g.dataset.id); reveal(); } });
+nodeG.addEventListener("keydown", e => { if ((e.key==="Enter"||e.key===" ") && e.target.dataset.id) { e.preventDefault(); showNode(e.target.dataset.id); reveal(); } });
+panel.addEventListener("click", e => { const b = e.target.closest("[data-go]"); if (b) showNode(b.dataset.go); });
+showIntro();
+</script>
