@@ -39,7 +39,14 @@ pkg="$build/pkg"
 [ -n "$out" ] || out="$build/gateway-$arch.zip"
 case "$out" in /*) ;; *) out="$PWD/$out" ;; esac   # zip runs from inside the package dir
 command -v uv >/dev/null || { echo "build.sh: uv is required (https://docs.astral.sh/uv/)" >&2; exit 1; }
-if [ -n "$policy" ] && [ ! -f "$policy" ]; then echo "build.sh: policy file $policy not found" >&2; exit 1; fi
+if [ -n "$policy" ]; then
+    [ -f "$policy" ] || { echo "build.sh: policy file $policy not found" >&2; exit 1; }
+    # Load it as the gateway will at cold start, so a bad pin or glob fails here, before anything is built.
+    uv run --directory "$here" --frozen --quiet python -c \
+        'import sys, handler
+try: handler.Policy.from_file(sys.argv[1])
+except handler.PolicyError as e: sys.exit(f"build.sh: {e}")' "$(cd "$(dirname "$policy")" && pwd)/$(basename "$policy")"
+fi
 
 rm -rf "$pkg"
 mkdir -p "$pkg"
@@ -52,7 +59,6 @@ uv pip install \
 
 cp "$here/handler.py" "$pkg/handler.py"
 if [ -n "$policy" ]; then
-    python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$policy"  # fail here, not at cold start
     cp "$policy" "$pkg/policy.json"
 fi
 find "$pkg" -name '__pycache__' -type d -prune -exec rm -rf {} +

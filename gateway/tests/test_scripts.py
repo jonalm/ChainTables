@@ -4,6 +4,7 @@ against a fake `aws` on PATH that logs every call."""
 
 import json
 import os
+import shutil
 import subprocess
 
 import pytest
@@ -217,3 +218,24 @@ def test_deploy_refuses_to_merge_a_statement_without_a_sid(tmp_path):
     assert r.returncode != 0
     assert "has a statement without a Sid, which cannot be merged" in r.stderr
     assert not [c for c in calls if c[:2] == ["s3api", "put-bucket-policy"]]
+
+
+# build.sh checks the policy as the gateway will load it, before it resolves or installs
+# anything: a fake `uv` on PATH passes `uv run` through and fails every other subcommand.
+
+@pytest.mark.parametrize("doc, problem", [
+    ("{not json", "is not JSON"),
+    (json.dumps({"format_version": 1, "rules": [{"prefix": "teams/?", "writers": ["a"]}]}), "'*' is the only wildcard"),
+])
+def test_build_refuses_a_policy_the_gateway_would_refuse_before_installing_anything(tmp_path, doc, problem):
+    real_uv = shutil.which("uv")
+    (tmp_path / "uv").write_text(f'#!/usr/bin/env bash\n[ "$1" = run ] && exec {real_uv} "$@"\n'
+                                 'echo "fake uv: $1 must not run" >&2; exit 99\n')
+    (tmp_path / "uv").chmod(0o755)
+    (tmp_path / "policy.json").write_text(doc)
+    r = subprocess.run(["bash", os.path.join(HERE, "build.sh"), "--policy", str(tmp_path / "policy.json"),
+                        "--out", str(tmp_path / "gw.zip")],
+                       capture_output=True, text=True, env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"})
+    assert r.returncode != 0
+    assert problem in r.stderr and "fake uv" not in r.stderr
+    assert not (tmp_path / "gw.zip").exists()
