@@ -83,29 +83,99 @@ def test_print_policies_without_a_required_argument_fails():
 
 
 # A fake AWS CLI: logs its argv one call per line (arguments NUL-separated), answers what
-# deploy.sh reads, and reports an existing bucket, role, function and URL. The bucket's
-# Object Lock state, its policy and the function's resource policy come from FAKE_LOCK,
-# FAKE_BUCKET_POLICY and FAKE_LAMBDA_POLICY; unset, it has none, and the fake fails as AWS
-# does; `denied` fails as AWS does for a caller without the right.
-FAKE_AWS = r"""#!/usr/bin/env bash
-printf '%s\0' "$@" >> "$FAKE_AWS_LOG"; printf '\n' >> "$FAKE_AWS_LOG"
-case "$1 $2" in
-    "sts get-caller-identity") case "$*" in *Account*) echo 111122223333 ;; *) echo arn:aws:iam::111122223333:user/admin ;; esac ;;
-    "lambda get-function-url-config") case "$*" in *AuthType*) echo AWS_IAM ;; *) echo https://abc.lambda-url.eu-north-1.on.aws/ ;; esac ;;
-    "lambda get-policy")
-        [ -n "${FAKE_LAMBDA_POLICY:-}" ] || { echo "An error occurred (ResourceNotFoundException) when calling the GetPolicy operation: The resource you requested does not exist." >&2; exit 254; }
-        [ "$FAKE_LAMBDA_POLICY" != denied ] || { echo "An error occurred (AccessDeniedException) when calling the GetPolicy operation" >&2; exit 254; }
-        echo "$FAKE_LAMBDA_POLICY" ;;
-    "s3api get-object-lock-configuration")
-        [ -n "${FAKE_LOCK:-}" ] || { echo "An error occurred (ObjectLockConfigurationNotFoundError) when calling the GetObjectLockConfiguration operation" >&2; exit 254; }
-        [ "$FAKE_LOCK" != denied ] || { echo "An error occurred (AccessDenied) when calling the GetObjectLockConfiguration operation" >&2; exit 254; }
-        echo "$FAKE_LOCK" ;;
-    "s3api get-bucket-policy")
-        [ -n "${FAKE_BUCKET_POLICY:-}" ] || { echo "An error occurred (NoSuchBucketPolicy) when calling the GetBucketPolicy operation" >&2; exit 254; }
-        [ "$FAKE_BUCKET_POLICY" != denied ] || { echo "An error occurred (AccessDenied) when calling the GetBucketPolicy operation" >&2; exit 254; }
-        echo "$FAKE_BUCKET_POLICY" ;;
-esac
+# deploy.sh and setup-locked-bucket.sh read, and reports an existing bucket configured to the
+# locked-bucket spec, KMS key, role, function and URL. The bucket's Object Lock state, its
+# policy and the function's resource policy are files in FAKE_AWS_STATE (`lock`,
+# `bucket-policy`, `lambda-policy`); absent or empty, there is none and the fake fails as AWS
+# does; `denied` fails as AWS does for a caller without the right. A put-bucket-policy is
+# kept, so a later read sees it. Every put-object and delete-object is denied, as the locked
+# bucket's policy denies the probes.
+FAKE_AWS = r"""#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ["FAKE_AWS_LOG"], "a") as f:
+    f.write("".join(a + "\0" for a in args) + "\n")
+state = os.environ["FAKE_AWS_STATE"]
+ACCOUNT, KEY_ARN = "111122223333", "arn:aws:kms:eu-north-1:111122223333:key/k1"
+def opt(name):
+    return args[args.index(name) + 1] if name in args else None
+def fail(code, op):
+    sys.stderr.write(f"An error occurred ({code}) when calling the {op} operation\n")
+    sys.exit(254)
+def stored(name, missing, op):
+    path = os.path.join(state, name)
+    v = open(path).read() if os.path.exists(path) else ""
+    if not v:
+        fail(missing, op)
+    if v == "denied":
+        fail("AccessDeniedException" if name == "lambda-policy" else "AccessDenied", op)
+    return v
+def answer(doc):
+    q = opt("--query")
+    if q:
+        for part in q.split("."):
+            doc = doc[part]
+        print(doc)
+    else:
+        print(json.dumps(doc))
+cmd = " ".join(args[:2])
+if cmd == "sts get-caller-identity":
+    answer({"Account": ACCOUNT, "Arn": f"arn:aws:iam::{ACCOUNT}:user/admin"})
+elif cmd == "lambda get-function-url-config":
+    answer({"FunctionUrl": "https://abc.lambda-url.eu-north-1.on.aws/", "AuthType": "AWS_IAM"})
+elif cmd == "lambda get-policy":
+    answer({"Policy": stored("lambda-policy", "ResourceNotFoundException", "GetPolicy")})
+elif cmd == "lambda invoke":
+    with open(args[-1], "w") as f:
+        json.dump({"statusCode": 403, "body": json.dumps({"code": "not_allowed", "message": "fake"})}, f)
+    print(json.dumps({"StatusCode": 200}))
+elif cmd == "s3api get-object-lock-configuration":
+    answer({"ObjectLockConfiguration": {"ObjectLockEnabled": stored("lock", "ObjectLockConfigurationNotFoundError",
+                                                                    "GetObjectLockConfiguration")}})
+elif cmd == "s3api get-bucket-policy":
+    answer({"Policy": stored("bucket-policy", "NoSuchBucketPolicy", "GetBucketPolicy")})
+elif cmd == "s3api put-bucket-policy":
+    with open(os.path.join(state, "bucket-policy"), "w") as f:
+        f.write(opt("--policy"))
+elif cmd == "s3api get-public-access-block":
+    answer({"PublicAccessBlockConfiguration": {k: True for k in (
+        "BlockPublicAcls", "IgnorePublicAcls", "BlockPublicPolicy", "RestrictPublicBuckets")}})
+elif cmd == "s3api get-bucket-ownership-controls":
+    answer({"OwnershipControls": {"Rules": [{"ObjectOwnership": "BucketOwnerEnforced"}]}})
+elif cmd == "s3api get-bucket-versioning":
+    answer({"Status": "Enabled"})
+elif cmd == "s3api get-bucket-encryption":
+    answer({"ServerSideEncryptionConfiguration": {"Rules": [{"ApplyServerSideEncryptionByDefault": {
+        "SSEAlgorithm": "aws:kms", "KMSMasterKeyID": KEY_ARN}, "BucketKeyEnabled": True}]}})
+elif cmd == "s3api get-bucket-lifecycle-configuration":
+    fail("NoSuchLifecycleConfiguration", "GetBucketLifecycleConfiguration")
+elif cmd in ("s3api put-object", "s3api delete-object"):
+    fail("AccessDenied", "PutObject" if args[1] == "put-object" else "DeleteObject")
+elif cmd == "kms list-aliases":
+    print("k1")
+elif cmd == "kms describe-key":
+    answer({"KeyMetadata": {"Arn": KEY_ARN, "KeyState": "Enabled"}})
 """
+
+
+def fake_aws(tmp_path, lock="", bucket_policy="", lambda_policy=""):
+    """Puts the fake on a PATH in tmp_path with the given state; returns the environment and the log."""
+    (tmp_path / "aws").write_text(FAKE_AWS)
+    (tmp_path / "aws").chmod(0o755)
+    state = tmp_path / "state"
+    state.mkdir()
+    for name, v in (("lock", lock), ("bucket-policy", bucket_policy), ("lambda-policy", lambda_policy)):
+        (state / name).write_text(v)
+    log = tmp_path / "log"
+    log.write_text("")
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "FAKE_AWS_LOG": str(log),
+           "FAKE_AWS_STATE": str(state)}
+    return env, log
+
+
+def logged(log):
+    return [line.split("\0")[:-1] for line in log.read_text().splitlines()]
+
 
 LOCK_ENV = ["--env", "CHAINTABLES_KMS_KEY_ARN=arn:aws:kms:eu-north-1:111122223333:key/k",
             "--env", "CHAINTABLES_RETENTION_DAYS=7"]
@@ -124,19 +194,14 @@ def write_zip(path, handler_source=None):
 
 def run_deploy(tmp_path, *args, lock="", bucket_policy="", lambda_policy="", handler_source=None):
     """deploy.sh against the fake: returns the completed process and the logged calls."""
-    (tmp_path / "aws").write_text(FAKE_AWS)
-    (tmp_path / "aws").chmod(0o755)
+    env, log = fake_aws(tmp_path, lock, bucket_policy, lambda_policy)
     write_zip(tmp_path / "gw.zip", handler_source)
-    log = tmp_path / "log"
-    log.write_text("")
     r = subprocess.run(
         ["bash", os.path.join(HERE, "deploy.sh"), "--bucket", "bkt", "--function", "gw", "--region", "eu-north-1",
          "--role", "gw-role", "--zip", str(tmp_path / "gw.zip"), "--no-smoke", *args],
-        capture_output=True, text=True,
-        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "FAKE_AWS_LOG": str(log),
-             "FAKE_LOCK": lock, "FAKE_BUCKET_POLICY": bucket_policy, "FAKE_LAMBDA_POLICY": lambda_policy},
+        capture_output=True, text=True, env=env,
     )
-    return r, [line.split("\0")[:-1] for line in log.read_text().splitlines()]
+    return r, logged(log)
 
 
 def put_policy(calls):
@@ -358,3 +423,93 @@ def test_build_refuses_a_policy_the_gateway_would_refuse_before_installing_anyth
     assert r.returncode != 0
     assert problem in r.stderr and "fake uv" not in r.stderr
     assert not (tmp_path / "gw.zip").exists()
+
+
+# setup-locked-bucket.sh end to end against the fake: the script runs build.sh and deploy.sh
+# from its own directory, so it runs from a copy beside the real deploy.sh and a build.sh
+# stub that zips the repository's handler.py, as the real one would, without resolving wheels.
+
+BUILD_STUB = r"""#!/usr/bin/env bash
+here="$(cd "$(dirname "$0")" && pwd)"
+mkdir -p "$here/build"
+python3 -c 'import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w") as z: z.write(sys.argv[2], "handler.py")' "$here/build/gateway-arm64.zip" "$here/handler.py"
+"""
+
+
+def run_setup(tmp_path, *args, lock="Enabled", bucket_policy="", lambda_policy=""):
+    """setup-locked-bucket.sh against the fake: the completed process, the logged calls, and
+    the bucket policy the fake holds afterwards."""
+    env, log = fake_aws(tmp_path, lock, bucket_policy, lambda_policy)
+    gw = tmp_path / "gw"
+    gw.mkdir()
+    for name in ("setup-locked-bucket.sh", "deploy.sh", "handler.py"):
+        shutil.copy(os.path.join(HERE, name), gw / name)
+    (gw / "build.sh").write_text(BUILD_STUB)
+    (gw / "build.sh").chmod(0o755)
+    (tmp_path / "policy.json").write_text(json.dumps({"format_version": 1, "rules": []}))
+    r = subprocess.run(
+        ["bash", str(gw / "setup-locked-bucket.sh"), "--account", "111122223333", "--region", "eu-north-1",
+         "--bucket", "bkt", "--function", "gw", "--role", "gw-role", "--alias", "alias/chaintables",
+         "--retention-days", "1", "--policy", str(tmp_path / "policy.json"), *args],
+        capture_output=True, text=True, env=env,
+    )
+    held = (tmp_path / "state" / "bucket-policy").read_text()
+    return r, logged(log), json.loads(held) if held and held != "denied" else None
+
+
+def grant_changes(calls):
+    return [c for c in calls if c[:2] in (["lambda", "add-permission"], ["lambda", "remove-permission"])
+            or c[:2] == ["s3api", "put-bucket-policy"]]
+
+
+def test_setup_on_a_fresh_locked_bucket_passes_its_own_verification(tmp_path):
+    r, calls, held = run_setup(tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "ok: public access, ownership, versioning, Object Lock, SSE-KMS, bucket policy, lifecycle" in r.stdout
+    assert set(by_sid(held)) == {"GatewayPuts", "OnlyTheGatewayPuts", "DenyInsecureTransport", "DenyNotKms",
+                                 "DenyNoSseHeader", "DenyWrongKey", "DenyNoKeyHeader", "DenyNoRetainUntil",
+                                 "DenyNotCompliance", "DenyNoLockMode", "DenyDeleteMarkers"}
+
+
+def test_setup_keeps_the_writers_and_readers_it_is_given(tmp_path):
+    r, calls, held = run_setup(tmp_path, "--writer", W1, "--reader", OLD_READER,
+                               lambda_policy=writer_grants(W1, sids=[W1_SID]),
+                               bucket_policy=json.dumps({"Statement": [read_grant(1, OLD_READER), read_grant(2, W1)]}))
+    assert r.returncode == 0, r.stderr
+    assert not [c for c in calls if c[:2] == ["lambda", "remove-permission"]]
+    reads = {st["Principal"]["AWS"] for sid, st in by_sid(held).items() if sid.startswith("Read")}
+    assert reads == {W1, OLD_READER}
+    assert "DenyDeleteMarkers" in by_sid(held)
+
+
+def test_setup_refuses_to_drop_a_grant_it_was_not_given(tmp_path):
+    before = json.dumps({"Statement": [read_grant(1, OLD_READER)]})
+    r, calls, held = run_setup(tmp_path, lambda_policy=writer_grants(W1), bucket_policy=before)
+    assert r.returncode != 0
+    assert f"writer {W1}" in r.stderr and f"reader {OLD_READER}" in r.stderr and "--revoke-unlisted" in r.stderr
+    assert grant_changes(calls) == []
+    assert held == json.loads(before)
+
+
+def test_setup_revokes_unlisted_grants_when_told_to(tmp_path):
+    r, calls, held = run_setup(tmp_path, "--revoke-unlisted", lambda_policy=writer_grants(W1),
+                               bucket_policy=json.dumps({"Statement": [read_grant(1, OLD_READER)]}))
+    assert r.returncode == 0, r.stderr
+    assert len([c for c in calls if c[:2] == ["lambda", "remove-permission"]]) == 2
+    assert not [sid for sid in by_sid(held) if sid.startswith("Read")]
+
+
+def test_setup_fails_when_the_lock_configuration_cannot_be_read(tmp_path):
+    r, calls, held = run_setup(tmp_path, lock="denied")
+    assert r.returncode != 0
+    assert "reading the Object Lock configuration of bkt failed" in r.stderr and "AccessDenied" in r.stderr
+    assert "delete it" not in r.stderr
+    assert not [c for c in mutations(calls) if c[0] == "s3api"]
+
+
+def test_setup_fails_when_the_bucket_policy_cannot_be_read(tmp_path):
+    r, calls, held = run_setup(tmp_path, "--skip-gateway", bucket_policy="denied")
+    assert r.returncode != 0
+    assert "reading the bucket policy of bkt failed" in r.stderr and "AccessDenied" in r.stderr
+    assert not [c for c in calls if c[:2] == ["s3api", "put-bucket-policy"]]

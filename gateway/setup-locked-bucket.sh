@@ -6,7 +6,8 @@
 #                                  --role <name> --alias <alias/...> --retention-days <n>
 #                                  --policy <gateway policy.json> [--permission-set <name>]...
 #                                  [--decrypt-role <principal ARN>]... [--out <facts file>]
-#                                  [--skip-gateway]
+#                                  [--writer <principal ARN>]... [--reader <principal ARN>]...
+#                                  [--revoke-unlisted] [--skip-gateway]
 #   gateway/setup-locked-bucket.sh --print-policies --account <id> --region <region> --bucket <name>
 #                                  --role <name> --alias <alias/...>      # no AWS calls
 #
@@ -18,6 +19,9 @@
 #   --permission-set <name> Identity Center permission set whose role gets kms:Decrypt; repeatable
 #   --decrypt-role <arn>    other principal granted kms:Decrypt; repeatable
 #   --out <file>            also write the facts as KEY=VALUE lines; keep it outside the repository
+#   --writer, --reader      cross-account writer/reader, passed to deploy.sh; repeatable. Name
+#   --revoke-unlisted       every one on each run: deploy.sh refuses to drop a grant it is not
+#                           given, unless --revoke-unlisted
 #   --skip-gateway          do not build/deploy the gateway (the role must already exist)
 #   --print-policies        print the key, role and bucket policies and exit
 #
@@ -73,7 +77,7 @@ set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 account="" region="" bucket="" function="" role="" alias="" policy="" out="" retention_days=""
-permission_sets=() decrypt_roles=()
+permission_sets=() decrypt_roles=() grants=()
 skip_gateway=0 print_only=0
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -88,9 +92,11 @@ while [ $# -gt 0 ]; do
         --permission-set) permission_sets+=("$2"); shift 2 ;;
         --decrypt-role) decrypt_roles+=("$2"); shift 2 ;;
         --out) out="$2"; shift 2 ;;
+        --writer|--reader) grants+=("$1" "$2"); shift 2 ;;
+        --revoke-unlisted) grants+=("$1"); shift ;;
         --skip-gateway) skip_gateway=1; shift ;;
         --print-policies) print_only=1; shift ;;
-        -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
         *) echo "setup-locked-bucket.sh: unknown argument $1" >&2; exit 2 ;;
     esac
 done
@@ -113,6 +119,7 @@ case "$alias" in alias/*) ;; *) die "--alias must start with alias/, not $alias"
 for a in ${decrypt_roles[@]+"${decrypt_roles[@]}"}; do
     case "$a" in arn:*:iam::*) ;; *) die "--decrypt-role takes an IAM principal ARN, not $a" ;; esac
 done
+[ "$skip_gateway" = 0 ] || [ ${#grants[@]} = 0 ] || die "--writer/--reader/--revoke-unlisted go to deploy.sh, which --skip-gateway skips"
 
 bucket_arn="arn:aws:s3:::$bucket"
 role_arn="arn:aws:iam::$account:role/$role"
@@ -219,7 +226,13 @@ aws kms enable-key-rotation --key-id "$key_id"
 # ---------------------------------------------------------------------------- 2. bucket
 if aws s3api head-bucket --bucket "$bucket" >/dev/null 2>&1; then
     say "bucket $bucket exists"
-    lock="$(aws s3api get-object-lock-configuration --bucket "$bucket" --query ObjectLockConfiguration.ObjectLockEnabled --output text 2>/dev/null || echo none)"
+    if lock="$(aws s3api get-object-lock-configuration --bucket "$bucket" --query ObjectLockConfiguration.ObjectLockEnabled --output text 2>&1)"; then
+        :
+    elif echo "$lock" | grep -q ObjectLockConfigurationNotFoundError; then
+        lock=none
+    else
+        die "reading the Object Lock configuration of $bucket failed: $lock"
+    fi
     [ "$lock" = Enabled ] || die "bucket $bucket exists without Object Lock, which can only be enabled at creation: delete it (or pick another --bucket) and re-run"
 else
     say "creating bucket $bucket with Object Lock in $region"
@@ -253,7 +266,8 @@ else
     say "deploying the gateway (bucket $bucket, function $function, role $role)"
     deploy_out="$("$here/deploy.sh" --bucket "$bucket" --function "$function" --region "$region" \
         --role "$role" --zip "$here/build/gateway-arm64.zip" \
-        --env "CHAINTABLES_KMS_KEY_ARN=$key_arn" --env "CHAINTABLES_RETENTION_DAYS=$retention_days" | tee /dev/stderr)"
+        --env "CHAINTABLES_KMS_KEY_ARN=$key_arn" --env "CHAINTABLES_RETENTION_DAYS=$retention_days" \
+        ${grants[@]+"${grants[@]}"} | tee /dev/stderr)"
     url="$(echo "$deploy_out" | awk '/^function URL/ {print $3}')"
     [ -n "$url" ] || die "no function URL in the deploy output"
 fi
@@ -279,7 +293,13 @@ aws kms put-key-policy --key-id "$key_id" --policy-name default \
     --policy "$(key_policy "$(json_array ${readers[@]+"${readers[@]}"})")"
 
 # ---------------------------------------------------------------------------- 5. bucket policy
-existing="$(aws s3api get-bucket-policy --bucket "$bucket" --query Policy --output text 2>/dev/null || echo '{}')"
+if existing="$(aws s3api get-bucket-policy --bucket "$bucket" --query Policy --output text 2>&1)"; then
+    :
+elif echo "$existing" | grep -q NoSuchBucketPolicy; then
+    existing='{}'
+else
+    die "reading the bucket policy of $bucket failed: $existing"
+fi
 desired="$(bucket_policy "$key_arn" "$existing")"
 say "putting the bucket policy: gateway statements kept, TLS / SSE-KMS / Object Lock denies merged"
 aws s3api put-bucket-policy --bucket "$bucket" --policy "$desired"

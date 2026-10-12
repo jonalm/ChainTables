@@ -214,14 +214,17 @@ SSE-KMS, the gateway with the two variables, the role's extra grants, and the de
 merged into the bucket policy by `Sid`. It then reads the configuration back, compares
 every bucket policy statement with what it put, refuses a lifecycle rule that expires
 current versions, and proves a bare `PutObject` and a `DeleteObject` are denied.
-Re-run it, not `deploy.sh`, to redeploy a locked bucket's gateway. `--print-policies` shows
+Re-run it, not `deploy.sh`, to redeploy a locked bucket's gateway, naming every
+cross-account `--writer` and `--reader` each time: it passes them, and `--revoke-unlisted`,
+to `deploy.sh`, which refuses to drop a grant it is not given. `--print-policies` shows
 the three policies without an AWS call.
 
 ```sh
 AWS_PROFILE=<admin profile> gateway/setup-locked-bucket.sh \
     --account <id> --region <region> --bucket <bucket> --function <function> --role <role> \
     --alias alias/<key alias> --retention-days <n> --policy <private dir>/policy.json \
-    --permission-set <readers' permission set> --out <private dir>/<bucket>.env
+    --permission-set <readers' permission set> --out <private dir>/<bucket>.env \
+    [--writer <cross-account writer ARN>]... [--reader <cross-account reader ARN>]...
 ```
 
 Object Lock can only be enabled when a bucket is created, so the script refuses an existing
