@@ -76,6 +76,15 @@ def test_bucket_policy_refuses_every_put_but_the_gateways_locked_kms_put(policie
     assert all(s[sid]["Effect"] == "Deny" for sid in s if sid != "GatewayPuts")
 
 
+def test_print_policies_shows_the_read_grants_deploy_sh_adds():
+    s = by_sid(print_policies("--writer", "arn:aws:iam::444455556666:role/w", "--reader", "arn:aws:iam::444455556666:role/r")
+               ["bucket policy (bkt), merged onto what gateway/deploy.sh writes"])
+    assert s["Read1"]["Principal"] == {"AWS": "arn:aws:iam::444455556666:role/r"}
+    assert s["Read2"]["Principal"] == {"AWS": "arn:aws:iam::444455556666:role/w"}
+    assert s["Read1"]["Action"] == ["s3:GetObject", "s3:ListBucket"]
+    assert s["Read1"]["Resource"] == ["arn:aws:s3:::bkt", "arn:aws:s3:::bkt/*"]
+
+
 def test_print_policies_without_a_required_argument_fails():
     r = subprocess.run(["bash", os.path.join(HERE, "setup-locked-bucket.sh"), "--print-policies"],
                        capture_output=True, text=True)

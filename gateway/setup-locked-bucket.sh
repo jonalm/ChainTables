@@ -61,7 +61,9 @@
 #      marker, after which the slot reads as absent and the gateway fills it again. The
 #      deny has no exception; break glass by editing the bucket policy (ADR-0038). For the
 #      same reason the verification refuses a lifecycle rule that expires current
-#      versions, which adds the same markers and which no bucket policy can deny.
+#      versions, which adds the same markers as S3 itself, where no bucket policy reaches.
+#      (s3:PutLifecycleConfiguration could be denied, but that would also refuse harmless
+#      rules; ADR-0038 chose the verification instead.)
 #
 # Per-object contract the writer (the gateway, the bucket's only PutObject principal)
 # satisfies in its locked-bucket mode; a put without it is refused by S3 (502 s3_refused):
@@ -191,7 +193,21 @@ if [ "$print_only" = 1 ]; then
     key_arn="arn:aws:kms:$region:$account:key/<key-id>"
     readers="$(json_array "arn:aws:iam::$account:role/aws-reserved/sso.amazonaws.com/$region/AWSReservedSSO_<permission-set>_<hash>" \
                           ${decrypt_roles[@]+"${decrypt_roles[@]}"})"
-    gateway_policy='{"Version":"2012-10-17","Statement":[{"Sid":"GatewayPuts","Effect":"Allow","Principal":{"AWS":"'"$role_arn"'"},"Action":"s3:PutObject","Resource":"'"$bucket_arn"'/*"},{"Sid":"OnlyTheGatewayPuts","Effect":"Deny","Principal":"*","Action":"s3:PutObject","Resource":"'"$bucket_arn"'/*","Condition":{"ArnNotEquals":{"aws:PrincipalArn":"'"$role_arn"'"}}}]}'
+    # what deploy.sh writes: its Read<n> numbers the readers, then the writers
+    gateway_policy="$(python3 - "$bucket_arn" "$role_arn" ${grants[@]+"${grants[@]}"} <<'PY'
+import json, sys
+bucket_arn, role_arn, grants = sys.argv[1], sys.argv[2], sys.argv[3:]
+pairs = [(grants[i], grants[i + 1]) for i in range(len(grants)) if grants[i] in ("--writer", "--reader")]
+principals = [a for f, a in pairs if f == "--reader"] + [a for f, a in pairs if f == "--writer"]
+objects = f"{bucket_arn}/*"
+st = [{"Sid": "GatewayPuts", "Effect": "Allow", "Principal": {"AWS": role_arn}, "Action": "s3:PutObject", "Resource": objects},
+      {"Sid": "OnlyTheGatewayPuts", "Effect": "Deny", "Principal": "*", "Action": "s3:PutObject", "Resource": objects,
+       "Condition": {"ArnNotEquals": {"aws:PrincipalArn": role_arn}}}]
+st += [{"Sid": f"Read{n}", "Effect": "Allow", "Principal": {"AWS": a}, "Action": ["s3:GetObject", "s3:ListBucket"],
+        "Resource": [bucket_arn, objects]} for n, a in enumerate(principals, 1)]
+print(json.dumps({"Version": "2012-10-17", "Statement": st}))
+PY
+)"
     echo "# KMS key policy ($alias)";                 key_policy "$readers" | python3 -m json.tool
     echo "# execution role inline policy ($role)";   role_policy "$key_arn" | python3 -m json.tool
     echo "# bucket policy ($bucket), merged onto what gateway/deploy.sh writes"
@@ -341,8 +357,8 @@ for s in desired["Statement"]:
         expect(f"bucket policy statement {s['Sid']}", statements[s["Sid"]], s)
 if "GatewayPuts" in statements:
     expect("GatewayPuts principal", statements["GatewayPuts"]["Principal"].get("AWS"), role_arn)
-# A lifecycle rule that expires current versions adds delete markers, which the bucket
-# policy cannot deny (ADR-0038); expiring noncurrent versions or old markers is harmless.
+# A lifecycle rule that expires current versions adds delete markers as S3 itself, which no
+# bucket policy reaches (ADR-0038); expiring noncurrent versions or old markers is harmless.
 lc = subprocess.run(["aws", "s3api", "get-bucket-lifecycle-configuration", "--bucket", bucket, "--output", "json"],
                     capture_output=True, text=True)
 if lc.returncode == 0:
