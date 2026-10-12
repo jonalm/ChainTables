@@ -266,6 +266,12 @@ using SHA: sha256
         w2["ops"][1]["shape"]["columns"][2][1] = "_v"
         @test_throws MalformedRecordError Ops.decode_record(CBOR.encode(w2); slot = 2)
         @test_throws "malformed record at slot 2: op 1: column name \"_v\" is not an identifier" Ops.decode_record(CBOR.encode(w2); slot = 2)
+        # a trailing newline is outside the charset, at apply and when a shape is read (#86)
+        @test occursin("op 1 (create_table on \"t\\n\"): table name \"t\\n\" is not an identifier", rule([CreateTable("t\n", shape)]))
+        @test occursin("op 1 (add_column on \"t\"): column name \"c\\n\" is not an identifier",
+                       rule([AddColumn("t", Column("c\n", "int64", true), missing)]))
+        w2["ops"][1]["shape"]["columns"][2][1] = "v\n"
+        @test_throws "malformed record at slot 2: op 1: column name \"v\\n\" is not an identifier" Ops.decode_record(CBOR.encode(w2); slot = 2)
         @test occursin("op 1 (drop_table on \"nope\"): unknown table \"nope\"", rule([DropTable("nope")]))
         @test occursin("op 1 (drop_column on \"nope\"): unknown table \"nope\"", rule([DropColumn("nope", "v")]))
         # ops after the failing one are not applied, and the ops before it are

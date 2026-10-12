@@ -173,7 +173,7 @@ end
 # `AWS_CREDENTIAL_EXPIRATION` as the CLI prints it, `YYYY-MM-DDThh:mm:ss[.fff](Z|±hh:mm)`,
 # as seconds since the epoch.
 function parse_expiry(text::AbstractString)
-    m = match(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$", text)
+    m = match(r"\A(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})\z", text)
     m === nothing && error("cannot parse AWS_CREDENTIAL_EXPIRATION $(repr(text))")
     utc = parse_iso_date(m.captures[1] * "Z")
     m.captures[2] == "Z" && return utc
@@ -295,7 +295,7 @@ Base.show(io::IO, s::S3ObjectStore) = print(io, "S3ObjectStore(", repr(s.bucket)
 # refused rather than silently dropped. A default port is stripped, since libcurl omits
 # it from the Host header it sends and the signature covers that header.
 function parse_endpoint(endpoint::AbstractString; what = "endpoint")
-    m = match(r"^(https?)://([^/?#\s]+)/?$"i, endpoint)
+    m = match(r"\A(https?)://([^/?#\s]+)/?\z"i, endpoint)
     m === nothing && throw(ArgumentError("Chain: $what $(repr(endpoint)) is not of the form scheme://host[:port] " *
         "(http or https, no path); the bucket and key are added by ChainTables"))
     scheme = lowercase(m.captures[1])
@@ -482,7 +482,7 @@ const MONTHS = Dict("Jan" => 1, "Feb" => 2, "Mar" => 3, "Apr" => 4, "May" => 5, 
 # `<LastModified>2009-10-12T17:50:30.000Z</LastModified>` (a listing's element), both
 # to whole seconds since the epoch, which is all `ObjectMeta.modified` promises.
 function parse_http_date(s::AbstractString)
-    m = match(r"^\w{3}, (\d{1,2}) (\w{3}) (\d{4}) (\d\d):(\d\d):(\d\d) GMT$", strip(s))
+    m = match(r"\A\w{3}, (\d{1,2}) (\w{3}) (\d{4}) (\d\d):(\d\d):(\d\d) GMT\z", strip(s))
     m === nothing && throw(TransportError("cannot parse the Last-Modified header $(repr(s))"))
     d, mon, y, h, mi, sec = m.captures
     haskey(MONTHS, mon) || throw(TransportError("cannot parse the Last-Modified header $(repr(s))"))
@@ -491,7 +491,7 @@ function parse_http_date(s::AbstractString)
 end
 
 function parse_iso_date(s::AbstractString)
-    m = match(r"^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(?:\.\d+)?Z$", strip(s))
+    m = match(r"\A(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(?:\.\d+)?Z\z", strip(s))
     m === nothing && throw(TransportError("cannot parse the LastModified value $(repr(s))"))
     y, mo, d, h, mi, sec = parse.(Int, m.captures)
     return days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + sec

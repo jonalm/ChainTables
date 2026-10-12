@@ -45,6 +45,35 @@ def test_slot_key_with_a_trailing_newline_is_not_a_slot(gateway):
     assert (status, body["code"]) == (400, "not_a_slot")
 
 
+# The prefixes a Julia client refuses (`check_prefix`, ADR-0034), so the gateway refuses
+# them too (ADR-0035); carol's rule `teams/*` admits every one at the policy check.
+CAROL_ARN = f"arn:aws:sts::{ACCOUNT}:assumed-role/AWSReservedSSO_chaintables-writer_a1b2/carol@example.com"
+
+
+@pytest.mark.parametrize("key, problem", [
+    ("teams/a//b/000000000000", "is empty"),
+    ("teams/./000000000000", "names a directory relative to its parent"),
+    ("teams/../x/000000000000", "names a directory relative to its parent"),
+    ("teams/\nx/000000000000", "contains '\\n'"),
+    ("teams/x\n/000000000000", "contains '\\n'"),
+    ("teams/X/000000000000", "contains 'X'"),
+    ("teams/x./000000000000", "ends with '.'"),
+    ("teams/nul.txt/000000000000", "is a Windows device name"),
+    ("teams/" + "x" * 95 + "/000000000000", "over 100"),
+    ("teams/" + "x" * 1100 + "/000000000000", "over 100"),   # S3 would refuse the key, not the deployment
+])
+def test_prefix_a_client_refuses_is_not_a_slot(gateway, key, problem):
+    status, body = parse(gateway.handle(event(key=key, user_arn=CAROL_ARN)))
+    assert (status, body["code"]) == (400, "not_a_slot")
+    assert problem in body["message"]
+
+
+def test_portable_prefix_passes_the_slot_check(gateway):
+    # past check 2: the record names alice, so check 5 refuses carol
+    status, body = parse(gateway.handle(event(key="teams/a-b.c_d/0x/000000000000", user_arn=CAROL_ARN)))
+    assert (status, body["code"]) == (403, "author_mismatch")
+
+
 # --- 3–5. body and author ----------------------------------------------------------------
 
 def test_body_that_is_not_cbor_is_refused(gateway):

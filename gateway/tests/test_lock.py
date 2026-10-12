@@ -33,7 +33,7 @@ def expected_extra(body):
 @pytest.mark.parametrize("key", [
     "000000000003",                           # bucket root
     "scratch_1/000000000003",                 # one segment
-    "teams/alpha/run 7/000000000003",         # nested
+    "teams/alpha/run_7/000000000003",         # nested
 ])
 def test_put_at_any_prefix_carries_encryption_retention_and_checksum(locked, s3, key):
     body = record()

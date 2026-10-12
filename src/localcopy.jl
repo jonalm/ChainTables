@@ -135,8 +135,8 @@ The head file's name: the slot, twelve digits, zero-padded (ADR-0023).
 """
 head_filename(slot::Integer) = lpad(string(slot), 12, '0')
 
-const HEAD_NAME = r"^[0-9]{12}$"
-const TABLE_NAME = r"^[0-9a-f]{64}$"
+const HEAD_NAME = r"\A[0-9]{12}\z"
+const TABLE_NAME = r"\A[0-9a-f]{64}\z"
 
 written_by_here() = (; lib = "ChainTables $(pkgversion(@__MODULE__))", julia = string(VERSION))
 

@@ -66,7 +66,7 @@ default_sts_endpoint(region::AbstractString) =
 # (`nothing`: not known yet, not checked). Shared with `Bucket` (bucket.jl, ADR-0029).
 function gateway_base(function_url::AbstractString, region)
     scheme, hostport = parse_endpoint(function_url; what = "gateway")
-    m = match(r"\.lambda-url\.([a-z0-9-]+)\.on\.aws$", hostport)
+    m = match(r"\.lambda-url\.([a-z0-9-]+)\.on\.aws\z", hostport)
     (region === nothing || m === nothing || m.captures[1] == region) || throw(ArgumentError("Chain: region " *
         "$(repr(String(region))) disagrees with the region in the function URL host $(repr(hostport)), " *
         "$(repr(m.captures[1])); SigV4 signs the region, so the two must agree — pass the region the gateway is deployed in"))
@@ -99,7 +99,7 @@ list_objects(store::GatewayObjectStore, prefix::AbstractString; start_after::Uni
 # root, a bare role, a service principal — the gateway refuses as not_allowed, so it is
 # refused here without the round trip.
 # `\z`, not `$`, which would also match before a final newline; names hold no whitespace.
-const PRINCIPAL_ARN = r"^arn:[^:\s]+:(?:iam|sts)::[0-9]{12}:(?:assumed-role/[^/\s]+/(?<session>[^/\s]+)|user/(?:[^/\s]+/)*(?<user>[^/\s]+))\z"
+const PRINCIPAL_ARN = r"\Aarn:[^:\s]+:(?:iam|sts)::[0-9]{12}:(?:assumed-role/[^/\s]+/(?<session>[^/\s]+)|user/(?:[^/\s]+/)*(?<user>[^/\s]+))\z"
 
 """
     author_from_arn(arn) -> String

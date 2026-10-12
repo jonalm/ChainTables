@@ -323,6 +323,17 @@ ChainTables.expected_chain_id(c::LocalCopyTestBoundChain) = c.chain_id
             again = CT.open(LocalCopyTestChain(), path)
             @test length(tabs(path)) == 2 && heads(path) == ["000000000002"]
             close(again)
+            # a name with a trailing newline is no head and no table file, so open neither
+            # reads it nor sweeps it (#86); Windows refuses such a name outright
+            if !Sys.iswindows()
+                write(joinpath(path, "heads", "000000000009\n"), "not a head")
+                touch(joinpath(path, "tables", orphan * "\n"))
+                third = CT.open(LocalCopyTestChain(), path)
+                @test third.head.slot == 2
+                @test heads(path) == ["000000000002", "000000000009\n"]
+                @test orphan * "\n" in tabs(path)
+                close(third)
+            end
         end
     end
 

@@ -269,6 +269,10 @@ Base.getproperty(r::BuilderTestRow, n::Symbol) = getfield(r, :fields)[n]
         @test wp.ops[end] isa Ops.CreateTable && wp.ops[end].table == "_private"
         @test_throws "column!(t, :é, Int64): column name \"é\" is not an identifier" CT.create_table!(t -> CT.column!(t, :é, Int64), w, :t)
         @test_throws "add_column!(w, :samples, :Colour, String): column name \"Colour\" is not an identifier" CT.add_column!(w, :samples, :Colour, String; fill = "")
+        # a trailing newline is outside the charset too, though PCRE's $ would match before it (#86)
+        @test_throws "create_table!(w, \"t\\n\"): table name \"t\\n\" is not an identifier" declare!(w, "t\n")
+        @test_throws "column!(t, \"c\\n\", Int64): column name \"c\\n\" is not an identifier" CT.create_table!(t -> CT.column!(t, "c\n", Int64), w, :t)
+        @test_throws "add_column!(w, :samples, \"c\\n\", String): column name \"c\\n\" is not an identifier" CT.add_column!(w, :samples, "c\n", String; fill = "")
         # missing primary key; nullable key column; the other key rules
         @test_throws "create_table!(w, :t): table has no primary key; every table needs an explicit key" CT.create_table!(t -> CT.column!(t, :c, Int64), w, :t)
         @test_throws "create_table!(w, :t): table has no columns" CT.create_table!(t -> nothing, w, :t)

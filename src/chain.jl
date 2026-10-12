@@ -120,6 +120,7 @@ end
 # With a 63-character bucket (S3's longest) under the longest cache namespace (ADR-0040), the
 # cache path below `cache_dir` is at most 12 + 1 + 63 + 1 + 100 + 1 + 20 = 198 characters,
 # leaving 61 of MAX_PORTABLE_PATH for `cache_dir`.
+# The gateway mirrors these rules (`prefix_problem` in gateway/handler.py, ADR-0035): change both together.
 const MAX_PREFIX_LENGTH = 100
 
 function check_prefix(prefix::AbstractString)

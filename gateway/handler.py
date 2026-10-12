@@ -6,7 +6,8 @@ after checking, in this order (issue #54 §5, the first failure wins):
 1. the caller is an IAM user or assumed role that the policy allows for the key's prefix
    (its name, and its account and role where the rule pins them), else ``403 not_allowed``;
 2. the key is a slot, ``<prefix>/<12 digits>`` or ``<12 digits>`` at the bucket root, never
-   a reserved name, else ``400 not_a_slot``;
+   a reserved name, with a prefix a Julia client accepts (at most 100 characters, every
+   segment portable, ADR-0034), else ``400 not_a_slot``;
 3. the body is a CBOR map in the record format the Julia reader accepts (``src/cbor.jl``,
    ADR-0006): text keys, no tags, int64 integers, at most 64 levels deep, and the
    deterministic encoding — no duplicate or unsorted keys, no indefinite lengths, no
@@ -66,8 +67,18 @@ MAX_RECORD_BYTES = 4 * 1024 * 1024
 POLICY_FORMAT_VERSION = 1
 
 # `<prefix>/<12 digits>` with a non-empty prefix that neither begins nor ends with '/',
-# or `<12 digits>` alone at the bucket root (ADR-0011).
-SLOT_KEY = re.compile(r"(?:(?P<prefix>[^/](?:.*[^/])?)/)?(?P<slot>[0-9]{12})")
+# or `<12 digits>` alone at the bucket root (ADR-0011). DOTALL so a control character in the
+# prefix reaches `prefix_problem`, which names it; `fullmatch` still refuses one after the digits.
+SLOT_KEY = re.compile(r"(?:(?P<prefix>[^/](?:.*[^/])?)/)?(?P<slot>[0-9]{12})", re.DOTALL)
+
+# The Julia client's prefix rules (`check_prefix` in src/chain.jl, `portable_segment_problem`
+# in src/store.jl, ADR-0034), mirrored so the gateway refuses every key a client refuses
+# (ADR-0035). Change both sides together. The length cap also keeps a key far under S3's
+# 1024 bytes, so S3 never refuses one as too long.
+MAX_PREFIX_LENGTH = 100
+PORTABLE_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789._-")
+WINDOWS_DEVICE_NAMES = frozenset(
+    ["con", "prn", "aux", "nul"] + [f"com{i}" for i in range(10)] + [f"lpt{i}" for i in range(10)])
 
 # The two principal kinds the gateway accepts. An IAM user may carry a path
 # (`user/path/name`); a role session name never contains '/'; neither contains whitespace.
@@ -214,6 +225,36 @@ def parse_caller(user_arn) -> Caller | None:
     return Caller(account=m.group("account"), role=m.group("role"), name=m.group("session") or m.group("user"))
 
 
+def segment_problem(s: str) -> str | None:
+    """Why `s` cannot be one segment of a chain prefix, or None if it can (the Julia
+    client's `portable_segment_problem`, in the same words)."""
+    if s == "":
+        return "is empty"
+    if s in (".", ".."):
+        return "names a directory relative to its parent"
+    for c in s:
+        if c not in PORTABLE_CHARS:
+            return f"contains {c!r}; only a-z, 0-9, '.', '_' and '-' are portable to every filesystem"
+    if s.endswith("."):
+        return "ends with '.', which Windows strips"
+    if s.split(".")[0] in WINDOWS_DEVICE_NAMES:
+        return "is a Windows device name"
+    return None
+
+
+def prefix_problem(prefix: str) -> str | None:
+    """Why a Julia client refuses `prefix` as a chain prefix, or None if it accepts it."""
+    if prefix == "":
+        return None
+    if len(prefix) > MAX_PREFIX_LENGTH:
+        return f"is {len(prefix)} characters, over {MAX_PREFIX_LENGTH}"
+    for s in prefix.split("/"):
+        problem = segment_problem(s)
+        if problem is not None:
+            return f"has the segment {s!r}, which {problem}"
+    return None
+
+
 def chain_prefix(key: str) -> str:
     """The key up to its last '/', or '' at the bucket root. For a slot key this is the chain prefix."""
     i = key.rfind("/")
@@ -290,6 +331,11 @@ class Gateway:
             raise Refusal(400, "not_a_slot",
                           f"key {key!r} is not a slot: a slot key is <prefix>/<12 digits>, or <12 digits> at the "
                           "bucket root, and the gateway never writes a reserved name")
+        problem = prefix_problem(prefix)
+        if problem is not None:
+            raise Refusal(400, "not_a_slot",
+                          f"key {key!r} is not a slot: its prefix {problem}; a ChainTables client refuses such a "
+                          "prefix, so the gateway never writes under it")
         body = request_body(event)
         author = record_author(body)
         if author != name:

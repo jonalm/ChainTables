@@ -113,7 +113,7 @@ value_type(::Any) = nothing
 
 The identifier charset for table names: `[a-z_][a-z0-9_]*` (ADR-0025).
 """
-is_identifier(s::AbstractString) = occursin(r"^[a-z_][a-z0-9_]*$", s)
+is_identifier(s::AbstractString) = occursin(r"\A[a-z_][a-z0-9_]*\z", s)
 
 """
     is_column_name(s) -> Bool
@@ -121,7 +121,7 @@ is_identifier(s::AbstractString) = occursin(r"^[a-z_][a-z0-9_]*$", s)
 The identifier charset for column names: `[a-z][a-z0-9_]*`, a letter first, so a
 column never collides with the `_slot` of `table_with_slots` (ADR-0032).
 """
-is_column_name(s::AbstractString) = occursin(r"^[a-z][a-z0-9_]*$", s)
+is_column_name(s::AbstractString) = occursin(r"\A[a-z][a-z0-9_]*\z", s)
 
 # The column-name rule, as every refusal of one words it.
 check_column_name(name) = is_column_name(name) ||
