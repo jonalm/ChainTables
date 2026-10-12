@@ -83,22 +83,26 @@ def test_print_policies_without_a_required_argument_fails():
 
 
 # A fake AWS CLI: logs its argv one call per line (arguments NUL-separated), answers what
-# deploy.sh reads, and reports an existing bucket, role, function and URL, plus one grant
-# from an earlier deployment that the run must remove. The bucket's Object Lock state and
-# its policy come from FAKE_LOCK and FAKE_BUCKET_POLICY; unset, it has neither, and the
-# fake fails as AWS does.
+# deploy.sh reads, and reports an existing bucket, role, function and URL. The bucket's
+# Object Lock state, its policy and the function's resource policy come from FAKE_LOCK,
+# FAKE_BUCKET_POLICY and FAKE_LAMBDA_POLICY; unset, it has none, and the fake fails as AWS
+# does; `denied` fails as AWS does for a caller without the right.
 FAKE_AWS = r"""#!/usr/bin/env bash
 printf '%s\0' "$@" >> "$FAKE_AWS_LOG"; printf '\n' >> "$FAKE_AWS_LOG"
 case "$1 $2" in
     "sts get-caller-identity") case "$*" in *Account*) echo 111122223333 ;; *) echo arn:aws:iam::111122223333:user/admin ;; esac ;;
     "lambda get-function-url-config") case "$*" in *AuthType*) echo AWS_IAM ;; *) echo https://abc.lambda-url.eu-north-1.on.aws/ ;; esac ;;
-    "lambda get-policy") echo '{"Statement":[{"Sid":"chaintables-writer-1-invoke"},{"Sid":"someone-else"}]}' ;;
+    "lambda get-policy")
+        [ -n "${FAKE_LAMBDA_POLICY:-}" ] || { echo "An error occurred (ResourceNotFoundException) when calling the GetPolicy operation: The resource you requested does not exist." >&2; exit 254; }
+        [ "$FAKE_LAMBDA_POLICY" != denied ] || { echo "An error occurred (AccessDeniedException) when calling the GetPolicy operation" >&2; exit 254; }
+        echo "$FAKE_LAMBDA_POLICY" ;;
     "s3api get-object-lock-configuration")
         [ -n "${FAKE_LOCK:-}" ] || { echo "An error occurred (ObjectLockConfigurationNotFoundError) when calling the GetObjectLockConfiguration operation" >&2; exit 254; }
         [ "$FAKE_LOCK" != denied ] || { echo "An error occurred (AccessDenied) when calling the GetObjectLockConfiguration operation" >&2; exit 254; }
         echo "$FAKE_LOCK" ;;
     "s3api get-bucket-policy")
         [ -n "${FAKE_BUCKET_POLICY:-}" ] || { echo "An error occurred (NoSuchBucketPolicy) when calling the GetBucketPolicy operation" >&2; exit 254; }
+        [ "$FAKE_BUCKET_POLICY" != denied ] || { echo "An error occurred (AccessDenied) when calling the GetBucketPolicy operation" >&2; exit 254; }
         echo "$FAKE_BUCKET_POLICY" ;;
 esac
 """
@@ -118,7 +122,7 @@ def write_zip(path, handler_source=None):
         z.writestr("policy.json", "{}")
 
 
-def run_deploy(tmp_path, *args, lock="", bucket_policy="", handler_source=None):
+def run_deploy(tmp_path, *args, lock="", bucket_policy="", lambda_policy="", handler_source=None):
     """deploy.sh against the fake: returns the completed process and the logged calls."""
     (tmp_path / "aws").write_text(FAKE_AWS)
     (tmp_path / "aws").chmod(0o755)
@@ -130,7 +134,7 @@ def run_deploy(tmp_path, *args, lock="", bucket_policy="", handler_source=None):
          "--role", "gw-role", "--zip", str(tmp_path / "gw.zip"), "--no-smoke", *args],
         capture_output=True, text=True,
         env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "FAKE_AWS_LOG": str(log),
-             "FAKE_LOCK": lock, "FAKE_BUCKET_POLICY": bucket_policy},
+             "FAKE_LOCK": lock, "FAKE_BUCKET_POLICY": bucket_policy, "FAKE_LAMBDA_POLICY": lambda_policy},
     )
     return r, [line.split("\0")[:-1] for line in log.read_text().splitlines()]
 
@@ -145,12 +149,23 @@ def mutations(calls):
     return [c for c in calls if c[0] != "sts" and not c[1].startswith(reads)]
 
 
+def writer_grants(*principals, sids=None):
+    """A function resource policy as an earlier deploy.sh left it, plus a statement it does not own."""
+    sids = sids or [f"chaintables-writer-{i}" for i in range(1, len(principals) + 1)]
+    st = [{"Sid": f"{sid}-{kind}", "Effect": "Allow", "Principal": {"AWS": p}}
+          for sid, p in zip(sids, principals) for kind in ("url", "invoke")]
+    return json.dumps({"Statement": st + [{"Sid": "someone-else", "Effect": "Allow",
+                                           "Principal": {"Service": "events.amazonaws.com"}}]})
+
+
 def test_deploy_grants_writers_invoke_only_via_the_function_url(tmp_path):
     writers = ["arn:aws:iam::444455556666:role/w1", "arn:aws:iam::444455556666:user/w2"]
-    r, calls = run_deploy(tmp_path, *[a for w in writers for a in ("--writer", w)])
+    r, calls = run_deploy(tmp_path, *[a for w in writers for a in ("--writer", w)],
+                          lambda_policy=writer_grants(writers[0]))
     assert r.returncode == 0, r.stderr
     removed = [c for c in calls if c[:2] == ["lambda", "remove-permission"]]
-    assert removed == [["lambda", "remove-permission", "--function-name", "gw", "--statement-id", "chaintables-writer-1-invoke"]]
+    assert removed == [["lambda", "remove-permission", "--function-name", "gw", "--statement-id", f"chaintables-writer-1-{k}"]
+                       for k in ("url", "invoke")]
     grants = [c for c in calls if c[:2] == ["lambda", "add-permission"]]
     assert len(grants) == 2 * len(writers)
     for c in grants:
@@ -176,6 +191,57 @@ def test_deploy_refuses_a_zip_without_a_handler(tmp_path):
     assert mutations(calls) == []
 
 
+# A grant is revoked only on purpose: a principal with a grant from an earlier deployment
+# but missing from the arguments is a refusal, unless --revoke-unlisted says to drop it.
+
+OLD_WRITER = "arn:aws:iam::444455556666:role/old-writer"
+OLD_READER = "arn:aws:iam::444455556666:role/old-reader"
+
+
+def read_grant(n, principal):
+    return {"Sid": f"Read{n}", "Effect": "Allow", "Principal": {"AWS": principal},
+            "Action": ["s3:GetObject", "s3:ListBucket"], "Resource": ["arn:aws:s3:::bkt", "arn:aws:s3:::bkt/*"]}
+
+
+def test_deploy_refuses_to_drop_a_writer_it_was_not_given(tmp_path):
+    r, calls = run_deploy(tmp_path, lambda_policy=writer_grants(OLD_WRITER))
+    assert r.returncode != 0
+    assert f"writer {OLD_WRITER}" in r.stderr and "--revoke-unlisted" in r.stderr
+    assert mutations(calls) == []
+
+
+def test_deploy_refuses_to_drop_a_reader_it_was_not_given(tmp_path):
+    r, calls = run_deploy(tmp_path, "--writer", OLD_WRITER, lambda_policy=writer_grants(OLD_WRITER),
+                          bucket_policy=json.dumps({"Statement": [read_grant(1, OLD_WRITER), read_grant(2, OLD_READER)]}))
+    assert r.returncode != 0
+    assert f"reader {OLD_READER}" in r.stderr and "--revoke-unlisted" in r.stderr
+    assert OLD_WRITER not in r.stderr
+    assert mutations(calls) == []
+
+
+def test_deploy_drops_unlisted_grants_when_told_to(tmp_path):
+    r, calls = run_deploy(tmp_path, "--revoke-unlisted", lambda_policy=writer_grants(OLD_WRITER),
+                          bucket_policy=json.dumps({"Statement": [read_grant(1, OLD_READER)]}))
+    assert r.returncode == 0, r.stderr
+    assert not [c for c in calls if c[:2] == ["lambda", "add-permission"]]
+    assert len([c for c in calls if c[:2] == ["lambda", "remove-permission"]]) == 2
+    assert set(by_sid(put_policy(calls))) == {"GatewayPuts", "OnlyTheGatewayPuts", "DenyInsecureTransport"}
+
+
+def test_deploy_fails_when_the_function_resource_policy_cannot_be_read(tmp_path):
+    r, calls = run_deploy(tmp_path, lambda_policy="denied")
+    assert r.returncode != 0
+    assert "reading the resource policy of function gw failed" in r.stderr and "AccessDeniedException" in r.stderr
+    assert mutations(calls) == []
+
+
+def test_deploy_fails_when_the_bucket_policy_cannot_be_read(tmp_path):
+    r, calls = run_deploy(tmp_path, bucket_policy="denied")
+    assert r.returncode != 0
+    assert "reading the bucket policy of bkt failed" in r.stderr and "AccessDenied" in r.stderr
+    assert mutations(calls) == []
+
+
 # Re-running deploy.sh on its own must not turn a locked bucket back into a plain one (#69, ADR-0037).
 
 def locked_policy():
@@ -187,7 +253,7 @@ def test_deploy_keeps_every_statement_it_does_not_own(tmp_path):
     before = locked_policy()
     before["Statement"].append({"Sid": "Read3", "Effect": "Allow", "Principal": {"AWS": "arn:aws:iam::1:role/gone"},
                                 "Action": "s3:GetObject", "Resource": "arn:aws:s3:::bkt/*"})
-    r, calls = run_deploy(tmp_path, *LOCK_ENV, "--reader", "arn:aws:iam::444455556666:role/r1",
+    r, calls = run_deploy(tmp_path, *LOCK_ENV, "--reader", "arn:aws:iam::444455556666:role/r1", "--revoke-unlisted",
                           lock="Enabled", bucket_policy=json.dumps(before))
     assert r.returncode == 0, r.stderr
     after = by_sid(put_policy(calls))

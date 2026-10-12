@@ -157,7 +157,9 @@ above is sufficient, and `deploy.sh` needs no `--writer`/`--reader`. For a princ
 invoke actions on the function, `lambda:InvokeFunction` only via the URL, plus reads in the
 bucket policy) or `--reader` (reads in the
 bucket policy). A role named this way must exist when the script runs; S3 rejects a policy
-naming a role that does not.
+naming a role that does not. Every redeploy must name them all again: a principal an earlier
+deployment granted but this one is not given is a refusal before any change, and only
+`--revoke-unlisted` revokes it.
 
 ### The bucket policy
 
@@ -236,12 +238,13 @@ gateway/build.sh --arch arm64 --policy <private dir>/policy.json
 AWS_PROFILE=<admin profile> gateway/deploy.sh \
     --bucket <bucket> --function <function> --region <region> --role <role> \
     --zip gateway/build/gateway-arm64.zip \
-    [--writer <cross-account writer ARN>]... [--reader <cross-account reader ARN>]...
+    [--writer <cross-account writer ARN>]... [--reader <cross-account reader ARN>]... [--revoke-unlisted]
 ```
 
 Every account-specific value is an argument with no default. The script is idempotent: it
 creates what is missing and updates what exists, so a rebuilt zip or a changed policy is
-deployed by running it again. A locked bucket is the exception: it is redeployed with
+deployed by running it again; it refuses a zip whose `handler.py` is not the repository's, so
+rebuild first. A locked bucket is the exception: it is redeployed with
 `setup-locked-bucket.sh`, and `deploy.sh` refuses a bucket with Object Lock unless it is given
 both `CHAINTABLES_KMS_KEY_ARN` and `CHAINTABLES_RETENTION_DAYS`, so that a bare redeploy
 cannot strip the retention from every later put (ADR-0037). Its last step invokes the

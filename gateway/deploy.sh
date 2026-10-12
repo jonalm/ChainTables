@@ -4,13 +4,16 @@
 #   gateway/deploy.sh --bucket <name> --function <name> --region <region> --role <name> --zip <file>
 #                     [--arch arm64|x86_64] [--writer <principal ARN>]... [--reader <principal ARN>]...
 #                     [--env KEY=VALUE]... [--timeout <s>] [--memory <MB>] [--log-retention <days>]
-#                     [--reserved-concurrency <n>] [--no-smoke]
+#                     [--reserved-concurrency <n>] [--revoke-unlisted] [--no-smoke]
 #
 # Generic and idempotent: every account-specific value is an argument with no default, and
 # each step creates what is missing or updates what exists, so re-running after a rebuild
 # or a policy change is the deployment procedure. Credentials come from the ambient AWS CLI
 # configuration (AWS_PROFILE and friends) and must belong to an administrator of the account.
 # It refuses a zip whose handler.py is not this directory's: rebuild after every change.
+# The grants are exactly the --writer/--reader list, but a principal an earlier deployment
+# granted and this one is not given is a refusal before any change: pass it again to keep
+# it, or --revoke-unlisted to revoke it.
 #
 # What it does, in order (docs/gateway-setup.md has the IAM contract this establishes):
 #   1. bucket: create if absent, block all public access;
@@ -37,7 +40,7 @@
 set -euo pipefail
 
 bucket="" function="" region="" role="" zip="" arch=arm64
-timeout=30 memory=256 retention=30 smoke=1 concurrency=""
+timeout=30 memory=256 retention=30 smoke=1 concurrency="" revoke_unlisted=0
 writers=() readers=() envs=()
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -55,7 +58,8 @@ while [ $# -gt 0 ]; do
         --log-retention) retention="$2"; shift 2 ;;
         --reserved-concurrency) concurrency="$2"; shift 2 ;;
         --no-smoke) smoke=0; shift ;;
-        -h|--help) sed -n '2,35p' "$0"; exit 0 ;;
+        --revoke-unlisted) revoke_unlisted=1; shift ;;
+        -h|--help) sed -n '2,39p' "$0"; exit 0 ;;
         *) echo "deploy.sh: unknown argument $1" >&2; exit 2 ;;
     esac
 done
@@ -134,6 +138,51 @@ if [ "$lock" = Enabled ]; then
 else
     [ "$lock_envs" = 0 ] || die "bucket $bucket has no Object Lock (got '$lock'), so S3 would refuse every locked put: drop the CHAINTABLES_KMS_KEY_ARN/CHAINTABLES_RETENTION_DAYS --env, or set up a locked bucket with gateway/setup-locked-bucket.sh"
 fi
+# The grants in place, read before any change: a principal granted by an earlier deployment
+# but not given now is revoked only with --revoke-unlisted.
+if existing_grants="$(aws lambda get-policy --function-name "$function" --query Policy --output text 2>&1)"; then
+    :
+elif echo "$existing_grants" | grep -q ResourceNotFoundException; then
+    existing_grants='{}'  # no function yet, or a function without a resource policy
+else
+    die "reading the resource policy of function $function failed: $existing_grants"
+fi
+if existing_policy="$(aws s3api get-bucket-policy --bucket "$bucket" --query Policy --output text 2>&1)"; then
+    :
+elif echo "$existing_policy" | grep -q NoSuchBucketPolicy; then
+    existing_policy='{}'
+else
+    die "reading the bucket policy of $bucket failed: $existing_policy"
+fi
+unlisted="$(python3 - "$existing_grants" "$existing_policy" "$(json_array ${writers[@]+"${writers[@]}"})" \
+        "$(json_array ${readers[@]+"${readers[@]}"})" <<'EOF'
+import json, re, sys
+grants, policy, writers, readers = (json.loads(a) for a in sys.argv[1:])
+def statements(doc):
+    st = doc.get("Statement", [])
+    return [st] if isinstance(st, dict) else st
+def principals(st):
+    p = st.get("Principal", {})
+    p = p.get("AWS", []) if isinstance(p, dict) else p
+    return [p] if isinstance(p, str) else p
+for st in statements(grants):
+    if st.get("Sid", "").startswith("chaintables-writer-"):
+        for p in principals(st):
+            if p not in writers:
+                print(f"writer {p}")
+for st in statements(policy):
+    if re.fullmatch(r"Read[0-9]+", st.get("Sid", "")):
+        for p in principals(st):
+            if p not in readers and p not in writers:
+                print(f"reader {p}")
+EOF
+)"
+unlisted="$(echo "$unlisted" | sort -u)"
+if [ -n "$unlisted" ] && [ "$revoke_unlisted" = 0 ]; then
+    die "an earlier deployment granted these principals, which are not given now:
+$(echo "$unlisted" | sed 's/^/    /')
+pass each again as --writer/--reader to keep it, or --revoke-unlisted to revoke them"
+fi
 aws s3api put-public-access-block --bucket "$bucket" --public-access-block-configuration \
     BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
 
@@ -198,8 +247,7 @@ else
 fi
 # Drop every grant this script owns, then re-add one pair per --writer, so the resource
 # policy always reflects exactly the current argument list.
-existing="$(aws lambda get-policy --function-name "$function" --query Policy --output text 2>/dev/null || echo '{}')"
-for sid in $(python3 -c 'import json,sys; p=json.loads(sys.argv[1]); print(" ".join(s["Sid"] for s in p.get("Statement",[]) if s["Sid"].startswith("chaintables-writer-")))' "$existing"); do
+for sid in $(python3 -c 'import json,sys; p=json.loads(sys.argv[1]); print(" ".join(s["Sid"] for s in p.get("Statement",[]) if s["Sid"].startswith("chaintables-writer-")))' "$existing_grants"); do
     aws lambda remove-permission --function-name "$function" --statement-id "$sid"
 done
 i=0
@@ -212,14 +260,7 @@ for w in ${writers[@]+"${writers[@]}"}; do
         --action lambda:InvokeFunction --principal "$w" --invoked-via-function-url >/dev/null
 done
 
-# 5. bucket policy, merged by Sid onto the one in place
-if existing_policy="$(aws s3api get-bucket-policy --bucket "$bucket" --query Policy --output text 2>&1)"; then
-    :
-elif echo "$existing_policy" | grep -q NoSuchBucketPolicy; then
-    existing_policy='{}'
-else
-    die "reading the bucket policy of $bucket failed: $existing_policy"
-fi
+# 5. bucket policy, merged by Sid onto the one read before any change
 say "putting bucket policy: PutObject for $role only; reads for ${#readers[@]} reader(s) and ${#writers[@]} writer(s); TLS only; other statements kept"
 policy="$(python3 - "$bucket_arn" "$role_arn" "$(json_array ${readers[@]+"${readers[@]}"} ${writers[@]+"${writers[@]}"})" "$existing_policy" <<'EOF'
 import json, re, sys
