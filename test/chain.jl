@@ -1132,6 +1132,27 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
         end
     end
 
+    @testset "a head that fails to write after the put leaves the copy at its old head (#85)" begin
+        mktempdir() do dir
+            store, chain, copy = seeded(dir)
+            w = CT.write_builder(copy)
+            CT.insert_rows!(w, :samples, [(id = 3, label = "c", mass = 3.0)])
+            hd = joinpath(copy.path, "heads")
+            chmod(hd, 0o555)                                # the head cannot be written; the put still wins
+            err = try
+                caught(() -> CT.commit!(w))
+            finally
+                chmod(hd, 0o755)
+            end
+            @test err isa SystemError
+            @test haskey(store.objects, slotkey(2)) && CT.head(copy).slot == 1
+            # our own record is applied by the next sync! onto the old head, never onto the dropped rows
+            @test CT.sync!(copy).slot == 2
+            @test isequal(rows_of(copy, "samples"), [Any[1, "a", 1.5], Any[2, "b", missing], Any[3, "c", 3.0]])
+            close(copy)
+        end
+    end
+
     @testset "checkpoints: the amortized rule, a failed sync, read_ahead" begin
         mktempdir() do dir
             store, chain, copy = seeded(dir)

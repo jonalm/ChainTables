@@ -8,6 +8,16 @@ using ChainTables.Ops: Record, Client, Insert, CreateTable
 using ChainTables.Model: Column, Shape, Content
 using SHA: sha256
 
+# A store whose every fetch of genesis fails in transport: a replay from slot 0 that
+# stops before its first checkpoint.
+struct RecoveryTestNoGenesis <: ChainTables.AbstractObjectStore
+    inner::InMemoryObjectStore
+end
+ChainTables.cache_namespace(s::RecoveryTestNoGenesis) = ChainTables.cache_namespace(s.inner)
+ChainTables.fetch_object(s::RecoveryTestNoGenesis, key) =
+    key == "p/000000000000" ? throw(ChainTables.TransportError("connection reset by peer")) : ChainTables.fetch_object(s.inner, key)
+ChainTables.stat_object(s::RecoveryTestNoGenesis, key) = ChainTables.stat_object(s.inner, key)
+
 @testset "recovery" begin
     CT = ChainTables
     hex = bytes2hex
@@ -379,6 +389,19 @@ using SHA: sha256
             @test_throws ChainNotFoundError CT.as_of(none, 0)
             @test_throws ChainNotFoundError CT.as_of(none, TransactionHash(zeros(UInt8, 32)))
             @test_throws "chain not found: no slot 0 at bkt/none" CT.as_of(none, 2)
+            # a refused target at a path as_of made leaves no directory behind, so the path is fresh again (#85)
+            q = joinpath(dir, "refused")
+            @test_throws "as_of(chain, 9): the chain at bkt/p has no slot 9" CT.as_of(chain, 9; path = q)
+            @test !ispath(q)
+            a = CT.as_of(chain, 1; path = q)
+            @test CT.head(a).slot == 1 && CT.ispinned(a)
+            close(a)
+            # so does a replay that fails before its first checkpoint (a cold cache: genesis is fetched)
+            cold = Chain("bkt", "p"; store = RecoveryTestNoGenesis(store), cache_dir = joinpath(dir, "cold"),
+                         record_host = false, record_user = false)
+            q = joinpath(dir, "cut")
+            @test_throws "connection reset by peer" CT.as_of(cold, 1; path = q)
+            @test !ispath(q)
             # a given path is kept, and opened rather than rebuilt when pinned at the slot
             p = joinpath(dir, "pinned")
             a = CT.as_of(chain, 2; path = p)

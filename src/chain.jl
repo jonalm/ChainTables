@@ -746,7 +746,12 @@ function commit!(w::WriteBuilder; comment = nothing)
         discard!(copy)      # nothing was committed locally: the old head and its files stand (ADR-0009)
         rethrow()
     end
-    write_head!(copy, chain_id, slot, th, staged)
+    try
+        write_head!(copy, chain_id, slot, th, staged)
+    catch
+        discard!(copy)      # the record is in the chain, the head is not: the next sync! applies it onto the old head
+        rethrow()
+    end
     return (; slot, transaction_hash = TransactionHash(th), state_fingerprint = StateFingerprint(staged.state_fingerprint))
 end
 

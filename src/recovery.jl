@@ -272,6 +272,8 @@ what make that safe — and the head's own record is fetched and held against th
 pinned below `target`, it is replayed forward (what an interrupted `as_of` leaves);
 pinned above, or live, it is refused, since a copy never moves backwards and `as_of`
 never touches a live copy. A `path` bound to another chain is `WrongChainError`.
+A failure before the first checkpoint at a `path` that `as_of` itself created removes
+that directory, so the path is fresh again.
 
 A `target` the chain has no slot for is refused; a prefix with no slot 0 is
 `ChainNotFoundError`. Addressing by hash scans the chain's records from slot 0 with
@@ -282,6 +284,7 @@ function as_of(chain::Chain, target; path = nothing)
     call = "as_of(chain, $slot)"
     temporary = path === nothing
     dir = temporary ? mktempdir(; prefix = "chaintables-as_of-", cleanup = false) : String(path)
+    made = !ispath(dir)
     copy = try
         open(chain, dir)
     catch
@@ -308,6 +311,8 @@ function as_of(chain::Chain, target; path = nothing)
         end
     catch
         close(copy)
+        # a directory this call made, with no head written into it, is removed: the path is fresh again (#85)
+        made && copy.head === nothing && rm(dir; recursive = true, force = true)
         rethrow()
     end
     return copy
