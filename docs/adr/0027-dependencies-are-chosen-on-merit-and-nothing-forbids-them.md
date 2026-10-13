@@ -73,7 +73,8 @@ Neither of these is an exception to the rule. They are the rule applied.
   `Random` under this ADR.
 - **Reopened as a merit call, not decided here**: `Tables.jl` as a hard
   dependency so `TableView` is a Tables.jl source (ADR-0024 currently keeps it a
-  test extra). A new issue if wanted.
+  test extra). *Decided by ADR-0043*: `Tables` is a dependency and a view is a
+  native Tables.jl table.
 - **Not reopened**: a DuckDB.jl read extension, weak or hard. ADR-0024 rules it
   out as outside the package's scope, and that reason does not depend on this
   ADR. A read engine is a different package's job.

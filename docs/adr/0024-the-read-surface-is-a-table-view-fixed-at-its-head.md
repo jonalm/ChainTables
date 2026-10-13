@@ -69,6 +69,11 @@ has something to be zero-copy over. Copy-on-view needs none of that: the view
 owns its vectors, the model can be whatever apply wants, and a user who mutates
 a view has mutated a value that reaches nothing.
 
+*Amended by ADR-0043*: the cache below makes `v` every caller's view at its
+head, so "damages only `v`" meant every later reader saw cells no record
+holds. A view's columns are now read-only — a write raises — and the view is
+a native Tables.jl table, with `Tables` a dependency.
+
 The cost is one O(rows) copy per viewed table per head — about the table's own
 size in memory again, at most the 1 GB per-table ceiling ADR-0023 fixes, and
 nothing during a cold start, when no view is taken. Views are **cached strongly
@@ -144,6 +149,8 @@ UTF-8 — the builder refuses it. Handed to issue #28 as a reason of its own.
   returns the default; a composite key is looked up as a tuple in declaration
   order; a nullable column reads `missing` and round-trips through
   `update_rows!` unchanged; mutating a view's column leaves `head(copy)` and
-  the next `commit!`'s fingerprint unchanged.
+  the next `commit!`'s fingerprint unchanged. *Amended by ADR-0043*: a write
+  to a view's column raises, and a later `table()` call reads the chain's
+  cells.
 - **Glossary**: **Table view** added; **Write builder** loses "reads go straight
   to SQLite".

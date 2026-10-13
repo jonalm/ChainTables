@@ -1,7 +1,7 @@
 # #34 step 8 — ADR-0024: the read surface. A TableView is a Tables.jl table fixed at the
 # head it was taken at, copied out of the model, cached per table per head; head, tables,
-# shape, table. Tables.jl is loaded here only to prove the interface: the package itself
-# never depends on it (ADR-0022).
+# shape, table. ADR-0043: the cached view is shared, so its columns are read-only, and it
+# is a Tables.jl table natively.
 using Tables
 using ChainTables: Chain, LocalCopy, TableView, TransactionHash, StateFingerprint, Model
 using ChainTables.Testing: InMemoryObjectStore
@@ -67,9 +67,12 @@ using ChainTables.Testing: InMemoryObjectStore
             @test_throws KeyError v[(9,)]
             @test_throws "table \"samples\" has a one-column key (id); a key of 2 cells does not address it" v[(1, 2)]
             # Tables.jl sees a row table with the declared column types
-            @test Tables.istable(v)
+            @test Tables.istable(v) && Tables.istable(typeof(v))
+            @test Tables.columnaccess(typeof(v)) && Tables.rowaccess(typeof(v))
+            @test Tables.columns(v) === v.columns                           # native: no copy (ADR-0043)
             @test Tables.columns(v).label == ["a", "b"]
-            @test Tables.columntable(v).mass isa Vector{Union{Missing,Float64}}
+            @test Tables.schema(v) == Tables.Schema((:id, :label, :mass), (Int64, String, Union{Missing,Float64}))
+            @test Tables.columntable(v).mass isa AbstractVector{Union{Missing,Float64}}
             @test isequal(Tables.columntable(v), (id = [1, 2], label = ["a", "b"], mass = Union{Missing,Float64}[1.5, missing]))
             @test isequal(Tables.rowtable(v), collect(v))
             @test Tables.schema(Tables.rows(v)).types == (Int64, String, Union{Missing,Float64})
@@ -80,14 +83,24 @@ using ChainTables.Testing: InMemoryObjectStore
             @test p[(1, "x")] == (n = 0.25, a = 1, b = "x")                 # columns in declaration order
             @test_throws "table \"pairs\" has a composite key (a, b); look it up as a tuple in key declaration order, got 1" p[1]
             @test_throws KeyError p[(1, "z")]
+            @test p[1, "x"] == p[(1, "x")]                                   # the key cells as arguments
+            @test_throws KeyError p[1, "z"]
+            # a row looks up its own key: any NamedTuple naming every key column
+            @test p[first(p)] == first(p) && isequal(v[(id = 2,)], v[2])
+            @test haskey(p, (a = 2, b = "y", n = -1.0)) && !haskey(p, (a = 2, b = "z"))
+            @test get(p, (a = 9, b = "x"), :none) === :none
+            @test_throws KeyError p[(a = 1, b = "z")]
+            @test_throws "table \"pairs\": the row (a = 1,) names no key column \"b\"; a row looks up its key, so it names every key column (a, b)" p[(a = 1,)]
             @test get(p, (1, "z"), :none) === :none && haskey(p, (2, "y"))
             # bytes: a bytes key, a nullable bytes column; a cell is the view's own copy
             b = CT.table(copy, :blobs)
             @test keys(b) == [UInt8[1], UInt8[1, 2]]
             @test isequal(b[UInt8[1]], (k = UInt8[1], v = missing)) && b[UInt8[1, 2]].v == UInt8[9]
             b[UInt8[1, 2]].v[1] = 0xff
+            b.columns.v[2][1] = 0xff
             @test isequal(collect(Model.rows_in_key_order(CT.load_table!(copy, "blobs")))[2], Any[UInt8[1, 2], UInt8[9]])
-            @test b[UInt8[1, 2]].v == UInt8[0xff]                            # the view's own value
+            @test b[UInt8[1, 2]].v == UInt8[9]                               # a bytes cell is copied on each read (ADR-0043)
+            @test CT.table(copy, :blobs).columns.v[2] == UInt8[9]
             # the surface errors
             @test_throws "table(copy, :nope): unknown table \"nope\"" CT.table(copy, :nope)
             @test_throws "table(copy, 1): table name 1 is not a Symbol" CT.table(copy, 1)
@@ -138,17 +151,32 @@ using ChainTables.Testing: InMemoryObjectStore
     end
 
     # ------------------------------------------------------------------------
-    # Mutating a view reaches nothing (ADR-0024): head(copy) and the next
-    # commit!'s fingerprint are what a fresh replay computes.
+    # A view is read-only (ADR-0043): every table(copy, :t) at one head returns
+    # the same view, so a write to it raises, and a later caller, head(copy) and
+    # the next commit!'s fingerprint see only what the chain holds.
     # ------------------------------------------------------------------------
-    @testset "mutating a view damages only the view" begin
+    @testset "a view is read-only" begin
         mktempdir() do dir
             store, chain, copy, r = fixture(dir)
             v = CT.table(copy, :samples)
             before = CT.head(copy)
-            Tables.columns(v).label[1] = "zzz"
-            v.columns.label[2] = "yyy"
-            v.columns.mass[1] = 99.0
+            msg = "a table view's columns are read-only: every table(copy, :t) at one head returns the same view (ADR-0043); " *
+                  "copy(column) is a vector of your own"
+            @test_throws msg Tables.columns(v).label[1] = "zzz"
+            @test_throws msg v.columns.mass[1] = 99.0
+            @test_throws msg CT.table_with_slots(v).label[2] = "yyy"
+            @test_throws msg CT.table_with_slots(v)._slot[1] = 7
+            @test_throws msg sort!(v.columns.label; rev = true)
+            @test_throws msg Tables.columntable(v).label[1] = "zzz"
+            later = CT.table(copy, :samples)
+            @test later === v
+            @test isequal(collect(later), [(id = 1, label = "a", mass = 1.5), (id = 2, label = "b", mass = missing)])
+            @test CT.table_with_slots(later)._slot == [1, 1]
+            # copy is the caller's own vector
+            mine = Base.copy(v.columns.label)
+            @test mine isa Vector{String}
+            mine[1] = "zzz"
+            @test v.columns.label == ["a", "b"]
             @test CT.head(copy) == before
             @test isequal(collect(Model.rows_in_key_order(CT.load_table!(copy, "samples"))), [Any[1, "a", 1.5], Any[2, "b", missing]])
             w = CT.write_builder(copy)
@@ -157,8 +185,34 @@ using ChainTables.Testing: InMemoryObjectStore
             fresh = CT.open(chain, joinpath(dir, "fresh"))
             @test CT.sync!(fresh).slot == 2
             @test CT.head(fresh) == CT.head(copy) && CT.head(fresh).state_fingerprint == r2.state_fingerprint
-            @test CT.table(fresh, :samples)[1].label == "a"
             close(copy); close(fresh)
+        end
+    end
+
+    # ------------------------------------------------------------------------
+    # An empty table is a view of no rows, with its declared schema.
+    # ------------------------------------------------------------------------
+    @testset "a view over an empty table" begin
+        mktempdir() do dir
+            store, chain, copy, r = fixture(dir)
+            w = CT.write_builder(copy)
+            CT.create_table!(w, :none) do t
+                CT.column!(t, :a, Int64)
+                CT.column!(t, :b, String)
+                CT.column!(t, :c, Float64; nullable = true)
+                CT.primary_key!(t, :a, :b)
+            end
+            CT.commit!(w)
+            e = CT.table(copy, :none)
+            @test length(e) == 0 && isempty(collect(e)) && isempty(keys(e))
+            @test eltype(e) == NamedTuple{(:a, :b, :c),Tuple{Int64,String,Union{Missing,Float64}}}
+            @test Tables.schema(e) == Tables.Schema((:a, :b, :c), (Int64, String, Union{Missing,Float64}))
+            @test isempty(Tables.columns(e).a) && eltype(Tables.columns(e).c) == Union{Missing,Float64}
+            @test Tables.rowtable(e) == eltype(e)[]
+            @test CT.table_with_slots(e)._slot == Int64[]
+            @test !haskey(e, (1, "x")) && get(e, (1, "x"), :none) === :none
+            @test_throws KeyError e[1, "x"]
+            close(copy)
         end
     end
 

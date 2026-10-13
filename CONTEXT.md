@@ -154,9 +154,10 @@ _See_: [ADR-0023](docs/adr/0023-the-local-copy-is-hash-named-table-files-and-a-s
 A read of one table of a local copy, fixed at the head the copy had when the
 view was taken. It is the only way content is read. A sync or a commit moves the
 copy and leaves every view already taken as it was, and nothing done to a view
-reaches the copy.
+reaches the copy. Every reader at one head shares one view, so a view is
+read-only.
 _Avoid_: snapshot, query result, cursor, handle, dataframe
-_See_: [ADR-0024](docs/adr/0024-the-read-surface-is-a-table-view-fixed-at-its-head.md)
+_See_: [ADR-0024](docs/adr/0024-the-read-surface-is-a-table-view-fixed-at-its-head.md), [ADR-0043](docs/adr/0043-a-table-view-is-read-only-and-a-native-tables-jl-table.md)
 
 **Table file**:
 The file that holds one table's content in a local copy — exactly the bytes the
