@@ -518,4 +518,74 @@ ChainTables.stat_object(s::RecoveryTestNoGenesis, key) = ChainTables.stat_object
             store.fault = (verb, key, phase) -> nothing
         end
     end
+
+    @testset "commit_log" begin
+        mktempdir() do dir
+            store = InMemoryObjectStore()
+            chain = Chain("bkt", "p"; store, cache_dir = joinpath(dir, "cache"))
+            copy = withenv("USER" => "alice") do
+                CT.create_chain(chain)
+                copy = CT.open(chain, joinpath(dir, "one"))
+                CT.sync!(copy)
+                w = CT.write_builder(copy)
+                CT.create_table!(w, :t) do t
+                    CT.column!(t, :id, Int64)
+                    CT.primary_key!(t, :id)
+                end
+                CT.commit!(w; comment = "make t")
+                copy
+            end
+            r2 = withenv("USER" => "bob") do
+                w = CT.write_builder(copy)
+                CT.insert_rows!(w, :t, [(id = 1,)])
+                CT.commit!(w)
+            end
+            log = CT.commit_log(copy)
+            @test [e.slot for e in log] == [2, 1, 0]                         # newest first, genesis included
+            @test [e.author for e in log] == ["bob", "alice", "alice"]
+            @test [e.comment for e in log] == [nothing, "make t", nothing]
+            @test log[1].transaction_hash == r2.transaction_hash
+            @test all(e.host == gethostname() for e in log)
+            @test issorted([e.time_ms for e in log]; rev = true) && log[end].time_ms > 0
+            @test CT.commit_log(copy; last = 2) == log[1:2]
+            @test CT.commit_log(copy; last = 99) == log
+            @test_throws "commit_log(copy; last = 0): last is the number of newest records to return, an Integer of at least 1, or nothing for all" CT.commit_log(copy; last = 0)
+            @test_throws "commit_log(copy; last = 1.5)" CT.commit_log(copy; last = 1.5)
+            # a warm cache is read with no network I/O
+            empty!(store.calls)
+            CT.commit_log(copy)
+            @test isempty(store.calls)
+            # the log is the copy's history: a copy behind the chain reports its own head
+            other = CT.open(chain, joinpath(dir, "two"))
+            @test_throws "commit_log(copy): the local copy at $(other.path) has no head yet, so it has no history; sync!(copy) binds it" CT.commit_log(other)
+            CT.sync!(other)
+            w = CT.write_builder(other)
+            CT.insert_rows!(w, :t, [(id = 2,)])
+            CT.commit!(w; comment = "from two")
+            @test first(CT.commit_log(copy)).slot == 2
+            CT.sync!(copy)
+            @test first(CT.commit_log(copy)).comment == "from two"
+            # a pinned copy's log ends at its pin
+            old = CT.as_of(chain, 1)
+            @test [e.slot for e in CT.commit_log(old)] == [1, 0]
+            close(old)
+            # a record the cache lacks is fetched; a damaged one is fetched and replaced
+            cached(s) = record_path(chain.cache, chain.store, "bkt", slotkey(s))
+            good = read(cached(2))
+            rm(cached(3))
+            write(cached(2), UInt8[0x00])
+            @test (@test_logs (:warn, r"record cache") CT.commit_log(copy)) == CT.commit_log(copy)
+            @test isfile(cached(3)) && read(cached(2)) == good
+            # bytes the store holds that do not hash to the name the copy holds: rewritten chain
+            two = store.objects[slotkey(2)]
+            plant!(store, slotkey(2), UInt8[0x00])
+            write(cached(2), UInt8[0x00])
+            err = caught(() -> CT.commit_log(copy))
+            @test err isa CT.RewrittenChainError && err.slot == 2
+            @test read(cached(2)) == UInt8[0x00]                             # the cached file stays as it was
+            plant!(store, slotkey(2), two)
+            close(other); close(copy)
+            @test_throws ArgumentError CT.commit_log(copy)
+        end
+    end
 end

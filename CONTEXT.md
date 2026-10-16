@@ -303,6 +303,13 @@ it stood at that point.
 _Avoid_: time travel, snapshot, checkout
 _See_: [ADR-0015](docs/adr/0015-as-of-addresses-slots-never-time.md)
 
+**Commit log**:
+A local copy's history read back newest first: slot, author, host, time and
+comment of each transaction record from the head down. The copy's, not the
+chain's: a copy behind the chain reports its own head.
+_Avoid_: history table, audit log, journal
+_See_: [ADR-0044](docs/adr/0044-the-commit-log-is-read-from-a-local-copy-down-from-its-head.md)
+
 **Pinned copy**:
 A local copy deliberately held at a chosen transaction record rather than kept
 current. It never advances and never commits until it is explicitly unpinned.

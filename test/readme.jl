@@ -96,6 +96,10 @@ using ChainTables.Testing: InMemoryObjectStore
             @test CT.head(old) == (; slot = 1, transaction_hash = r1.transaction_hash, state_fingerprint = r1.state_fingerprint)
             close(old)
 
+            # Who committed what lately: the copy's records, newest first.
+            log = CT.commit_log(copy2; last = 2)
+            @test [(e.slot, e.comment) for e in log] == [(2, nothing), (1, "first samples")]
+
             # Local integrity is checked on demand and never healed silently.
             @test CT.verify(copy) === nothing
             @test CT.verify(copy2) === nothing

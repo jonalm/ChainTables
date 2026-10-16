@@ -91,6 +91,9 @@ old = ChainTables.as_of(chain, 1)        # a pinned temporary copy at slot 1
 ChainTables.table(old, :samples)[2].mass # missing
 close(old)
 
+# Who committed what lately: the copy's records, newest first (ADR-0044).
+ChainTables.commit_log(copy2; last = 2)  # [(; slot = 2, transaction_hash, author, host, time_ms, comment = nothing), (; slot = 1, …, comment = "first samples")]
+
 # Local integrity is checked on demand and never healed silently (ADR-0014).
 ChainTables.verify(copy)                 # nothing, or FingerprintMismatchError
 close(copy); close(copy2)

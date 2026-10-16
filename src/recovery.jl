@@ -17,8 +17,19 @@ using .Model: Content
 # it once they hash right, and only bytes the store holds can make a rewritten chain — the
 # cached file then stays as it was. Returns the hashes by slot (index s + 1).
 function cached_chain_hashes(copy::LocalCopy, chain::Chain, call; fetch = false)
+    hashes = Vector{Vector{UInt8}}(undef, copy.head.slot + 1)
+    walk_back(copy, chain, call; fetch) do s, record, th
+        hashes[s+1] = th
+        return false
+    end
+    return hashes
+end
+
+# The walk behind `cached_chain_hashes`: call `f(slot, record, transaction_hash)` from the
+# head down, each record held against the hash the one above names, stopping after slot 0
+# or when `f` returns `true`.
+function walk_back(f, copy::LocalCopy, chain::Chain, call; fetch = false)
     h = copy.head
-    hashes = Vector{Vector{UInt8}}(undef, h.slot + 1)
     expected = h.transaction_hash
     named_by = "the head of the local copy at $(copy.path) names it as"
     for s in h.slot:-1:0
@@ -45,14 +56,14 @@ function cached_chain_hashes(copy::LocalCopy, chain::Chain, call; fetch = false)
                 "it. Nothing was written; the local copy stays readable and never commits onto this chain.";
                 chain_id = h.chain_id, slot = s, expected, found = th))
         end
-        hashes[s+1] = th
         record = Ops.decode_record(bytes; slot = s)
         chain_id_string(record.chain_id) == h.chain_id || throw(MalformedRecordError("malformed record at slot $s: it " *
             "carries chain id $(chain_id_string(record.chain_id)), the chain is $(h.chain_id) (a record of another chain " *
             "was written into this prefix). No client can apply it (ADR-0025)."; chain_id = h.chain_id, slot = s))
+        f(s, record, th) === true && return nothing
         s == 0 || (expected = record.prev_hash; named_by = "slot $s names its parent as")
     end
-    return hashes
+    return nothing
 end
 
 # The record at `slot`, from the cache, rehashed against what the chain walk established.
@@ -377,4 +388,47 @@ function slot_at(chain::Chain, time_ms)
     best === nothing && throw(ArgumentError("slot_at(chain, $time_ms): the time is before the genesis record's " *
         "client.time_ms, $genesis_ms; there is no state before slot 0 (ADR-0015)"))
     return Int64(best)
+end
+
+# ---------------------------------------------------------------------------
+# commit_log (ADR-0044)
+# ---------------------------------------------------------------------------
+
+"""
+    commit_log(copy; last = nothing) -> Vector{NamedTuple}
+
+The transaction records of the local copy's history, newest first: from the copy's head
+down to slot 0, or the `last` newest of them. Each entry is
+`(; slot, transaction_hash::TransactionHash, author, host, time_ms, comment)` — the
+record's author (`client.user`), `client.host` and `client.time_ms`
+(milliseconds since the Unix epoch, UTC, as the committer's clock gave it), and its
+comment; `author`, `host` and `comment` are `nothing` when the record carries none. Slot 0
+is the genesis record `create_chain` wrote, which has no comment.
+
+The history is the copy's, not the chain's head (ADR-0044): `sync!(copy)` first for the
+newest commits, and a pinned copy's log ends at its pin. The records are read from the
+record cache, walking down from the head: each is held against the transaction hash the
+one above names, so what the log reports is what the copy applied. A record the cache
+lacks, or holds other bytes for, is fetched from the store once and must hash to that name
+— else `RewrittenChainError`, and the cached file stays as it was (ADR-0040). A warm cache
+is read with no network I/O.
+"""
+function commit_log(copy::LocalCopy; last = nothing)
+    check_open(copy)
+    last === nothing || (last isa Integer && last >= 1) || throw(ArgumentError("commit_log(copy; last = $(repr(last))): " *
+        "last is the number of newest records to return, an Integer of at least 1, or nothing for all"))
+    h = copy.head
+    h === nothing && throw(ArgumentError("commit_log(copy): the local copy at $(copy.path) has no head yet, so it has " *
+        "no history; sync!(copy) binds it"))
+    chain = chain_of(copy, "commit_log")
+    n = last === nothing ? h.slot + 1 : min(Int64(last), h.slot + 1)
+    log = @NamedTuple{slot::Int64, transaction_hash::TransactionHash, author::Union{Nothing,String},
+                      host::Union{Nothing,String}, time_ms::Int64, comment::Union{Nothing,String}}[]
+    walk_back(copy, chain, "commit_log(copy)"; fetch = true) do s, record, th
+        c = record.client
+        push!(log, (; slot = s, transaction_hash = TransactionHash(th), author = c.user, host = c.host,
+                    time_ms = c.time_ms, record.comment))
+        return length(log) == n
+    end
+    return log
 end
