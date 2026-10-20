@@ -297,6 +297,13 @@ claimed the same position first.
 _Avoid_: push, upload, write, publish
 _See_: [ADR-0002](docs/adr/0002-commit-is-a-conditional-put-to-a-sequence-numbered-slot.md)
 
+**Commit of unknown outcome**:
+A commit that failed after its transaction record was offered to the chain, so the
+failure does not say whether it happened. It is settled by looking at the chain:
+it happened exactly when its own record holds the position it was offered for.
+_Avoid_: failed commit, maybe-commit, partial commit
+_See_: [ADR-0045](docs/adr/0045-a-commit-whose-outcome-is-unknown-names-its-record.md)
+
 **Point-in-time rebuild**:
 A replay that stops at a chosen transaction record, producing the local copy as
 it stood at that point.

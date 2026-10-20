@@ -7,7 +7,7 @@ using ChainTables: Chain, LocalCopy, Model, Ops, TransportError, WriteBuilderErr
     MalformedRecordError, AbstractObjectStore, PutOutcome, put_object_if_absent, fetch_object, stat_object,
     list_objects, record_path
 using ChainTables.Testing: InMemoryObjectStore
-using ChainTables: RecordCacheError
+using ChainTables: RecordCacheError, CommitOutcomeUnknownError
 using ChainTables.Ops: Record, Client, Insert
 
 # A store whose conditional put always says 412 while nothing is ever there: the
@@ -535,9 +535,49 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             w = CT.write_builder(copy)
             CT.insert_rows!(w, :samples, [(id = 5, label = "e", mass = 5.0)])
             n = puts(store, "p/000000000004")
-            @test_throws "service unavailable (HTTP 503)" CT.commit!(w)
+            err = caught(() -> CT.commit!(w))
+            @test err isa CommitOutcomeUnknownError                  # a 5xx proves nothing (ADR-0045)
+            @test err.cause isa TransportError && occursin("service unavailable (HTTP 503)", err.msg)
             @test puts(store, "p/000000000004") == n + CT.PUT_ATTEMPTS
             @test (heads(copy), tabs(copy), CT.head(copy)) == before
+            close(copy)
+        end
+    end
+
+    # A failure once the put began leaves the outcome unknown (ADR-0045): the error names
+    # our record's hash, and the commit log after a sync! says whether it happened.
+    @testset "a commit whose outcome is unknown" begin
+        mktempdir() do dir
+            store, chain, copy = seeded(dir)
+            # the record lands, the response is lost with a failure that is not retried
+            store.fault = (verb, key, phase) -> verb === :put_object_if_absent && phase === :after &&
+                error("response dropped")
+            w = CT.write_builder(copy)
+            CT.insert_rows!(w, :samples, [(id = 3, label = "c", mass = 3.0)])
+            before = (heads(copy), tabs(copy), CT.head(copy))
+            err = caught(() -> CT.commit!(w))
+            store.fault = (verb, key, phase) -> nothing
+            @test err isa CommitOutcomeUnknownError
+            @test (err.chain_id, err.slot, err.landed) == (copy.head.chain_id, 2, nothing)
+            @test err.cause isa ErrorException && err.transaction_hash isa CT.TransactionHash
+            @test sprint(showerror, err) == "CommitOutcomeUnknownError: commit outcome unknown: the record for slot 2 of " *
+                "chain $(err.chain_id) at bkt/p may or may not be in the chain (response dropped). Our record's transaction " *
+                "hash is $(hex(err.transaction_hash)): sync!(copy), and the commit happened exactly when commit_log(copy) " *
+                "shows it at slot 2. This builder is spent and is never re-run (ADR-0002)."
+            @test (heads(copy), tabs(copy), CT.head(copy)) == before && isempty(copy.content)
+            @test_throws "this builder is spent" CT.commit!(w)
+            CT.sync!(copy)
+            r = only(CT.commit_log(copy; last = 1))
+            @test (r.slot, r.transaction_hash) == (2, err.transaction_hash)
+            # the put fails before anything lands: the same error, and the slot stays empty
+            store.fault = (verb, key, phase) -> verb === :put_object_if_absent && phase === :before &&
+                error("interrupted")
+            w = CT.write_builder(copy)
+            CT.insert_rows!(w, :samples, [(id = 4, label = "d", mass = 4.0)])
+            err = caught(() -> CT.commit!(w))
+            store.fault = (verb, key, phase) -> nothing
+            @test err isa CommitOutcomeUnknownError && err.slot == 3 && err.landed === nothing
+            @test CT.sync!(copy).slot == 2 && !haskey(store.objects, slotkey(3))
             close(copy)
         end
     end
@@ -1144,7 +1184,8 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             finally
                 chmod(hd, 0o755)
             end
-            @test err isa SystemError
+            @test err isa CommitOutcomeUnknownError && err.landed === true && err.cause isa SystemError   # ADR-0045
+            @test occursin("is in the chain, but the local copy's head was not written", err.msg)
             @test haskey(store.objects, slotkey(2)) && CT.head(copy).slot == 1
             # our own record is applied by the next sync! onto the old head, never onto the dropped rows
             @test CT.sync!(copy).slot == 2

@@ -66,6 +66,27 @@ LostRaceError(msg; chain_id = nothing, slot = nothing, transaction_hash = nothin
     LostRaceError(msg, chain_id, slot, maybe_hash(TransactionHash, transaction_hash))
 
 """
+    CommitOutcomeUnknownError(msg; chain_id, slot, transaction_hash, landed, cause)
+
+Raised by `commit!` when it failed after the put of its record began, so the failure
+does not say whether the commit happened (ADR-0045). `transaction_hash` is the hash of
+the record it put at `slot`: after `sync!(copy)`, the commit happened exactly when
+`commit_log(copy)` shows that hash at that slot. `landed` is `true` when the record is
+known to be in the chain (the local copy's head was not written), `nothing` when
+unknown. `cause` is the failure. Never retried: the builder is spent.
+"""
+struct CommitOutcomeUnknownError <: ChainTablesError
+    msg::String
+    chain_id::MaybeString
+    slot::MaybeInt
+    transaction_hash::MaybeTxn
+    landed::Union{Nothing,Bool}
+    cause::Any
+end
+CommitOutcomeUnknownError(msg; chain_id = nothing, slot = nothing, transaction_hash = nothing, landed = nothing, cause = nothing) =
+    CommitOutcomeUnknownError(msg, chain_id, slot, maybe_hash(TransactionHash, transaction_hash), landed, cause)
+
+"""
     UnsupportedStoreError(msg; endpoint)
 
 Raised by `commit!` against a store that is not AWS S3 unless

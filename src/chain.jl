@@ -666,8 +666,12 @@ built (over the store's cap — 64 MiB, 4 MiB on a gateway bucket — is `WriteB
 with the byte count) and put conditionally with the retry loop and read-back of
 ADR-0010. Our record at the slot — created, or found after a lost acknowledgement —
 writes the head; another client's there is `LostRaceError`, never retried; a gateway's
-refusal is `WriteRefusedError`, never retried (ADR-0028). Anything short of the head
-write leaves the copy at its head with the model dropped (`discard!`). Before any of it,
+refusal is `WriteRefusedError`, never retried (ADR-0028). Any other failure once the put
+began — the retries spent, the read-back failed, an interrupt, or the head write itself —
+is `CommitOutcomeUnknownError` naming our record's transaction hash: after `sync!(copy)`,
+the commit happened exactly when `commit_log(copy)` shows it at that slot (ADR-0045).
+Anything short of the head write leaves the copy at its head with the model dropped
+(`discard!`). Before any of it,
 an S3 client at a host that is not AWS is refused with `UnsupportedStoreError` unless the
 chain's `assume_first_writer_wins` is set (ADR-0016), and right after that the author is
 fetched from the store (`record_author`: the environment on a plain bucket, the STS
@@ -734,7 +738,12 @@ function commit!(w::WriteBuilder; comment = nothing)
         bytes = Ops.encode_record(record)
         check_record_cap(store, bytes, "commit!(w)")            # ADR-0028: the store's cap, before the put
         th = Ops.transaction_hash(bytes)
-        found = put_record_for!(chain, h.chain_id, slot, bytes)
+        found = try
+            put_record_for!(chain, h.chain_id, slot, bytes)
+        catch e
+            known_unwritten(e) && rethrow()
+            throw(outcome_unknown(chain, h.chain_id, slot, th, nothing, e))
+        end
         if found !== nothing
             throw(LostRaceError("lost race for slot $slot of chain $(h.chain_id) at $(location(chain)): another client's " *
                 "record is there (transaction hash $(bytes2hex(Ops.transaction_hash(found)))). sync!(copy), recompute the " *
@@ -749,11 +758,28 @@ function commit!(w::WriteBuilder; comment = nothing)
     end
     try
         write_head!(copy, chain_id, slot, th, staged)
-    catch
+    catch e
         discard!(copy)      # the record is in the chain, the head is not: the next sync! applies it onto the old head
-        rethrow()
+        throw(outcome_unknown(chain, h.chain_id, slot, th, true, e))
     end
     return (; slot, transaction_hash = TransactionHash(th), state_fingerprint = StateFingerprint(staged.state_fingerprint))
+end
+
+# A failure of the put that says the record was not written (ADR-0045): the store
+# refused it with a client error, or ChainTables raised its own (a gateway's refusal, a
+# rewritten chain). Anything else — a transport failure the retries could not settle, a
+# failed read-back, an interrupt — leaves the outcome unknown.
+known_unwritten(e) = e isa ChainTablesError || (e isa TransportError && e.status !== nothing && 400 <= e.status < 500 && !retryable(e))
+
+function outcome_unknown(chain::Chain, chain_id, slot, th, landed, cause)
+    what = landed === true ?
+        "the record for slot $slot of chain $chain_id at $(location(chain)) is in the chain, but the local copy's head " *
+        "was not written" :
+        "the record for slot $slot of chain $chain_id at $(location(chain)) may or may not be in the chain"
+    return CommitOutcomeUnknownError("commit outcome unknown: $what ($(sprint(showerror, cause))). Our record's " *
+        "transaction hash is $(bytes2hex(th)): sync!(copy), and the commit happened exactly when commit_log(copy) shows " *
+        "it at slot $slot. This builder is spent and is never re-run (ADR-0002).";
+        chain_id, slot, transaction_hash = th, landed, cause)
 end
 
 # The head against its own record (ADR-0007, ADR-0014): the slot is fetched from the
