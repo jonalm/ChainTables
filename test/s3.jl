@@ -167,6 +167,13 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
         @test_throws "aws sso login --profile team" failing()
         @test_throws "--use-device-code" failing()
         @test_throws "The SSO session associated with this profile has expired" failing()
+        # logged in but not assigned the role: the role and account, not the login command
+        forbidden = "An error occurred (ForbiddenException) when calling the GetRoleCredentials operation: No access"
+        settings = Dict("sso_role_name" => "writer", "sso_account_id" => "123456789012")
+        noaccess = S3T.sso_credentials("team"; exporter = _ -> error(forbidden), setting = (p, k) -> settings[k])
+        @test_throws "not assigned role writer on account 123456789012" noaccess()
+        @test_throws "No access" noaccess()
+        @test !occursin("aws sso login", sprint(showerror, try noaccess() catch e e end))
         @test_throws "aws configure export-credentials --profile team printed no" S3T.sso_credentials("team"; exporter = _ -> "")()
         @test_throws ArgumentError S3T.sso_credentials("")
         @test_throws "profile must not be empty" S3T.sso_credentials("")

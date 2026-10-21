@@ -68,7 +68,9 @@ chain = ChainTables.Chain(bucket, prefix; gateway = url, region, credentials)
 Requires the AWS CLI v2 on `PATH`, and only when called. A failed export — no login, an
 expired session, an unknown profile, no CLI — raises with the CLI's own message and the
 `aws sso login` command to run (`--use-device-code` when the browser cannot reach the
-authorize page), or [`sso_login`](@ref) from Julia. Nothing here is Identity Center-specific:
+authorize page), or [`sso_login`](@ref) from Julia. A `ForbiddenException` from
+`GetRoleCredentials` — logged in, but not assigned the profile's role — raises with the
+profile's `sso_role_name` and `sso_account_id` instead, since logging in again cannot help. Nothing here is Identity Center-specific:
 any profile the CLI can export credentials for works, a plain bucket as well as a gateway
 bucket.
 
@@ -78,7 +80,7 @@ and exports again, and a second failure raises as above. Outside one — a scrip
 `login = true` changes nothing: the failure raises rather than a browser blocking the run.
 """
 function sso_credentials(profile::AbstractString; login = false, exporter = run_export_credentials, now = time,
-                         login_with = sso_login, interactive = isinteractive)
+                         login_with = sso_login, interactive = isinteractive, setting = run_configure_get)
     isempty(profile) && throw(ArgumentError("sso_credentials: profile must not be empty"))
     profile = String(profile)
     cached = Ref{Union{Nothing,Tuple{Credentials,Float64}}}(nothing)
@@ -94,7 +96,13 @@ function sso_credentials(profile::AbstractString; login = false, exporter = run_
                 exporter(profile)
             end
         catch e
-            error("aws configure export-credentials --profile $profile failed: $(sprint(showerror, e))\nLog in with " *
+            msg = sprint(showerror, e)
+            # Logged in, but the identity is not assigned the profile's role: logging in again cannot help.
+            occursin("ForbiddenException", msg) && occursin("GetRoleCredentials", msg) &&
+                error("aws configure export-credentials --profile $profile failed: $msg\nThe login worked, but this " *
+                      "identity is not assigned role $(setting(profile, "sso_role_name")) on account " *
+                      "$(setting(profile, "sso_account_id")); an Identity Center admin must assign it.")
+            error("aws configure export-credentials --profile $profile failed: $msg\nLog in with " *
                   "`aws sso login --profile $profile` (add --use-device-code if the browser cannot reach the authorize page).")
         end
         credentials, expiry = try
@@ -138,6 +146,16 @@ function run_sso_login(cmd::Cmd)
 end
 
 const SSO_REFRESH_MARGIN = 300.0          # seconds before expiry at which the CLI is run again
+
+# The default setting reader, for an error message only: the profile's value of `key`, or
+# what reading it printed when that failed, so the original failure is never masked.
+function run_configure_get(profile::AbstractString, key::AbstractString)
+    Sys.which("aws") === nothing && return "<$key: the AWS CLI (aws) is not on PATH>"
+    out, err = IOBuffer(), IOBuffer()
+    cmd = pipeline(`aws configure get $key --profile $profile`; stdout = out, stderr = err)
+    success(cmd) || return "<$key: $(strip(String(take!(err))))>"
+    return strip(String(take!(out)))
+end
 
 # The default exporter: the CLI, stderr captured so a refusal carries the CLI's own text.
 function run_export_credentials(profile::AbstractString)
