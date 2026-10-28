@@ -64,6 +64,8 @@ which ADR-0010 deliberately left out of the port, and nothing in v1 wants it.
   listing of a chain prefix yields every slot key first and every reserved name
   after, never interleaved. Reserved names should be given a leading underscore for
   that reason — `<prefix>/_snapshots/…` if a cached local copy ever ships.
+  (*Amended by ADR-0046*: `<prefix>/_attachments/<sha256>` is the first, and
+  the gateway admits it.)
 - **Twelve digits is the whole address**, so a key with eleven or thirteen is not a
   malformed slot — it is a reserved name, and it is ignored. There is no "invalid
   slot key" error, by construction.

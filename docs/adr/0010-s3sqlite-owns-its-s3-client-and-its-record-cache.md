@@ -29,6 +29,9 @@ routes `put_object_if_absent` through a Lambda function URL and the other three
 to S3 directly; the author a record carries comes through an internal
 `record_author(store)` dispatch, not a fifth verb.
 
+*Amended by ADR-0046*: attachments are put and fetched by internal streaming
+dispatch, `put_attachment(store, key, io)` and a GET to a file, not by new verbs.
+
 ## The chain decides a commit's outcome, not the HTTP status
 
 Issue #5 and issue #8 both named one constraint the hardest thing this decision
@@ -120,6 +123,8 @@ Two properties are load-bearing and are recorded as such:
   keys are content-addressed, but because ADR-0002 gives every slot at most one
   record for all time, so a key's bytes are immutable by protocol. Any object
   whose key-to-bytes mapping could change must never be read through this cache.
+  (*Amended by ADR-0046*: attachments are cached apart from records, shared by
+  every chain, and the first read through a copy asks the chain's store.)
 - **Absence is never memoized.** A client polling a slot that is still empty must
   see the transaction record the moment it lands.
 

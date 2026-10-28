@@ -59,6 +59,9 @@ Two limits apply, on every platform:
   is at most 198 and 61 are left for it. The Windows default,
   `C:\Users\<user>\.julia\chaintables\records`, is about 40 plus the user
   name.
+  (*Amended by ADR-0046*: an attachment is cached at
+  `cache_dir/attachments/<h[1:2]>/<h>`, not at its mirrored key, which would
+  leave about 10 characters for `cache_dir`.)
 - **The longest cache path is at most 259 UTF-16 code units.** This is checked
   by `record_path` and, before any I/O, by `Chain(...)` for slot 0. Every slot
   key has the same length, so one check covers them all. "Longest" means the

@@ -1,0 +1,257 @@
+---
+status: accepted
+---
+
+# An attachment is content-addressed under its chain and written once through a minted URL
+
+Every client holds the whole chain locally, by design. Some data a chain must
+refer to is too large for that: immutable files of megabytes to gigabytes,
+often over 4 MiB. A `bytes` cell would put them in every local copy, and a
+gateway record is capped at 4 MiB (ADR-0028). They still need
+the chain's retention, encryption, access policy and author attribution, at
+sizes up to 5 GiB. Issue #90.
+
+A downstream package cannot add them by itself: on a gateway bucket, locked or
+not, only the gateway may PUT (`OnlyTheGatewayPuts`), and the gateway refuses
+any key that is not a slot.
+
+## Decision
+
+An **attachment** is an immutable object stored at
+`<prefix>/_attachments/<h>` (`_attachments/<h>` for the chain at the bucket
+root), where `<h>` is the SHA-256 of its bytes in lowercase hex, 64 characters.
+A row refers to one by holding `<h>` in a plain `text` column. What the
+attachment means, and which columns refer to one, is the downstream package's
+(ADR-0003). ChainTables promises only that a key and its bytes match and that
+the key is written once.
+
+**Per chain, not per bucket.** The policy rules decide who may write
+attachments with no change, a chain stays one addressable place (ADR-0011), and
+copying a chain copies its attachments. Deduplication across chains is given
+up.
+
+### The key
+
+A key is an **attachment key** if it matches
+`^(<prefix>/)?_attachments/[0-9a-f]{64}$`. A chain at a prefix like
+`x/_attachments` stays legal: its slots (12 digits) cannot collide with an
+attachment of chain `x` (64 hex). The client refuses any hash that is not 64
+lowercase hex.
+
+The gateway classifies the key **before** the policy check, and checks an
+attachment key against its `<prefix>`, to which `prefix_problem` also applies.
+The key up to its last `/`, which is what the slot path uses, would be
+`x/_attachments`: a writer of that nested chain could then write chain `x`'s
+attachments, and root `_attachments/<h>` would never match rule `""`. Any other
+key is handled as before.
+
+### Writing on a gateway bucket
+
+A function URL takes at most 6 MB per request, streaming or not, so the bytes
+never pass through the gateway. Instead it gains a **mint route**. Every
+gateway bucket uses it; a locked one adds the KMS and lock headers.
+
+1. The client hashes the attachment and asks the mint route for its key, with
+   a declared size.
+2. The gateway checks, first failure wins:
+   1. the caller is allowed on `<prefix>` → else `403 not_allowed`;
+   2. the key is an attachment key → else `400 not_a_slot`, which now means
+      "neither a slot nor an attachment";
+   3. the declared size is at most 5 GiB, 5,368,709,120 bytes, S3's limit for
+      one PUT → else `413 too_large`.
+3. The gateway HEADs the key.
+   - **Present**: on a locked bucket it moves the version's COMPLIANCE
+     retain-until to `now + N + margin` with `PutObjectRetention`, unless the
+     current date is later. It replies `present`, and nothing is uploaded.
+   - **Absent**: it replies with a presigned PUT, signed under its own role,
+     whose signed headers are `x-amz-checksum-sha256` = the **base64** of the
+     digest (as the slot put sends it, not the hex), `If-None-Match: *`,
+     `Content-Type: application/octet-stream`, an `x-amz-tagging` that marks
+     the object an attachment, and on a locked bucket a slot write's SSE-KMS
+     and COMPLIANCE headers with retain-until `now + N + margin`.
+4. The gateway logs the caller, the key, the declared size and which of the
+   two it did.
+5. Before sending a byte, the client checks the URL: https, host the chain's
+   bucket in its region, path the expected key, method PUT. Otherwise
+   `GatewayMismatchError`.
+6. The client PUTs the bytes from the file. A `412` means another writer won
+   the race; the client asks the mint route again, which finds it present and
+   extends the retention.
+7. The client HEADs the key in the chain's bucket. Absent:
+   `GatewayMismatchError`, as for a slot (ADR-0029).
+
+**The margin** is the URL's lifetime plus one day, an allowance for the time
+between upload and commit. **The URL's lifetime** grows with the declared size
+from a 15-minute floor and is capped at what remains of the role's session,
+since a presigned URL dies with the credentials that signed it. S3 checks the
+expiry when a request starts, so an upload that has begun survives it.
+
+S3 enforces what the gateway cannot see. A body that does not hash to `<h>` is
+refused (`BadDigest`). A missing or altered signed header fails the signature.
+`If-None-Match` refuses every write after the first, so a URL used again, as
+AWS allows until it expires, stores nothing more. The request runs as the
+gateway role, so `OnlyTheGatewayPuts` and the lock-header denies hold
+unchanged. The gateway checks no author and reads no content; attribution comes
+from the record whose row holds the hash.
+
+**The bucket policy denies a presigned PUT** (`s3:authType` =
+`REST-QUERY-STRING`) to any key outside `_attachments/` and `*/_attachments/`.
+A gateway bug can then never mint a working URL for a slot, which would bypass
+the author check.
+
+### Writing on a plain bucket
+
+A plain bucket, one with no gateway, takes the PUT directly, with the checksum
+and `If-None-Match: *`; `412` is success. There is no retention to extend.
+
+The difference is internal dispatch, `put_attachment(store, key, io)`, as for
+`record_author(store)`, together with a streaming GET to a file.
+`Testing.InMemoryObjectStore` gets both. The transport gains a streaming PUT
+from a file and a streaming GET to a file, with timeouts that suit 5 GiB; today
+it holds bodies in memory and times out after 60 s.
+
+### Retention
+
+On a locked bucket an attachment's retain-until is `now + N + margin`, set when
+it is minted, and extended when a mint finds it present. It never gains a
+second version. A row committed within the margin of the mint therefore never
+outlives its attachment.
+
+A row that reuses a hash must first call `touch_attachment(chain, hash)`, which
+takes the mint route's *present* path and needs only the hash. ChainTables
+cannot enforce that order, nor that an upload comes before its commit: it does
+not know which columns hold references. Both are the downstream package's to
+keep.
+
+### The client surface
+
+- `put_attachment(chain, path_or_io) -> hash` hashes, then mints and uploads.
+  It takes a path or a seekable IO and refuses a non-seekable one: the hash
+  must be known before the upload, and 5 GiB must not be held in memory.
+- `touch_attachment(chain, hash)` extends the retention of an attachment the
+  chain's store holds, and fails if it is absent.
+- `attachment(copy, hash) -> path` is the path of the cached file. It is
+  fetched lazily, never on `sync!`, and nothing checks that a row of the copy
+  refers to the hash.
+
+### The cache
+
+An attachment is cached at `cache_dir/attachments/<h[1:2]>/<h>`, a sibling of
+`records/`, shared by every chain and bucket. Mirroring the key, as the record
+cache does, would leave about 10 characters for `cache_dir` under ADR-0034's
+budget; content addressing makes the files safe to share.
+
+A download goes to a temporary file, is checked against `<h>`, and is moved
+into place read-only, with a sidecar holding its size and mtime. A read checks
+the file against the sidecar, not against the hash: hashing 5 GiB on every read
+costs too much. That is weaker than the record cache's check (ADR-0040), and
+`verify(copy; full = true)` makes up for it by hashing the files.
+
+A shared file must not stand in for the chain's word, so the **first read of an
+attachment through a copy HEADs its key in that chain's store**, even on a
+cache hit, and records the hash as confirmed for the copy. Otherwise a file
+cached from another chain, or by the uploader itself, would hide an attachment
+this chain's store lacks, and every other client would fail. `verify(copy;
+full = true)` and `repair!(copy)` cover only the hashes confirmed through the
+copy, and `repair!` fetches them from its chain's store.
+
+### Errors
+
+Each has a message test (ADR-0020); the names are settled with the code.
+
+- The file changed between hashing and upload (`BadDigest`).
+- A mint refused: `WriteRefusedError`, now also raised by `put_attachment` and
+  `touch_attachment`.
+- A bad URL, or a key absent after the upload: `GatewayMismatchError`.
+- The attachment is absent from the chain's store, which is common once a
+  retention ends.
+- A download that does not hash to `<h>`.
+- A damaged cache file.
+- A gateway with no mint route: the message says to redeploy it, not
+  `not_a_slot`.
+
+## Why a presigned PUT is right here when ADR-0028 refused it
+
+ADR-0028 refused presigned PUTs for records on two grounds. The minter can check
+the caller but not the record, and the author check needs the record's body.
+And the minter could not enforce `If-None-Match`. An attachment has no author
+field, and its key is fixed by its content, which S3 checks. `If-None-Match` is
+a signed header, which S3 enforces like any other.
+
+## Considered options
+
+- **Chunks through the gateway**: split an attachment into 4 MiB chunks, each
+  content-addressed, plus a manifest whose hash is the reference. One write
+  path and no presigned URL, but about 1,300 calls for 5 GiB, base64 overhead,
+  and reassembly on every read. Rejected.
+- **A hole in the lock policy for attachment keys.** It loses the gateway's
+  check of the caller and weakens the retention guarantees. Rejected.
+- **A second locked bucket for attachments.** It duplicates
+  `setup-locked-bucket.sh` and the policy, which then drift apart. Rejected.
+- **Always PUT, with no `If-None-Match`.** A hash-named key can only hold
+  identical bytes, so it is safe for the content. But a presigned URL works
+  any number of times until it expires, and on a locked bucket each use is a
+  new COMPLIANCE version nobody can delete; every reuse also uploads again.
+  It would break ADR-0002/0012's write-once rule too. Rejected.
+- **Skip the upload when the key is present, with no extension.** A row
+  committed today could refer to an attachment whose retention ends next week.
+  Rejected.
+- **One key per bucket** (`_attachments/<h>` at the root for every chain):
+  deduplication across chains, but a policy rule no longer decides who may
+  write an attachment, and a chain is no longer one place. Rejected.
+- **Multipart upload, for attachments over 5 GiB.** S3 gives only a composite
+  SHA-256 for multipart, so it could not check that the bytes hash to `<h>`.
+  Out of scope.
+- **`_blobs`** as the reserved name. The glossary avoids "blob". Rejected.
+
+## Consequences
+
+- **ADR-0002 and ADR-0012 are amended in place**: attachments are written once
+  too, by `If-None-Match`, but through a second write path, so
+  `put_object_if_absent` is no longer the only write.
+- **ADR-0010 is amended in place**: attachments use internal streaming put and
+  get, not new verbs of the port, and are cached outside the record cache with
+  a first read that asks the store.
+- **ADR-0011 is amended in place**: `_attachments/<h>` is a reserved name the
+  gateway admits.
+- **ADR-0020's table** gains the new types; `WriteRefusedError` and
+  `GatewayMismatchError` gain `put_attachment` and `touch_attachment`.
+- **ADR-0028 is amended in place**: the gateway gains a second kind of write
+  and the mint route; `not_a_slot`'s meaning and the order of classification
+  and policy check change; presigned PUTs are refused for records and admitted
+  for attachments.
+- **ADR-0029 is amended in place**: the client checks a minted URL and HEADs
+  after the upload.
+- **ADR-0034 is amended in place**: the attachment cache path, and why it is
+  not mirrored.
+- **ADR-0038 and ADR-0042 are amended in place**: an attachment's retention
+  runs from its mint plus a margin and is extended on reuse. Deletion after a
+  retention ends is a break-glass change, as for a record. Per-chain keys rule
+  out a key-prefix lifecycle filter; the signed tag leaves a tag filter
+  possible. The gateway role needs `s3:PutObjectTagging`.
+- **What is not promised**: that a committed row refers to an attachment that
+  exists. The reference is plain text, and after retention ends records and
+  attachments are deleted independently.
+- **Orphans are accepted.** An upload whose commit is lost is kept until its
+  retention ends, and S3 attributes it to the gateway role. So any allowed
+  writer can store up to 5 GiB per mint that no row refers to. The mint log
+  names the caller. A rate limit or alarm is deferred.
+- **The live gateway test (ADR-0030) proves**, on a locked bucket:
+  - a wrong body is refused with `BadDigest`;
+  - an omitted or altered signed header is refused;
+  - a correct body is stored with COMPLIANCE retention, SSE-KMS and the tag;
+  - a second PUT to the same URL is refused with `412`;
+  - a mint of a present attachment moves its retain-until later and mints no
+    URL;
+  - a presigned PUT to a slot is denied;
+  - `x/_attachments/<h>` is checked against `x`.
+
+  If presigned `If-None-Match` is not enforced, the HEAD at mint time still
+  stops most second uploads, and a reuse of one URL within its lifetime is an
+  accepted gap, written into this ADR.
+- **Unverified when this was written**:
+  - whether boto3's presigner takes `ChecksumSHA256` or the header must be
+    signed by hand, and whether botocore adds a default CRC32;
+  - whether a signed `Content-Length` is enforced (nothing relies on it);
+  - the HTTP status of `BadDigest`;
+  - how much session the Lambda role has left when it signs.

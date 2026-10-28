@@ -60,6 +60,13 @@ _Avoid_: metadata object, sidecar, extra key. Distinct from a *head file*,
 which lives inside a local copy rather than in the bucket.
 _See_: [ADR-0011](docs/adr/0011-a-chain-is-flat-slot-keys-plus-reserved-names.md)
 
+**Attachment**:
+An immutable object stored under a chain's prefix and named by the SHA-256 of
+its bytes, too large to belong in every local copy. A row refers to one by
+holding its hash; what the attachment means is the downstream package's.
+_Avoid_: blob, content object (*content* is the tables' state), file, payload
+_See_: [ADR-0046](docs/adr/0046-an-attachment-is-content-addressed-under-its-chain-and-written-once-through-a-minted-url.md)
+
 **Transaction record**:
 One immutable object in the chain. It holds the ops of one commit, and the
 hashes that place it in the chain.

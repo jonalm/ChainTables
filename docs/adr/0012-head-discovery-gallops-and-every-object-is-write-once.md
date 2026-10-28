@@ -49,6 +49,10 @@ was designed to have none. Twenty probes once at cold start is not worth that.
 - **`put_object_if_absent` remains the only write verb**, and ADR-0002's
   prohibition on unconditional PUT and delete stays unrepresentable rather than
   merely forbidden — including for the reserved names ADR-0011 admits.
+  (*Amended by ADR-0046*: an attachment is written once too, by `If-None-Match`,
+  but through a second path — a presigned PUT minted by the gateway, or a
+  direct conditional PUT on a plain bucket — so this verb is no longer the only
+  write.)
 - **The record cache is safe for every object type**, not only transaction records.
   Its correctness rests on a key's bytes being immutable by protocol, and that now
   holds for everything ChainTables writes.

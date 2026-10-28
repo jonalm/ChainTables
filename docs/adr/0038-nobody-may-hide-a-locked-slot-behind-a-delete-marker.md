@@ -55,6 +55,8 @@ the issue asked for. It runs on every setup, against the real bucket.
   deny (ADR-0028). It turns a casual or scripted delete into a policy change.
 - After the retention of a record ends, its version can be deleted, and the
   slot can then be filled again.
+  (*Amended by ADR-0046*: an attachment is retained from its mint plus a
+  margin, extended when a mint finds it present, and deleted the same way.)
 - An existing locked bucket gets the deny when `setup-locked-bucket.sh` runs
   again (#83).
 - A locked bucket cannot have its old records cleaned up by expiring current

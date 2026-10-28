@@ -47,6 +47,9 @@ body `{"code", "message"}` (the wire contract is issue #54 §5 and the top of
    (*Amended by ADR-0039*: a rule may also pin the caller's account and role.)
 2. The key is a slot — `<prefix>/<12 digits>`, or `<12 digits>` at the bucket
    root — and never a reserved name (ADR-0011) → else `400 not_a_slot`.
+   (*Amended by ADR-0046*: the mint route accepts an attachment key, which is
+   classified before check 1 so that the policy is checked against its
+   `<prefix>`; `not_a_slot` then means "neither a slot nor an attachment".)
 3. The body decodes, under a strict CBOR decoder, as a map → else
    `400 not_cbor_map`. (*Amended by ADR-0035*: "strict" means the record
    format the Julia reader accepts, checked by domain and by a canonical
@@ -213,6 +216,9 @@ the plain store's behaviour is unchanged. This amends ADR-0010's retry rule.
   bytes go straight to S3 after the URL is minted — so the author check is
   impossible, and the presigned URL would carry `PutObject` without
   `If-None-Match` being enforceable by the minter.
+  (*Amended by ADR-0046*: still refused for records, and the bucket policy now
+  denies a presigned PUT to a slot. Admitted for attachments, which have no
+  author and whose key S3 checks against the bytes, with `If-None-Match` signed.)
 - **Recording gatedness in the chain**, so a client could tell from the records
   that they were author-checked. Rejected: gatedness is the bucket's, a chain
   copied elsewhere is the same chain, it would break ADR-0003 and the unchanged

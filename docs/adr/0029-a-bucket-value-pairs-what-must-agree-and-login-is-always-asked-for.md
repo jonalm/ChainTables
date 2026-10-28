@@ -125,6 +125,10 @@ consistent, so absence is a verdict and not a race; a stat that itself fails is
 a retryable `TransportError`, and the re-issued put's `412` hands the decision
 to ADR-0010's read-back as usual.
 
+*Amended by ADR-0046*: `put_attachment` checks a minted URL before sending a
+byte — https, the chain's bucket and region, the expected key, PUT — and stats
+the key after the upload; either failure is `GatewayMismatchError`.
+
 The cost is one `HEAD` per commit on a gateway bucket, accepted: the alternative
 is a commit that reports success and is lost. The record that landed in the
 other bucket stays there — the port has no delete (ADR-0010) — and the message

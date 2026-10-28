@@ -52,5 +52,8 @@ multipart uploads under `probe/`.
 - In a locked bucket the rules ADR-0038 wanted to keep have little to do:
   puts never overwrite and deletes are denied, so there are almost no
   noncurrent versions or delete markers to expire.
+- (*Amended by ADR-0046*: an attachment is written once too, so this holds for
+  it. Its key is per chain, which rules out a key-prefix filter, so the gateway
+  tags it, and a tag filter stays possible as a break-glass change.)
 - An existing locked bucket gets the deny when `setup-locked-bucket.sh` runs
   again (#83).
