@@ -126,7 +126,7 @@ a retryable `TransportError`, and the re-issued put's `412` hands the decision
 to ADR-0010's read-back as usual.
 
 *Amended by ADR-0046*: `put_attachment` checks a minted URL before sending a
-byte — https, the chain's bucket and region, the expected key, PUT — and stats
+byte — https, the chain's bucket on its regional endpoint, the expected key, PUT — and stats
 the key after the upload; either failure is `GatewayMismatchError`.
 
 The cost is one `HEAD` per commit on a gateway bucket, accepted: the alternative

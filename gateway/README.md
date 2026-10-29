@@ -17,6 +17,7 @@ the checks and status codes are listed at the top of [`handler.py`](handler.py).
 | `build.sh` | produces the deployment zip |
 | `deploy.sh` | creates or updates the bucket, execution role, function, URL and bucket policy |
 | `setup-locked-bucket.sh` | a locked bucket around `build.sh` + `deploy.sh`: KMS key, Object Lock, the deny statements, the role's extra grants |
+| `probe/attachment_probe.py` | ADR-0046's live probe of presigned attachment PUTs on a locked bucket; signs in a throwaway Lambda under the gateway role |
 
 ## Tests
 

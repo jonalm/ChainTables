@@ -67,29 +67,49 @@ gateway bucket uses it; a locked one adds the KMS and lock headers.
      whose signed headers are `x-amz-checksum-sha256` = the **base64** of the
      digest (as the slot put sends it, not the hex), `If-None-Match: *`,
      `Content-Type: application/octet-stream`, an `x-amz-tagging` that marks
-     the object an attachment, and on a locked bucket a slot write's SSE-KMS
-     and COMPLIANCE headers with retain-until `now + N + margin`.
+     the object an attachment, `Content-Length` = the declared size, and on a
+     locked bucket a slot write's SSE-KMS and COMPLIANCE headers with
+     retain-until `now + N + margin`. boto3's presigner signs all of them from
+     `put_object`'s own parameters (`ChecksumSHA256`, `IfNoneMatch`,
+     `ContentLength`, ...) and adds no default checksum. The S3 client
+     presigns with `addressing_style = "virtual"`: by default botocore signs
+     the global host `<bucket>.s3.amazonaws.com`, which answers a young bucket
+     outside us-east-1 with `307`. The reply carries the URL and the exact
+     headers to send.
 4. The gateway logs the caller, the key, the declared size and which of the
    two it did.
 5. Before sending a byte, the client checks the URL: https, host the chain's
-   bucket in its region, path the expected key, method PUT. Otherwise
-   `GatewayMismatchError`.
-6. The client PUTs the bytes from the file. A `412` means another writer won
-   the race; the client asks the mint route again, which finds it present and
-   extends the retention.
+   bucket on its **regional** endpoint, path the expected key, method PUT.
+   Otherwise `GatewayMismatchError`.
+6. The client PUTs the bytes from the file with the reply's headers and no
+   other `x-amz-*` header: S3 refuses one that is not signed (`403`, "headers
+   present in the request which were not signed"). It follows no redirect. A
+   `412` means another writer won the race; the client asks the mint route
+   again, which finds it present and extends the retention.
 7. The client HEADs the key in the chain's bucket. Absent:
    `GatewayMismatchError`, as for a slot (ADR-0029).
 
 **The margin** is the URL's lifetime plus one day, an allowance for the time
 between upload and commit. **The URL's lifetime** grows with the declared size
 from a 15-minute floor and is capped at what remains of the role's session,
-since a presigned URL dies with the credentials that signed it. S3 checks the
-expiry when a request starts, so an upload that has begun survives it.
+since a presigned URL dies with the credentials that signed it. Lambda exposes
+no expiry to the function, so the gateway records when its execution
+environment started, at import, and caps the lifetime at 12 h minus the
+environment's age minus 1 h; the hour covers the credentials being issued
+somewhat before the import. Below the 15-minute floor it mints nothing and
+refuses with `503`, which the client retries, since another environment may be
+younger; the code's name is settled with the code. The 12 h is probed, not
+documented by AWS. S3 checks the
+expiry when a request starts, so an upload that has begun survives it
+(per AWS; not yet probed).
 
 S3 enforces what the gateway cannot see. A body that does not hash to `<h>` is
-refused (`BadDigest`). A missing or altered signed header fails the signature.
-`If-None-Match` refuses every write after the first, so a URL used again, as
-AWS allows until it expires, stores nothing more. The request runs as the
+refused (`400 BadDigest`). A missing or altered signed header, a body whose
+length is not the declared size included, fails the signature (`403
+SignatureDoesNotMatch`), so the 5 GiB check at mint binds the upload.
+`If-None-Match` refuses every write after the first (`412`), so a URL used
+again, as AWS allows until it expires, stores nothing more. An expired URL is
+`403` "Request has expired": the client mints again. The request runs as the
 gateway role, so `OnlyTheGatewayPuts` and the lock-header denies hold
 unchanged. The gateway checks no author and reads no content; attribution comes
 from the record whose row holds the hash.
@@ -163,6 +183,7 @@ Each has a message test (ADR-0020); the names are settled with the code.
 - A mint refused: `WriteRefusedError`, now also raised by `put_attachment` and
   `touch_attachment`.
 - A bad URL, or a key absent after the upload: `GatewayMismatchError`.
+- A URL that expired before the upload started; the message says to retry.
 - The attachment is absent from the chain's store, which is common once a
   retention ends.
 - A download that does not hash to `<h>`.
@@ -245,13 +266,25 @@ a signed header, which S3 enforces like any other.
     URL;
   - a presigned PUT to a slot is denied;
   - `x/_attachments/<h>` is checked against `x`.
-
-  If presigned `If-None-Match` is not enforced, the HEAD at mint time still
-  stops most second uploads, and a reuse of one URL within its lifetime is an
-  accepted gap, written into this ADR.
-- **Unverified when this was written**:
-  - whether boto3's presigner takes `ChecksumSHA256` or the header must be
-    signed by hand, and whether botocore adds a default CRC32;
-  - whether a signed `Content-Length` is enforced (nothing relies on it);
-  - the HTTP status of `BadDigest`;
-  - how much session the Lambda role has left when it signs.
+- **Probed on 2026-10-28** (`gateway/probe/attachment_probe.py`, a locked
+  bucket, URLs signed in Lambda under the gateway role, botocore 1.43.93):
+  - a correct PUT is stored with COMPLIANCE, the key, the Bucket Key and the
+    checksum; the same URL again, or a fresh URL for a present key, is `412`
+    and leaves one version;
+  - a wrong body is `400 BadDigest`;
+  - an omitted `If-None-Match` or checksum, an altered retain-until, and a
+    body one byte short of a signed `Content-Length` are each `403
+    SignatureDoesNotMatch`; an unsigned `x-amz-meta-*` header is `403
+    AccessDenied`;
+  - a signed tag is `403` until the role holds `s3:PutObjectTagging`;
+  - the lock-header denies apply to a presigned PUT;
+  - an expired URL is `403 AccessDenied`, "Request has expired";
+  - the default presigned host is global and answered `307` for a bucket a
+    few minutes old;
+  - a URL signed at a fresh execution environment's start was still valid
+    after 11.25 h and refused with `400 ExpiredToken` at 12.08 h: the role's
+    credentials last about 12 h from the environment's start. Lambda exposes
+    no expiry to the function.
+- **Still unverified**:
+  - whether an upload that starts before its URL expires survives the
+    expiry.
