@@ -108,15 +108,58 @@ using ChainTables.Testing: InMemoryObjectStore
         end
     end
 
-    # Every `ChainTables.<name>` the README's code block calls must exist: the example is
+    @testset "attachments" begin
+        mktempdir() do dir
+            store = InMemoryObjectStore()
+            chain = CT.Chain("my-bucket", "experiments/run-7"; region = "eu-north-1", store, cache_dir = joinpath(dir, "cache"))
+            CT.create_chain(chain)
+            copy = CT.open(chain, joinpath(dir, "data", "run-7"))
+            CT.sync!(copy)
+            w = CT.write_builder(copy)
+            CT.create_table!(w, :scans) do t
+                CT.column!(t, :id, Int64); CT.column!(t, :file, String); CT.primary_key!(t, :id)
+            end
+            CT.commit!(w)
+
+            # put_attachment hashes the file, stores it under the chain, and returns the hash.
+            bytes = rand(UInt8, 1000)
+            scan = joinpath(dir, "scan.tif")
+            write(scan, bytes)
+            h = CT.put_attachment(chain, scan)
+            @test h == bytes2hex(CT.sha256(bytes)) && occursin(r"\A[0-9a-f]{64}\z", h)
+            @test haskey(store.objects, "experiments/run-7/_attachments/" * h)
+            # a row refers to it by the hash, in a plain String column
+            w = CT.write_builder(copy)
+            CT.insert_rows!(w, :scans, [(id = 1, file = h)])
+            CT.commit!(w)
+
+            # A row that reuses a stored hash touches it first; absent raises.
+            @test CT.touch_attachment(chain, h) === nothing
+            @test caught(() -> CT.touch_attachment(chain, "0"^64)) isa CT.AttachmentAbsentError
+
+            # attachment: a read-only file in the shared cache, fetched on first use, never on sync!.
+            copy2 = CT.open(chain, joinpath(dir, "scratch", "run-7"))
+            CT.sync!(copy2)
+            @test !any(c -> c[1] == :fetch_object_to, store.calls)
+            path = CT.attachment(copy2, CT.table(copy2, :scans)[1].file)
+            @test read(path) == bytes && startswith(path, joinpath(dir, "cache", "attachments"))
+            @test (filemode(path) & 0o222) == 0 || Sys.iswindows()
+            # the cache is checked against its hash on demand; repair! fetches what is damaged
+            @test CT.verify(copy2; full = true) === nothing
+            @test CT.repair!(copy2).attachments_repaired == 0
+            close(copy); close(copy2)
+        end
+    end
+
+    # Every `ChainTables.<name>` the README's code blocks call must exist: the example is
     # the front door, and a rename that leaves it behind is drift.
     @testset "every name the README calls is defined" begin
         readme = replace(read(joinpath(@__DIR__, "..", "README.md"), String), "\r\n" => "\n")   # a CRLF checkout
-        m = match(r"```julia\n(.*?)```"s, readme)
-        @test m !== nothing
-        block = m.captures[1]
-        called = unique(Symbol(x.captures[1]) for x in eachmatch(r"ChainTables\.([A-Za-z_][A-Za-z0-9_]*!?)", block))
+        blocks = [m.captures[1] for m in eachmatch(r"```julia\n(.*?)```"s, readme)]
+        @test !isempty(blocks)
+        called = unique(Symbol(x.captures[1]) for b in blocks for x in eachmatch(r"ChainTables\.([A-Za-z_][A-Za-z0-9_]*!?)", b))
         @test :Chain in called && :create_chain in called && :commit! in called && :as_of in called
+        @test :put_attachment in called && :touch_attachment in called && :attachment in called
         for name in called
             @test isdefined(CT, name)
             @test haskey(Base.Docs.meta(CT), Base.Docs.Binding(CT, name))   # documented; Docs.hasdoc is 1.11+

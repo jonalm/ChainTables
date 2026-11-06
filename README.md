@@ -140,3 +140,50 @@ out of sight, and a record is capped at 4 MiB. Deploying the gateway, the IAM co
 the policy config, how the author name is derived and how a writer is
 onboarded are in [`docs/gateway-setup.md`](docs/gateway-setup.md); the code is
 under [`gateway/`](gateway/README.md).
+
+## Attachments
+
+A file too large for a cell, from megabytes up to 5 GiB, is stored beside the
+chain as an **attachment** ([ADR-0046](docs/adr/0046-an-attachment-is-content-addressed-under-its-chain-and-written-once-through-a-minted-url.md)):
+an immutable object at `<prefix>/_attachments/<h>`, where `<h>` is the SHA-256
+of its bytes in 64 lowercase hex. A row refers to one by holding `<h>` in a
+plain `String` column; what the attachment means is your package's.
+
+```julia
+# put_attachment hashes the file, stores it under the chain, and returns the
+# hash. Upload first, then commit the row that refers to it.
+h = ChainTables.put_attachment(chain, "scan.tif")
+w = ChainTables.write_builder(copy)
+ChainTables.insert_rows!(w, :scans, [(id = 1, file = h)])
+ChainTables.commit!(w)
+
+# A new row that reuses a stored hash touches it first, so that on a locked
+# bucket the attachment's retention outlasts the row; absent raises.
+ChainTables.touch_attachment(chain, h)   # nothing, or AttachmentAbsentError
+
+# Reading: a read-only file in a cache shared by every chain, fetched on first
+# use and never by sync!. The first read through a copy asks its chain's store.
+path = ChainTables.attachment(copy2, ChainTables.table(copy2, :scans)[1].file)
+
+# The cache is checked against the hashes on demand, and repaired from the store.
+ChainTables.verify(copy2; full = true)   # nothing, or AttachmentCacheError
+ChainTables.repair!(copy2)               # (; slot, files_rewritten, attachments_repaired)
+```
+
+ChainTables cannot enforce the two orders above: it does not know which columns
+hold references. A committed row is not promised an attachment that exists.
+
+On a gateway bucket the bytes never pass through the gateway, whose function
+URL takes at most 6 MB. The gateway checks the caller and mints a presigned PUT
+for the key. S3 then refuses a body that does not hash to `<h>`
+(`AttachmentChangedError`: the file changed during the upload) and any second
+write to the key. On a locked bucket the URL also carries the lock and KMS
+headers. A plain bucket takes the PUT directly. `put_attachment`,
+`touch_attachment`, `attachment` and `repair!` retry a retryable failure as a
+commit does; a failure partway through an upload sends the file again.
+
+The cache lives at `cache_dir/attachments/`. A read checks a cached file
+against its recorded size and modification time, not its hash, which would
+cost too much at 5 GiB; `verify(copy; full = true)` hashes them. A download
+that does not hash to `<h>` raises `AttachmentDigestError`. Deleting any cache
+entry is always safe.
