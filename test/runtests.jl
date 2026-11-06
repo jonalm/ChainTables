@@ -36,6 +36,7 @@ import ChainTables
     include("s3.jl")
     include("gateway.jl")
     include("bucket.jl")
+    include("attachments.jl")    # after gateway.jl: it uses the gateway double
     include("Testing.jl")
     include("readme.jl")
     include("tracked_values.jl")

@@ -240,3 +240,63 @@ end
 The S3 half's: reads go to the bucket directly (ADR-0028).
 """
 fetch_object_to(store::GatewayObjectStore, key::AbstractString, path::AbstractString) = fetch_object_to(store.s3, key, path)
+
+# ---------------------------------------------------------------------------
+# The client surface (ADR-0046): `put_attachment(chain, path_or_io)` and
+# `touch_attachment(chain, hash)`.
+# ---------------------------------------------------------------------------
+
+attachment_key(chain::Chain, h::AbstractString) = isempty(chain.prefix) ? "_attachments/" * h : chain.prefix * "/_attachments/" * h
+
+# The bounded retry of a whole store-level call, ADR-0010's rule with the commit's
+# constants: re-issued on a retryable `TransportError`, the last one rethrown. Safe
+# because each call is idempotent — a put whose upload landed finds the key present.
+function with_retries(f)
+    for attempt in 1:PUT_ATTEMPTS
+        attempt == 1 || sleep(PUT_BACKOFF_S[attempt-1])
+        try
+            return f()
+        catch e
+            (retryable(e) && attempt < PUT_ATTEMPTS) || rethrow()
+        end
+    end
+end
+
+"""
+    put_attachment(chain, path_or_io) -> String
+
+Store the bytes of a file, or of a seekable IO standing at its start, as an attachment of
+`chain` (ADR-0046), and return their SHA-256 in 64 lowercase hex — the `<h>` a row refers
+to it by. The bytes are hashed first, then put at `[<prefix>/]_attachments/<h>`: on a
+plain bucket by one streamed PUT, on a gateway bucket through the mint route. Already
+present: nothing is uploaded, and on a gateway bucket its retention is extended. At most
+5 GiB.
+
+A retryable `TransportError` (a timeout, a `5xx` — the gateway's `503 session_ending`
+among them — a `409`, a `429`) runs the whole put again, up to
+[`PUT_ATTEMPTS`](@ref) times; a put whose upload landed then finds it present. A failure
+partway through an upload therefore sends the file again.
+
+Raises [`AttachmentChangedError`](@ref) if the file changes between hashing and upload,
+[`AttachmentURLExpiredError`](@ref), [`WriteRefusedError`](@ref) and
+[`GatewayMismatchError`](@ref) on a gateway bucket; an `ArgumentError` for a non-seekable
+IO, an IO not at its start, a path that is not a file, or over 5 GiB.
+"""
+function put_attachment(chain::Chain, path::AbstractString)
+    isdir(path) && throw(ArgumentError("put_attachment: $path is a directory, not a file"))
+    isfile(path) || throw(ArgumentError("put_attachment: no file at $path"))
+    return Base.open(io -> put_attachment(chain, io), path)
+end
+
+function put_attachment(chain::Chain, io::IO)
+    (applicable(position, io) && applicable(seekend, io)) || throw(ArgumentError("put_attachment takes a path or a " *
+        "seekable IO; a $(typeof(io)) cannot seek, so it cannot be hashed before the upload (ADR-0046)"))
+    stream_size(io)                            # at its start, at most 5 GiB: checked before the bytes are read
+    h = bytes2hex(sha256(io))
+    key = attachment_key(chain, h)
+    with_retries() do
+        seekstart(io)
+        put_attachment(chain.store, key, io)
+    end
+    return h
+end
