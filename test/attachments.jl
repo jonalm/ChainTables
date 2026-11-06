@@ -320,6 +320,53 @@ const ATT = ChainTables
         end
     end
 
+    @testset "attachment(copy, hash): a hit whose HEAD gives another size — the cached file is hashed to say which side is wrong" begin
+        mktempdir() do dir
+            store = InMemoryObjectStore()
+            cache_dir = joinpath(dir, "cache")
+            chain = Chain("bkt", "p"; store, cache_dir, record_host = false, record_user = false)
+            ATT.create_chain(chain)
+            one = ATT.open(chain, joinpath(dir, "one"))
+            ATT.sync!(one)
+            bytes = rand(UInt8, 100)
+            h = ATT.put_attachment(chain, IOBuffer(bytes))
+            key = "p/_attachments/$h"
+            path = ATT.attachment(one, h)
+            fresh(name) = (c = ATT.open(chain, joinpath(dir, name)); ATT.sync!(c); c)
+            # the store holds another size, the cached file hashes to its name: the store is wrong
+            store.objects[key] = rand(UInt8, 120)
+            two = fresh("two")
+            empty!(store.calls)
+            e = try ATT.attachment(two, h); nothing catch e; e end
+            @test e isa ATT.AttachmentDigestError && e.key == key && e.size == 120 && e.found === nothing
+            @test e.chain_id == two.head.chain_id
+            @test sprint(showerror, e) == "AttachmentDigestError: attachment digest: the store of the chain at bkt/p " *
+                "holds 120 bytes at $key, but the cached file $path, which hashes to the key's hash, is 100 bytes, so the " *
+                "store's bytes cannot hash to it. Nothing was confirmed, and the cached file was kept. S3 checked the hash " *
+                "when the attachment was stored, so the bucket was written from outside the protocol: stop and report it " *
+                "(ADR-0046)."
+            @test store.calls == [(:stat_object, key)]                       # a HEAD, no download
+            @test !isfile(joinpath(two.path, "confirmed", h)) && read(path) == bytes
+            # the store is right, the cached file was swapped with its sidecar rewritten to match: the cache is wrong
+            store.objects[key] = bytes
+            other = rand(UInt8, 80)
+            chmod(path, 0o644); write(path, other); chmod(path, 0o444)
+            write(path * ".meta", ATT.sidecar_text(stat(path)))
+            three = fresh("three")
+            e = try ATT.attachment(three, h); nothing catch e; e end
+            found = bytes2hex(sha256(other))
+            @test e isa ATT.AttachmentCacheError && e.path == path && e.key == key && e.chain_id == three.head.chain_id
+            @test sprint(showerror, e) == "AttachmentCacheError: attachment cache: the cached file $path is 80 bytes and " *
+                "hashes to $found, not to its name, while the store of the chain at bkt/p holds 100 bytes at $key. The " *
+                "cache is damaged, not the chain: deleting $path and $path.meta is always safe, and the next read fetches " *
+                "it again (ADR-0046)."
+            @test !isfile(joinpath(three.path, "confirmed", h))
+            # as the message says: deleted, then fetched again
+            chmod(path, 0o644); rm(path); rm(path * ".meta")
+            @test read(ATT.attachment(three, h)) == bytes
+        end
+    end
+
     @testset "verify(copy; full = true) hashes the confirmed attachments; repair!(copy) fetches what is bad" begin
         mktempdir() do dir
             store = InMemoryObjectStore()

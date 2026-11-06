@@ -230,7 +230,14 @@ copied without its mtimes makes every entry differ: delete it.
 A shared file must not stand in for the chain's word, so the **first read of an
 attachment through a copy HEADs its key in that chain's store**, even on a
 cache hit, and records the hash as confirmed for the copy, as an empty file
-`<copy>/confirmed/<h>` (ADR-0023); a miss is confirmed by its download. A copy
+`<copy>/confirmed/<h>` (ADR-0023); a miss is confirmed by its download. The
+HEAD's size must be the cached file's. When it is not, one side is wrong, and the
+cached file is hashed to say which: if it hashes to `<h>`, the store is wrong
+(`AttachmentDigestError`); if not, the cache is (`AttachmentCacheError`), and
+the hash is not confirmed either way. Raising `AttachmentCacheError` without
+hashing would send a reader to `repair!`, which finds the file sound and changes
+nothing, so the same error would come back every time. The hash costs a read of
+the file, and only on a mismatch, which the protocol never produces. A copy
 with no head has no chain to confirm against and is refused. Otherwise a file
 cached from another chain, or by the uploader itself, would hide an attachment
 this chain's store lacks, and every other client would fail. `verify(copy;
@@ -257,10 +264,12 @@ Each has a message test (ADR-0020); the names are settled with the code.
   15 minutes, so an expiry means a stalled caller or a wrong clock.
 - The attachment is absent from the chain's store, which is common once a
   retention ends: `AttachmentAbsentError`.
-- A download that does not hash to `<h>`: `AttachmentDigestError`, never
-  retried.
+- A download that does not hash to `<h>`, or a cache hit whose HEAD gives a
+  size other than that of a cached file that hashes to `<h>`:
+  `AttachmentDigestError`, never retried.
 - A damaged cache file: `AttachmentCacheError`, from a read or `verify(copy;
-  full = true)`.
+  full = true)`, including a cache hit whose HEAD gives another size and whose
+  file does not hash to `<h>`.
 - `attachment` on a store that lacks the hash: `AttachmentAbsentError`, whose
   message tells a reader that only someone holding the file can put it again.
 - A gateway with no mint route: `WriteRefusedError` with `reason =

@@ -388,7 +388,9 @@ AttachmentAbsentError(msg; chain_id = nothing, key = nothing) = AttachmentAbsent
 
 Raised by `attachment` (and `repair!`): the store returned `size` bytes for an attachment's
 `key` that hash to `found`, not to the `<h>` the key names (ADR-0046). Nothing was cached,
-and the download was deleted: it can be 5 GiB. Not retried — S3 checked the hash when the
+and the download was deleted: it can be 5 GiB. Also raised on a cache hit whose HEAD gives
+`size` bytes, other than a cached file that hashes to `<h>`: `found` is `nothing`, since
+nothing was downloaded, and the hash is not confirmed. Not retried — S3 checked the hash when the
 attachment was stored, so the bucket was written from outside the protocol. The next
 move: stop and report it.
 """
@@ -406,7 +408,8 @@ AttachmentDigestError(msg; chain_id = nothing, key = nothing, found = nothing, s
     AttachmentCacheError(msg; chain_id, key, path)
 
 Raised by `attachment` and `verify(copy; full = true)`: the attachment cache's file at
-`path` is not what its sidecar records, or (verify) does not hash to its name (ADR-0046).
+`path` is not what its sidecar records, or (verify, and a cache hit whose HEAD gives
+another size) does not hash to its name (ADR-0046).
 The attachment cache is damaged, not the chain. The next move: run the call again, since
 another process may be writing the cache; else `repair!(copy)`, which checks the file and
 fetches it again. Deleting the file and its `.meta` is always safe.

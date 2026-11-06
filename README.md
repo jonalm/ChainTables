@@ -185,5 +185,8 @@ commit does; a failure partway through an upload sends the file again.
 The cache lives at `cache_dir/attachments/`. A read checks a cached file
 against its recorded size and modification time, not its hash, which would
 cost too much at 5 GiB; `verify(copy; full = true)` hashes them. A download
-that does not hash to `<h>` raises `AttachmentDigestError`. Deleting any cache
-entry is always safe.
+that does not hash to `<h>` raises `AttachmentDigestError`. A cache hit's first
+read through a copy HEADs the key: a size other than the cached file's raises
+`AttachmentDigestError` when the cached file hashes to `<h>`, and
+`AttachmentCacheError` when it does not. Deleting any cache entry is always
+safe.

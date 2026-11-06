@@ -389,6 +389,22 @@ function damaged_entry(chain_id, key, path, recorded)
         "fetches it again, and deleting $path and $path.meta is always safe (ADR-0046)."; chain_id, key, path)
 end
 
+# A cache hit whose HEAD gives another size than the cached file's: one side is wrong, and
+# hashing the cached file says which.
+function size_mismatch(chain::Chain, chain_id, key, h, path, stored)
+    cached = filesize(path)
+    found = bytes2hex(hash_file(path))
+    found == h && return AttachmentDigestError("attachment digest: the store of the chain at $(location(chain)) holds " *
+        "$stored bytes at $key, but the cached file $path, which hashes to the key's hash, is $cached bytes, so the " *
+        "store's bytes cannot hash to it. Nothing was confirmed, and the cached file was kept. S3 checked the hash when " *
+        "the attachment was stored, so the bucket was written from outside the protocol: stop and report it (ADR-0046).";
+        chain_id, key, size = stored)
+    return AttachmentCacheError("attachment cache: the cached file $path is $cached bytes and hashes to $found, not to " *
+        "its name, while the store of the chain at $(location(chain)) holds $stored bytes at $key. The cache is damaged, " *
+        "not the chain: deleting $path and $path.meta is always safe, and the next read fetches it again (ADR-0046).";
+        chain_id, key, path)
+end
+
 function absent_for_reader(chain::Chain, chain_id, key)
     return AttachmentAbsentError("attachment absent: the store of the chain at $(location(chain)) holds no attachment " *
         "$key — it was never put to this chain, or its retention ended and it was deleted — so attachment(copy, hash) " *
@@ -470,13 +486,17 @@ The cache serves a file only while it matches its sidecar's size and mtime — i
 hashed on every read; `verify(copy; full = true)` hashes it. A cached file does not stand
 in for the chain's word: the first read of a hash through a copy HEADs its key in the
 chain's store, even on a cache hit, and records it as confirmed in the copy
-(`<copy>/confirmed/<h>`); a miss is confirmed by its download. `verify(copy; full = true)`
+(`<copy>/confirmed/<h>`); a miss is confirmed by its download. The HEAD's size must be
+the cached file's; when it is not, the file is hashed to say which side is wrong.
+`verify(copy; full = true)`
 and `repair!(copy)` cover the confirmed hashes. Requests are retried as
 [`put_attachment`](@ref)'s are.
 
 Raises [`AttachmentAbsentError`](@ref) when the chain's store lacks it,
-[`AttachmentDigestError`](@ref) when the store's bytes do not hash to it, and
-[`AttachmentCacheError`](@ref) when the cached file differs from its sidecar; an
+[`AttachmentDigestError`](@ref) when the store's bytes do not hash to it — or, on a hit,
+the store's size differs from a cached file that does — and
+[`AttachmentCacheError`](@ref) when the cached file differs from its sidecar, or, on a
+hit, differs in size from the store's and does not hash to its name; an
 `ArgumentError` for a copy with no head yet, or a hash that is not 64 lowercase hex.
 """
 function attachment(copy::LocalCopy, h::AbstractString)
@@ -491,7 +511,9 @@ function attachment(copy::LocalCopy, h::AbstractString)
     entry = cache_entry(path)
     if entry === :ok
         isfile(confirmed_path(copy, h)) && return path
-        with_retries(() -> stat_object(chain.store, key)) === nothing && throw(absent_for_reader(chain, chain_id, key))
+        meta = with_retries(() -> stat_object(chain.store, key))
+        meta === nothing && throw(absent_for_reader(chain, chain_id, key))
+        meta.size == filesize(path) || throw(size_mismatch(chain, chain_id, key, h, path, meta.size))
     elseif entry === :absent
         fill_attachment!(chain, chain_id, key, h, path) || throw(absent_for_reader(chain, chain_id, key))
     else
