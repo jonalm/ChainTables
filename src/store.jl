@@ -167,7 +167,8 @@ RecordCache(; dir = default_cache_dir()) = RecordCache(String(dir))
 The record-cache directory above the bucket for objects read through `store`: two stores
 that may hold different objects under one bucket name and key — AWS and a MinIO, two
 MinIOs — must not share cached files (ADR-0040). At most
-[`MAX_NAMESPACE_LENGTH`](@ref) characters, and a portable segment (ADR-0034).
+[`MAX_NAMESPACE_LENGTH`](@ref) characters, a portable segment (ADR-0034), and not
+`attachments`, the attachment cache's directory beside the namespaces (ADR-0046).
 [`S3ObjectStore`](@ref) returns its partition for AWS's own URL — `aws`, `aws-cn`,
 `aws-us-gov`, where bucket names are unique — and `ep-` with 8 hex digits of the
 SHA-256 of `scheme://host[:port]` for a configured endpoint. A
@@ -183,6 +184,10 @@ cache_namespace(store::AbstractObjectStore) = throw(ArgumentError("cache_namespa
     "ChainTables.cache_namespace(::$(nameof(typeof(store)))) to return a portable name of at most " *
     "$MAX_NAMESPACE_LENGTH characters that no other store holding different objects under the same bucket and " *
     "key returns (ADR-0040)"))
+
+# The attachment cache's directory inside `cache_dir`, beside the namespaces (ADR-0046), so
+# no store may take it as its namespace.
+const ATTACHMENT_CACHE_NAME = "attachments"
 
 # The longest `cache_namespace`: `mem-` and 8 hex digits.
 const MAX_NAMESPACE_LENGTH = 12
@@ -242,6 +247,9 @@ function record_path(cache::RecordCache, store::AbstractObjectStore, bucket::Abs
     length(namespace) <= MAX_NAMESPACE_LENGTH || throw(ArgumentError("record_path: the cache namespace " *
         "$(repr(namespace)) of $(typeof(store)) is over $MAX_NAMESPACE_LENGTH characters (ADR-0034, ADR-0040); " *
         "its cache_namespace method must return a shorter name"))
+    namespace == ATTACHMENT_CACHE_NAME && throw(ArgumentError("record_path: the cache namespace " *
+        "$(repr(namespace)) of $(typeof(store)) is the attachment cache's directory (ADR-0046); its cache_namespace " *
+        "method must return another name"))
     segments = split(key, '/')
     for s in (namespace, bucket, segments...)
         problem = portable_segment_problem(s)

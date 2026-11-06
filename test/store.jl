@@ -82,6 +82,8 @@ ChainTables.fetch_object(s::StoreTestInterrupted, key) =
         # the namespace is a segment like any other, and bounded, so the path budget holds (ADR-0034)
         @test_throws "segment \"Mem\" of bucket \"bkt\", key \"p\" contains 'M'" record_path(cache, StoreTestNamed("Mem"), "bkt", "p")
         @test_throws "StoreTestNamed is over 12 characters (ADR-0034, ADR-0040); its cache_namespace method must return a shorter name" record_path(cache, StoreTestNamed("n"^13), "bkt", "p")
+        # the attachment cache's directory beside the namespaces is reserved (ADR-0046)
+        @test_throws "the cache namespace \"attachments\" of StoreTestNamed is the attachment cache's directory (ADR-0046); its cache_namespace method must return another name" record_path(cache, StoreTestNamed("attachments"), "bkt", "p")
     end
 
     @testset "record cache: one namespace per store that may hold other objects under one name (ADR-0040)" begin
