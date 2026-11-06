@@ -177,8 +177,18 @@ keep.
 - `put_attachment(chain, path_or_io) -> hash` hashes, then mints and uploads.
   It takes a path or a seekable IO and refuses a non-seekable one: the hash
   must be known before the upload, and 5 GiB must not be held in memory.
+  A retryable `TransportError` (ADR-0010's rule: no status, `5xx` with
+  `503 session_ending`, `409`, `429`) runs the whole put again, up to the
+  commit's four attempts and backoff. That is safe because a put whose upload
+  landed finds the key present; the cost is that a failure partway through an
+  upload sends the file again.
 - `touch_attachment(chain, hash)` extends the retention of an attachment the
-  chain's store holds, and fails if it is absent.
+  chain's store holds, and fails if it is absent. It HEADs the key in the
+  chain's bucket first: absent fails with no mint, and the HEAD's size is the
+  declared size the present path's margin needs. On a gateway bucket it then
+  mints, which must answer `present`; a `minted` reply is
+  `GatewayMismatchError`, and nothing is uploaded. A plain bucket keeps no
+  retention, so the HEAD is all. Retried as `put_attachment` is.
 - `attachment(copy, hash) -> path` is the path of the cached file. It is
   fetched lazily, never on `sync!`, and nothing checks that a row of the copy
   refers to the hash.
@@ -213,13 +223,14 @@ Each has a message test (ADR-0020); the names are settled with the code.
   plain bucket's signed PUT.
 - A mint refused: `WriteRefusedError`, now also raised by `put_attachment` and
   `touch_attachment`.
-- A bad URL, or a key absent after the upload: `GatewayMismatchError`.
+- A bad URL, a key absent after the upload, or a touch whose mint finds absent
+  what the chain's bucket holds: `GatewayMismatchError`.
 - A URL that expired before the upload started: `AttachmentURLExpiredError`,
   carrying the gateway's `expires`; the message says to put the attachment
   again. The client does not mint again by itself: a fresh URL lives at least
   15 minutes, so an expiry means a stalled caller or a wrong clock.
 - The attachment is absent from the chain's store, which is common once a
-  retention ends.
+  retention ends: `AttachmentAbsentError`.
 - A download that does not hash to `<h>`.
 - A damaged cache file.
 - A gateway with no mint route: `WriteRefusedError` with `reason =
