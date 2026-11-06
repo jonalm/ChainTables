@@ -195,24 +195,50 @@ keep.
 
 ### The cache
 
-An attachment is cached at `cache_dir/attachments/<h[1:2]>/<h>`, a sibling of
-`records/`, shared by every chain and bucket. Mirroring the key, as the record
+An attachment is cached at `cache_dir/attachments/<h[1:2]>/<h>`, inside the
+record cache's directory beside the store namespaces (`cache_dir` defaults to
+`…/chaintables/records`), shared by every chain and bucket. `record_path`
+refuses a store whose `cache_namespace` is `attachments`, so the two never
+meet. A directory beside `cache_dir` instead would put the cache at
+`/attachments` for `CHAINTABLES_CACHE_DIR=/x`. Mirroring the key, as the record
 cache does, would leave about 10 characters for `cache_dir` under ADR-0034's
-budget; content addressing makes the files safe to share.
+budget; content addressing makes the files safe to share. The longest path
+below `cache_dir`, a sidecar's temporary file, is 106 characters, under the
+record cache's 198, so the record cache's budget binds first.
 
-A download goes to a temporary file, is checked against `<h>`, and is moved
-into place read-only, with a sidecar holding its size and mtime. A read checks
-the file against the sidecar, not against the hash: hashing 5 GiB on every read
-costs too much. That is weaker than the record cache's check (ADR-0040), and
-`verify(copy; full = true)` makes up for it by hashing the files.
+A download goes to `<h>.<16 hex>.part` beside its place, is checked against
+`<h>` (else `AttachmentDigestError`, with the download deleted: at 5 GiB it is
+not kept as evidence, as a record would be), and made read-only. Then the
+sidecar `<h>.meta`, holding `"<size> <mtime>"`, is written to a `.tmp` and
+renamed, and last the file is renamed into place. A rename keeps size and
+mtime, so the file appearing is the commit: a sidecar without its file, or a
+file without its sidecar, is an absent entry, filled again. On Windows, which
+refuses to rename over a read-only file, the old one is removed first. An
+entry another process completed meanwhile is kept. A `.part` an interrupted
+download leaves is never swept; deleting it, or any entry, is always safe.
+
+A read checks the file against the sidecar, not against the hash: hashing 5 GiB
+on every read costs too much. That is weaker than the record cache's check
+(ADR-0040), and `verify(copy; full = true)` makes up for it by hashing the
+files. A file that differs from its sidecar is `AttachmentCacheError`, not
+healed in place as a record is (ADR-0040): a re-fetch can be 5 GiB inside a
+read, and the store may no longer hold the key. Two processes filling one hash
+at once can pair one's sidecar with the other's file; the message's first move,
+"run the call again", covers that, and its second is `repair!(copy)`. A cache
+copied without its mtimes makes every entry differ: delete it.
 
 A shared file must not stand in for the chain's word, so the **first read of an
 attachment through a copy HEADs its key in that chain's store**, even on a
-cache hit, and records the hash as confirmed for the copy. Otherwise a file
+cache hit, and records the hash as confirmed for the copy, as an empty file
+`<copy>/confirmed/<h>` (ADR-0023); a miss is confirmed by its download. A copy
+with no head has no chain to confirm against and is refused. Otherwise a file
 cached from another chain, or by the uploader itself, would hide an attachment
 this chain's store lacks, and every other client would fail. `verify(copy;
 full = true)` and `repair!(copy)` cover only the hashes confirmed through the
-copy, and `repair!` fetches them from its chain's store.
+copy, and `repair!` fetches them from its chain's store: it hashes each, rewrites
+the sidecar of one that hashes right, fetches the rest, and counts both in its
+report's `attachments_repaired`. `attachment` and `repair!` retry as
+`put_attachment` does.
 
 ### Errors
 
@@ -231,8 +257,12 @@ Each has a message test (ADR-0020); the names are settled with the code.
   15 minutes, so an expiry means a stalled caller or a wrong clock.
 - The attachment is absent from the chain's store, which is common once a
   retention ends: `AttachmentAbsentError`.
-- A download that does not hash to `<h>`.
-- A damaged cache file.
+- A download that does not hash to `<h>`: `AttachmentDigestError`, never
+  retried.
+- A damaged cache file: `AttachmentCacheError`, from a read or `verify(copy;
+  full = true)`.
+- `attachment` on a store that lacks the hash: `AttachmentAbsentError`, whose
+  message tells a reader that only someone holding the file can put it again.
 - A gateway with no mint route: `WriteRefusedError` with `reason =
   "no_mint_route"`, recognised by the old gateway's `400 bad_request` text "is
   not the gateway's one route"; the message says to redeploy it. Any other
@@ -292,6 +322,9 @@ a signed header, which S3 enforces like any other.
   after the upload.
 - **ADR-0034 is amended in place**: the attachment cache path, and why it is
   not mirrored.
+- **ADR-0023 is amended in place**: a copy's `confirmed/` directory.
+- **ADR-0040 is not changed, but departed from**: a damaged attachment cache
+  file raises rather than heals, for the reasons under "The cache".
 - **ADR-0038 and ADR-0042 are amended in place**: an attachment's retention
   runs from its mint plus a margin and is extended on reuse. Deletion after a
   retention ends is a break-glass change, as for a record. Per-chain keys rule

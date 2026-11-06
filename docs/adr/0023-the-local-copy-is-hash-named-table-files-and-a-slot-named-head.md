@@ -16,8 +16,15 @@ mycopy/
 │   ├── 3f9a…c21e               table file, named by its own SHA-256
 │   ├── 7b02…e8d4
 │   └── a5c7…10f9
+├── confirmed/                   (*amended by ADR-0046*)
+│   └── 9e1d…4b70               empty: an attachment the chain's store confirmed
 └── pin                          present iff the copy is pinned
 ```
+
+*Amended by ADR-0046*: `confirmed/` holds one empty file per attachment hash a
+read through this copy confirmed in its chain's store; `verify(copy; full =
+true)` and `repair!` cover those. It needs no layout version: `open` and the
+sweep ignore it, and a copy without it has confirmed nothing, which is true.
 
 Decided by issue #26 after ADR-0022 moved the content into a Julia model.
 

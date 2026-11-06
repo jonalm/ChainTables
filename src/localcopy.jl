@@ -15,7 +15,9 @@ using .Ops: Record
 
 Which arrangement of head file and table files this client writes and reads, `1`
 (ADR-0023). Purely local, never a property of the chain; a head carrying any
-other value is refused with `LayoutVersionError` — rebuild, never migrate.
+other value is refused with `LayoutVersionError` — rebuild, never migrate. A copy's
+`confirmed/` directory (ADR-0046) needs no new version: `open` and the sweep ignore it,
+and a copy without it has confirmed no attachment.
 """
 const LAYOUT_VERSION = 1
 
