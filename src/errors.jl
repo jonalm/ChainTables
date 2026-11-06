@@ -335,6 +335,39 @@ end
 GatewayMismatchError(msg; chain_id = nothing, slot = nothing, key = nothing, bucket = nothing, gateway = nothing) =
     GatewayMismatchError(msg, chain_id, slot, key, bucket, gateway)
 
+"""
+    AttachmentChangedError(msg; chain_id, key)
+
+Raised by `put_attachment`: S3 refused the upload with `BadDigest` — the bytes sent do not
+hash to the `<h>` of the attachment's `key`, so the file changed between hashing and
+upload (ADR-0046). Nothing was stored. The next move: stop whatever writes the file, and
+put it again.
+"""
+struct AttachmentChangedError <: ChainTablesError
+    msg::String
+    chain_id::MaybeString
+    key::MaybeString
+end
+AttachmentChangedError(msg; chain_id = nothing, key = nothing) = AttachmentChangedError(msg, chain_id, key)
+
+"""
+    AttachmentURLExpiredError(msg; chain_id, key, expires)
+
+Raised by `put_attachment` on a gateway bucket: S3 refused the upload because the URL the
+gateway minted had expired, "Request has expired", before the upload began (ADR-0046).
+`expires` is the time the gateway gave, ISO 8601 in UTC. Nothing was stored. The next
+move: put the attachment again, which mints a new URL; if it recurs, check this machine's
+clock.
+"""
+struct AttachmentURLExpiredError <: ChainTablesError
+    msg::String
+    chain_id::MaybeString
+    key::MaybeString
+    expires::MaybeString
+end
+AttachmentURLExpiredError(msg; chain_id = nothing, key = nothing, expires = nothing) =
+    AttachmentURLExpiredError(msg, chain_id, key, expires)
+
 # The message is the contract (ADR-0020): every type shows as its message, so a
 # `@test_throws "…"` matches the text a user reads.
 Base.showerror(io::IO, e::ChainTablesError) = print(io, nameof(typeof(e)), ": ", e.msg)

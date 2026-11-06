@@ -11,6 +11,8 @@ module Testing
 
 import ..AbstractObjectStore, ..PutOutcome, ..ObjectMeta
 import ..fetch_object, ..put_object_if_absent, ..stat_object, ..list_objects, ..startswith_bytes, ..cache_namespace
+import ..put_attachment, ..fetch_object_to, ..attachment_hash, ..stream_size, ..changed
+using SHA: sha256
 
 """
     InMemoryObjectStore(; clock, fault, seed) <: AbstractObjectStore
@@ -35,6 +37,11 @@ Fields a test may set:
 
 Each store is its own record-cache namespace (ADR-0040): two stores never share cached
 files, even under one bucket name, and two chains over one store do.
+
+Attachments (ADR-0046) go through the same dictionaries: `put_attachment` stores the
+bytes of an IO at an attachment key unless present, and refuses bytes that do not hash to
+the key, as S3 does; `fetch_object_to` writes an object to a file. Both are recorded in
+`calls` and pass through `fault`.
 
 `calls` records every request as `(verb, key)` in order, for asserting that an
 operation made none (`open`, ADR-0023) or how many (galloping, ADR-0012). `objects`
@@ -88,6 +95,31 @@ function put_object_if_absent(store::InMemoryObjectStore, key::AbstractString, b
     end
     _respond!(store, :put_object_if_absent, key)
     return outcome
+end
+
+function put_attachment(store::InMemoryObjectStore, key::AbstractString, io::IO)
+    key = String(key)
+    h = attachment_hash(key)
+    stream_size(io)
+    _request!(store, :put_attachment, key)
+    bytes = read(io)
+    bytes2hex(sha256(bytes)) == h || throw(changed(key, "an InMemoryObjectStore"))   # S3's BadDigest
+    created = !haskey(store.objects, key)
+    if created
+        store.objects[key] = bytes
+        store.modified[key] = Int64(store.clock())
+    end
+    _respond!(store, :put_attachment, key)
+    return created
+end
+
+function fetch_object_to(store::InMemoryObjectStore, key::AbstractString, path::AbstractString)
+    key = String(key)
+    _request!(store, :fetch_object_to, key)
+    bytes = get(store.objects, key, nothing)
+    bytes === nothing || write(path, bytes)
+    _respond!(store, :fetch_object_to, key)
+    return bytes === nothing ? nothing : Int64(length(bytes))
 end
 
 function stat_object(store::InMemoryObjectStore, key::AbstractString)

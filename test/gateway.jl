@@ -119,6 +119,7 @@ function (g::GatewayDouble)(req)
     scripted === nothing || return scripted
     refused = gwtest_check_signature(g.credentials, g.region, "lambda", req)
     refused === nothing || return refused
+    (req.method, req.rawpath) == ("POST", "/mint") && return gwtest_mint(g, req)
     req.method == "PUT" || return gwtest_json(400, "bad_request", "method $(req.method)")
     req.rawpath == "/" || return gwtest_json(400, "bad_request", "path $(req.rawpath) is not /")
     i = findfirst(kv -> kv[1] == "key", req.query)
@@ -137,6 +138,37 @@ function (g::GatewayDouble)(req)
     g.s3.objects[key] = copy(req.body)
     g.s3.modified[key] = floor(Int64, time())
     return gwtest_json(200, "created", key)
+end
+
+# The mint route (ADR-0046), as handler.py answers it: the policy on the attachment's
+# prefix, `present` when the S3 double holds the key, else a URL the S3 double honours
+# (`s3.presigned`) and the headers it signs, in json.dumps's layout.
+function gwtest_mint(g::GatewayDouble, req)
+    q = Dict(req.query)
+    (haskey(q, "key") && haskey(q, "size") && isempty(req.body)) || return gwtest_json(400, "bad_request", "key, size, no body")
+    key = q["key"]
+    m = match(r"^(?:(.+)/)?_attachments/[0-9a-f]{64}$", key)
+    gwtest_allowed(g, m === nothing ? dirname(key) : something(m.captures[1], "")) ||
+        return gwtest_json(403, "not_allowed", "$(g.caller) may not write under $(dirname(key))")
+    m === nothing && return gwtest_json(400, "not_a_slot", "$key is neither a slot nor an attachment")
+    occursin(r"^[0-9]+$", q["size"]) || return gwtest_json(400, "bad_request", "size")
+    parse(Int, q["size"]) <= 5 * 1024^3 || return gwtest_json(413, "too_large", "over 5 GiB")
+    haskey(g.s3.objects, key) && return gwtest_json(200, "present", "attachment $key is already stored; upload nothing")
+    return gwtest_minted(g.s3, key, parse(Int, q["size"]))
+end
+
+function gwtest_minted(s3::S3TestServer, key, size; seconds = 900, url = nothing)
+    signature = bytes2hex(rand(UInt8, 32))
+    headers = ["content-length" => string(size), "content-type" => "application/octet-stream", "if-none-match" => "*",
+               "x-amz-checksum-sha256" => GWT.Base64.base64encode(hex2bytes(key[end-63:end])),
+               "x-amz-tagging" => "chaintables=attachment"]
+    s3.presigned[signature] = (; key, headers = Dict(headers), expires = time() + seconds)
+    url = something(url, s3test_endpoint(s3) * "/$(s3.bucket)/" * GWT.uri_encode(key; keep_slash = true)) *
+          "?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Expires=$seconds&X-Amz-SignedHeaders=host&X-Amz-Signature=$signature"
+    object = join(("\"$k\": \"$v\"" for (k, v) in headers), ", ")
+    body = "{\"code\": \"minted\", \"message\": \"PUT the attachment's $size bytes\", \"url\": \"$url\", " *
+           "\"expires\": \"2026-11-06T12:00:00Z\", \"headers\": {$object}}"
+    return (200, ["content-type" => "application/json"], Vector{UInt8}(body))
 end
 
 # The STS double: `GetCallerIdentity` for `arn`, signed for service sts.
@@ -319,6 +351,133 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             @test startswith(sprint(showerror, e), "TransportError: PUT http://127.0.0.1:$port/?key=p%2F000000000001: no response")
         finally
             close(gw); close(s3)
+        end
+    end
+
+    # ------------------------------------------------------------------------
+    # An attachment through the gateway (ADR-0046): the mint route, the URL checked, the
+    # bytes streamed to S3 with exactly the signed headers, the key confirmed in our bucket.
+    # ------------------------------------------------------------------------
+    @testset "put_attachment: mint, check the URL, upload, confirm (ADR-0046)" begin
+        s3 = S3TestServer(; bucket = "bkt", credentials = GWTEST_CREDS)
+        double = GatewayDouble(s3, GWTEST_CREDS, "eu-north-1", "alice@example.com", ["p" => ["alice@example.com"]], _ -> nothing)
+        gw = LoopbackServer(double)
+        dir = mktempdir()
+        try
+            store = GatewayObjectStore("bkt", loopback_url(gw); region = "eu-north-1", credentials = GWTEST_CREDS,
+                                       endpoint = s3test_endpoint(s3), path_style = true, timeout = 30)
+            bytes = rand(UInt8, 2 * 1024 * 1024 + 3)
+            h = bytes2hex(sha256(bytes))
+            key = "p/_attachments/" * h
+            path = joinpath(dir, "a")
+            write(path, bytes)
+            put(k = key) = open(io -> GWT.put_attachment(store, k, io), path)
+            @test put()
+            @test s3.objects[key] == bytes
+            # the mint: POST /mint with the key and size in the query, signed for lambda, no body
+            mints = filter(r -> r.rawpath == "/mint", gw.requests)
+            @test length(mints) == 1 && mints[1].method == "POST" && mints[1].query == ["key" => key, "size" => string(length(bytes))]
+            @test isempty(mints[1].body) && occursin("/eu-north-1/lambda/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date;x-amz-security-token,", mints[1].headers["authorization"])
+            # the upload: to the minted URL, the signed headers exactly, no Authorization, no other x-amz-* header
+            upload = only(filter(r -> r.method == "PUT", s3.requests))
+            @test upload.path == "/bkt/$key" && any(kv -> first(kv) == "X-Amz-Signature", upload.query)
+            @test !haskey(upload.headers, "authorization")
+            @test sort(filter(startswith("x-amz-"), collect(keys(upload.headers)))) == ["x-amz-checksum-sha256", "x-amz-tagging"]
+            @test upload.headers["x-amz-checksum-sha256"] == GWT.Base64.base64encode(sha256(bytes))
+            # then a HEAD of the key in our bucket
+            @test s3.requests[end].method == "HEAD" && s3.requests[end].path == "/bkt/$key"
+            # present: the mint says so, nothing is uploaded, the key is still confirmed
+            n = length(s3.requests)
+            @test !put()
+            @test [r.method for r in s3.requests[n+1:end]] == ["HEAD"]
+            # a race lost to another writer: the upload is 412, and a second mint finds it present
+            other = rand(UInt8, 100); ho = bytes2hex(sha256(other)); ko = "p/_attachments/" * ho
+            s3.objects[ko] = other; s3.modified[ko] = floor(Int64, time())
+            minted = Ref(false)
+            double.respond = req -> req.rawpath == "/mint" && !minted[] ? (minted[] = true; gwtest_minted(s3, ko, 100)) : nothing
+            nm = count(r -> r.rawpath == "/mint", gw.requests)
+            @test !GWT.put_attachment(store, ko, IOBuffer(other))
+            @test count(r -> r.rawpath == "/mint", gw.requests) == nm + 2 && s3.objects[ko] == other
+            double.respond = _ -> nothing
+            # bytes that do not hash to the key: S3's BadDigest, nothing stored
+            bad = "p/_attachments/" * "0"^64
+            e = try put(bad); nothing catch e; e end
+            @test e isa GWT.AttachmentChangedError && e.key == bad && !haskey(s3.objects, bad)
+            @test startswith(sprint(showerror, e), "AttachmentChangedError: attachment changed: the upload of $bad to $(s3test_endpoint(s3))/bkt/$bad was refused as BadDigest")
+            # an expired URL: refused by S3, and the message says to put it again
+            fresh = rand(UInt8, 10); kf = "p/_attachments/" * bytes2hex(sha256(fresh))
+            double.respond = req -> req.rawpath == "/mint" ? gwtest_minted(s3, kf, 10; seconds = -1) : nothing
+            e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
+            @test e isa GWT.AttachmentURLExpiredError && e.key == kf && e.expires == "2026-11-06T12:00:00Z"
+            @test occursin("the URL the gateway minted had expired (it gave 2026-11-06T12:00:00Z) before the upload began", sprint(showerror, e))
+            @test occursin("Put the attachment again, which mints a new URL", sprint(showerror, e))
+            @test !occursin("X-Amz-Signature", sprint(showerror, e))
+            # a URL anywhere but the attachment's place in our bucket: refused before a byte is sent
+            n = length(s3.requests)
+            for url in ("$(s3test_endpoint(s3))/other/$kf", "$(s3test_endpoint(s3))/bkt/p/_attachments/" * "1"^64, "https://evil.example/bkt/$kf")
+                double.respond = req -> req.rawpath == "/mint" ? gwtest_minted(s3, kf, 10; url) : nothing
+                e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
+                @test e isa GWT.GatewayMismatchError && e.key == kf && e.bucket == "bkt"
+                @test occursin("minted a URL for $kf at $url, not at $(s3test_endpoint(s3))/bkt/$kf", sprint(showerror, e))
+                @test occursin("Nothing was sent.", sprint(showerror, e))
+            end
+            @test length(s3.requests) == n
+            # a gateway that stored it elsewhere: our bucket lacks the key after the gateway's word
+            double.respond = req -> req.rawpath == "/mint" ? gwtest_json(200, "present", "already stored") : nothing
+            e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
+            @test e isa GWT.GatewayMismatchError && occursin("has stored the attachment $kf, and bucket bkt does not hold it", sprint(showerror, e))
+            # any other upload failure is S3's, with the URL's signature left out
+            double.respond = req -> req.rawpath == "/mint" ? gwtest_minted(s3, kf, 10) : nothing
+            s3.respond = req -> req.method == "PUT" ? (500, [], s3test_error("InternalError", "Please try again.")) : nothing
+            e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
+            @test e isa TransportError && e.status == 500 && GWT.retryable(e)
+            @test occursin("PUT $(s3test_endpoint(s3))/bkt/$kf: HTTP 500 InternalError", sprint(showerror, e)) && !occursin("Signature", sprint(showerror, e))
+            s3.respond = _ -> nothing
+            # a reply this client cannot read is refused, never guessed at
+            for (body, what) in (("{\"code\": \"minted\", \"url\": \"x\", \"expires\": \"y\"}", "no \"headers\" object"),
+                                 ("{\"code\": \"minted\", \"expires\": \"y\", \"headers\": {\"a\": \"b\"}}", "no \"url\""),
+                                 ("{\"code\": \"minted\", \"url\": \"x\", \"expires\": \"y\", \"headers\": {\"a\": \"b\" \"c\": \"d\"}}", "not a flat map"),
+                                 ("{\"code\": \"minted\", \"url\": \"x\", \"expires\": \"y\", \"headers\": {\"A\": \"b\"}}", "not a flat map"),
+                                 ("{\"code\": \"minted\", \"url\": \"x\", \"expires\": \"y\", \"headers\": {}}", "an empty \"headers\" object"),
+                                 ("{\"code\": \"stored\"}", "with code \"stored\", neither present nor minted"))
+                double.respond = req -> (200, [], Vector{UInt8}(body))
+                e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
+                @test e isa TransportError && e.status == 200 && !GWT.retryable(e) && occursin(what, sprint(showerror, e))
+            end
+            # the mint's refusals: as for a slot, plus a gateway that predates the route
+            double.respond = _ -> nothing
+            double.caller = "bob@example.com"
+            e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
+            @test e isa WriteRefusedError && e.reason == "not_allowed" && e.key == kf
+            @test occursin("refused to fill $kf for caller <unresolved> — not_allowed: bob@example.com may not write under p", sprint(showerror, e))
+            double.caller = "alice@example.com"
+            double.respond = req -> gwtest_json(400, "bad_request", "POST /mint is not the gateway's one route, PUT /?key=<slot key>")
+            e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
+            @test e isa WriteRefusedError && e.reason == "no_mint_route" && !GWT.retryable(e)
+            @test occursin("the gateway at $(loopback_url(gw)) has no mint route", sprint(showerror, e))
+            @test occursin("ask the bucket's operator to redeploy it (gateway/deploy.sh)", sprint(showerror, e))
+            double.respond = req -> gwtest_json(502, "s3_refused", "S3 answered 403 AccessDenied to the HEAD")
+            @test (try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end).reason == "s3_refused"
+            for (status, code, retry) in ((503, "session_ending", true), (502, "s3_error", true), (413, "too_large", false), (400, "not_a_slot", false))
+                double.respond = req -> gwtest_json(status, code, "the gateway's word")
+                e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
+                @test e isa TransportError && e.status == status && GWT.retryable(e) == retry
+                @test occursin("HTTP $status $code: the gateway's word", sprint(showerror, e))
+            end
+            double.respond = _ -> nothing
+            @test !haskey(s3.objects, kf)
+            # the policy is checked against the attachment's prefix, not the key up to its last '/'
+            nested = "p/_attachments/" * bytes2hex(sha256(b"n"))
+            @test GWT.put_attachment(store, nested, IOBuffer(b"n"))
+            double.policy = ["p/_attachments" => ["alice@example.com"]]
+            e = try GWT.put_attachment(store, "p/_attachments/" * bytes2hex(sha256(b"m")), IOBuffer(b"m")); nothing catch e; e end
+            @test e isa WriteRefusedError && e.reason == "not_allowed"
+            double.policy = ["p" => ["alice@example.com"]]
+            # reads go to the bucket
+            @test GWT.fetch_object_to(store, key, joinpath(dir, "b")) == length(bytes) && read(joinpath(dir, "b")) == bytes
+        finally
+            close(gw); close(s3)
+            rm(dir; recursive = true)
         end
     end
 

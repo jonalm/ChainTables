@@ -130,7 +130,8 @@ length is not the declared size included, fails the signature (`403
 SignatureDoesNotMatch`), so the 5 GiB check at mint binds the upload.
 `If-None-Match` refuses every write after the first (`412`), so a URL used
 again, as AWS allows until it expires, stores nothing more. An expired URL is
-`403` "Request has expired": the client mints again. The request runs as the
+`403` "Request has expired", raised as `AttachmentURLExpiredError`: putting the
+attachment again mints a new URL. The request runs as the
 gateway role, so `OnlyTheGatewayPuts` and the lock-header denies hold
 unchanged. The gateway checks no author and reads no content; attribution comes
 from the record whose row holds the hash.
@@ -207,17 +208,24 @@ copy, and `repair!` fetches them from its chain's store.
 
 Each has a message test (ADR-0020); the names are settled with the code.
 
-- The file changed between hashing and upload (`BadDigest`).
+- The file changed between hashing and upload: `AttachmentChangedError`, for
+  S3's `BadDigest` on a minted URL and its `XAmzContentSHA256Mismatch` on a
+  plain bucket's signed PUT.
 - A mint refused: `WriteRefusedError`, now also raised by `put_attachment` and
   `touch_attachment`.
 - A bad URL, or a key absent after the upload: `GatewayMismatchError`.
-- A URL that expired before the upload started; the message says to retry.
+- A URL that expired before the upload started: `AttachmentURLExpiredError`,
+  carrying the gateway's `expires`; the message says to put the attachment
+  again. The client does not mint again by itself: a fresh URL lives at least
+  15 minutes, so an expiry means a stalled caller or a wrong clock.
 - The attachment is absent from the chain's store, which is common once a
   retention ends.
 - A download that does not hash to `<h>`.
 - A damaged cache file.
-- A gateway with no mint route: the message says to redeploy it, not
-  `not_a_slot`.
+- A gateway with no mint route: `WriteRefusedError` with `reason =
+  "no_mint_route"`, recognised by the old gateway's `400 bad_request` text "is
+  not the gateway's one route"; the message says to redeploy it. Any other
+  `400` from the mint route is a `TransportError` carrying its code.
 
 ## Why a presigned PUT is right here when ADR-0028 refused it
 

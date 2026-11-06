@@ -124,4 +124,33 @@ using ChainTables.Testing: InMemoryObjectStore
         @test store.calls == [(:put_object_if_absent, "a"), (:fetch_object, "a"),
                               (:stat_object, "b"), (:list_objects, "")]
     end
+
+    @testset "attachments: stored once, checked against the key, fetched to a file (ADR-0046)" begin
+        store = InMemoryObjectStore()
+        bytes = Vector{UInt8}("an attachment")
+        key = "p/_attachments/" * bytes2hex(ChainTables.sha256(bytes))
+        @test ChainTables.put_attachment(store, key, IOBuffer(bytes))
+        @test store.objects[key] == bytes
+        @test !ChainTables.put_attachment(store, key, IOBuffer(bytes))          # present: nothing stored again
+        # bytes that do not hash to the key are refused, as S3's BadDigest, and nothing is stored
+        other = "p/_attachments/" * "0"^64
+        @test_throws "attachment changed: the upload of $other to an InMemoryObjectStore was refused as BadDigest" ChainTables.put_attachment(store, other, IOBuffer(bytes))
+        @test_throws ChainTables.AttachmentChangedError ChainTables.put_attachment(store, other, IOBuffer(bytes))
+        @test !haskey(store.objects, other)
+        # a caller's bugs: not an attachment key, an IO not at its start
+        @test_throws "\"p/000000000001\" is not an attachment key" ChainTables.put_attachment(store, "p/000000000001", IOBuffer(bytes))
+        io = IOBuffer(bytes); read(io, UInt8)
+        @test_throws "an attachment's IO must stand at its start, not at byte 1" ChainTables.put_attachment(store, key, io)
+        # fetched to a file; absent is nothing and writes no file
+        mktempdir() do dir
+            path = joinpath(dir, "a")
+            @test ChainTables.fetch_object_to(store, key, path) == length(bytes) && read(path) == bytes
+            @test ChainTables.fetch_object_to(store, other, joinpath(dir, "b")) === nothing && !ispath(joinpath(dir, "b"))
+        end
+        @test count(c -> c[1] == :put_attachment, store.calls) == 4 && count(c -> c[1] == :fetch_object_to, store.calls) == 2
+        # a fault fires around them as around the four verbs
+        store.fault = (verb, key, phase) -> verb == :put_attachment && phase == :before && error("injected")
+        @test_throws "injected" ChainTables.put_attachment(store, "_attachments/" * bytes2hex(ChainTables.sha256(b"x")), IOBuffer(b"x"))
+        @test !haskey(store.objects, "_attachments/" * bytes2hex(ChainTables.sha256(b"x")))
+    end
 end

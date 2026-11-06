@@ -619,7 +619,8 @@ body is read from `input`, an IO at its start, and the response's body written t
 `output`. The response is returned whatever its status — a `3xx` among them, since no
 redirect is followed — and no response at all, a stall of `stall` seconds included, is a
 `TransportError` with no status. A `PUT` must carry a `content-length` header, else
-libcurl would send a chunked body, which S3 refuses.
+libcurl would send a chunked body, which S3 refuses. A failure's message leaves out the
+URL's query, which for a presigned URL is a credential.
 """
 function http_stream(url::AbstractString, method::AbstractString, headers; input = nothing, output = nothing, stall::Real)
     stall > 0 || throw(ArgumentError("http_stream: stall is $stall seconds; it must be positive"))
@@ -629,7 +630,7 @@ function http_stream(url::AbstractString, method::AbstractString, headers; input
     response = Downloads.request(url; method, headers, input, output = something(output, devnull),
                                  throw = false, downloader = stream_downloader(stall))
     response isa Downloads.RequestError &&
-        throw(TransportError("$method $url: no response — $(response.message)"))
+        throw(TransportError("$method $(bare_url(url)): no response — $(response.message)"))
     return (; status = response.status, headers = response.headers)
 end
 

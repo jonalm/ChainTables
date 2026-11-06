@@ -1,4 +1,4 @@
-# ADR-0020 — the taxonomy: eighteen types under one supertype, each with `msg` and its evidence as
+# ADR-0020 — the taxonomy: twenty types under one supertype, each with `msg` and its evidence as
 # keyword fields defaulting to nothing. Every type is provoked, with @test_throws "<message>", in
 # the test file of the lane that raises it (localcopy.jl, ops.jl, builder.jl, chain.jl, recovery.jl,
 # gateway.jl); the one step 9 raises — UnsupportedStoreError — is checked by construction here.
@@ -10,6 +10,7 @@
         ChainTables.NotALocalCopyError, ChainTables.LayoutVersionError, ChainTables.WrongChainError,
         ChainTables.LocalCopyInconsistentError, ChainTables.MalformedRecordError, ChainTables.WriteRefusedError,
         ChainTables.GatewayMismatchError, ChainTables.RecordCacheError, ChainTables.CommitOutcomeUnknownError,
+        ChainTables.AttachmentChangedError, ChainTables.AttachmentURLExpiredError,
     )
         @test T <: ChainTables.ChainTablesError
         @test ChainTables.ChainTablesError <: Exception
@@ -47,5 +48,9 @@
                                      expected = zeros(UInt8, 32), found = ones(UInt8, 32))
     @test (e.slot, e.path) == (2, "/c/bkt/p/000000000002")
     @test e.expected isa ChainTables.TransactionHash && e.found isa ChainTables.TransactionHash
+    # an attachment's upload refused (ADR-0046): the key, and for an expired URL the time the gateway gave
+    e = ChainTables.AttachmentURLExpiredError("expired"; key = "p/_attachments/" * "0"^64, expires = "2026-11-06T12:00:00Z")
+    @test (e.key, e.expires) == ("p/_attachments/" * "0"^64, "2026-11-06T12:00:00Z") && !ChainTables.retryable(e)
+    @test fieldnames(ChainTables.AttachmentChangedError) == (:msg, :chain_id, :key)
     @test isabstracttype(ChainTables.AbstractObjectStore)
 end

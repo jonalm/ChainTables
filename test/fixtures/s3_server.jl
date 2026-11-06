@@ -20,6 +20,7 @@ mutable struct S3TestServer
     const objects::Dict{String,Vector{UInt8}}
     const modified::Dict{String,Int64}
     const requests::Vector{Any}
+    const presigned::Dict{String,Any}     # X-Amz-Signature => (; key, headers, expires): what a minter granted
     respond::Any
     page_size::Int
 end
@@ -28,7 +29,7 @@ function S3TestServer(; bucket, credentials, region = "eu-north-1", page_size = 
     server = listen(ip"127.0.0.1", 0)
     port = Int(getsockname(server)[2])
     s = S3TestServer(server, port, bucket, region, credentials, Dict{String,Vector{UInt8}}(), Dict{String,Int64}(), Any[],
-                     _ -> nothing, page_size)
+                     Dict{String,Any}(), _ -> nothing, page_size)
     @async try
         while isopen(server)
             sock = accept(server)
@@ -138,7 +139,32 @@ function s3test_check_signature(s::S3TestServer, req)
     return nothing
 end
 
+# A presigned PUT (ADR-0046), as S3 answers one: the signature must be one a minter
+# granted (`s.presigned`), unexpired, for this key; every signed header must be sent with
+# its value, no unsigned `x-amz-*` header may be, the body must hash to the signed
+# checksum, and `If-None-Match: *` refuses a present key.
+function s3test_presigned(s::S3TestServer, req)
+    grant = get(s.presigned, Dict(req.query)["X-Amz-Signature"], nothing)
+    grant === nothing && return (403, [], s3test_error("SignatureDoesNotMatch", "no such signature"))
+    time() > grant.expires && return (403, [], s3test_error("AccessDenied", "Request has expired"))
+    (req.method == "PUT" && req.path == "/$(s.bucket)/$(grant.key)") ||
+        return (403, [], s3test_error("SignatureDoesNotMatch", "not the signed method and key"))
+    for (k, v) in grant.headers
+        get(req.headers, k, nothing) == v || return (403, [], s3test_error("SignatureDoesNotMatch", "signed header $k"))
+    end
+    any(k -> startswith(k, "x-amz-") && !haskey(grant.headers, k), keys(req.headers)) &&
+        return (403, [], s3test_error("AccessDenied", "There were headers present in the request which were not signed"))
+    S3T.Base64.base64encode(sha256(req.body)) == grant.headers["x-amz-checksum-sha256"] ||
+        return (400, [], s3test_error("BadDigest", "The SHA256 you specified did not match the calculated checksum."))
+    haskey(s.objects, grant.key) &&
+        return (412, [], s3test_error("PreconditionFailed", "At least one of the pre-conditions you specified did not hold"))
+    s.objects[grant.key] = copy(req.body)
+    s.modified[grant.key] = floor(Int64, time())
+    return (200, [], UInt8[])
+end
+
 function s3test_default(s::S3TestServer, req)
+    any(kv -> first(kv) == "X-Amz-Signature", req.query) && return s3test_presigned(s, req)
     refused = s3test_check_signature(s, req)
     refused === nothing || return refused
     startswith(req.path, "/" * s.bucket) || return (404, [], s3test_error("NoSuchBucket", req.path))
