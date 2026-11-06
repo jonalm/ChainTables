@@ -136,9 +136,16 @@ unchanged. The gateway checks no author and reads no content; attribution comes
 from the record whose row holds the hash.
 
 **The bucket policy denies a presigned PUT** (`s3:authType` =
-`REST-QUERY-STRING`) to any key outside `_attachments/` and `*/_attachments/`.
-A gateway bug can then never mint a working URL for a slot, which would bypass
-the author check.
+`REST-QUERY-STRING`) to any key outside `_attachments/<64 × ?>` and
+`*/_attachments/<64 × ?>` (`DenyPresignedSlotPuts`, written by `deploy.sh`;
+`?` is one character in an IAM resource pattern). A gateway bug can then never
+mint a working URL for a slot, which would bypass the author check. The
+pattern cannot spell "lowercase hex": a slot under a contrived prefix whose last
+64 characters span a `/` (`p/_attachments/<51 characters>/<12 digits>`) still
+matches, and only the gateway's key check refuses it. The role's
+`s3:GetObject`, `s3:PutObjectTagging` and, on a locked bucket,
+`s3:GetObjectRetention` are scoped to the same patterns; `s3:ListBucket`, so that
+an absent key HEADs 404, is on the bucket.
 
 ### Writing on a plain bucket
 

@@ -63,8 +63,8 @@ def test_role_policy_grants_retention_on_the_bucket(policies):
 
 def test_bucket_policy_refuses_every_put_but_the_gateways_locked_kms_put(policies):
     s = by_sid(policies["bucket policy (bkt), merged onto what gateway/deploy.sh writes"])
-    assert set(s) == {"GatewayPuts", "OnlyTheGatewayPuts", "DenyInsecureTransport", "DenyNotKms", "DenyNoSseHeader",
-                      "DenyWrongKey", "DenyNoKeyHeader", "DenyNoRetainUntil", "DenyNotCompliance", "DenyNoLockMode",
+    assert set(s) == {"GatewayPuts", "OnlyTheGatewayPuts", "DenyInsecureTransport", "DenyPresignedSlotPuts",
+                      "DenyNotKms", "DenyNoSseHeader", "DenyWrongKey", "DenyNoKeyHeader", "DenyNoRetainUntil", "DenyNotCompliance", "DenyNoLockMode",
                       "DenyDeleteMarkers", "DenyLifecycleChanges"}
     assert s["GatewayPuts"]["Principal"]["AWS"] == "arn:aws:iam::111122223333:role/gw-role"
     assert s["OnlyTheGatewayPuts"]["Condition"] == {"ArnNotEquals": {"aws:PrincipalArn": "arn:aws:iam::111122223333:role/gw-role"}}
@@ -77,6 +77,25 @@ def test_bucket_policy_refuses_every_put_but_the_gateways_locked_kms_put(policie
     assert s["DenyLifecycleChanges"] == {"Sid": "DenyLifecycleChanges", "Effect": "Deny", "Principal": "*",
                                          "Action": "s3:PutLifecycleConfiguration", "Resource": "arn:aws:s3:::bkt"}
     assert all(s[sid]["Effect"] == "Deny" for sid in s if sid != "GatewayPuts")
+
+
+# An attachment key, as an IAM resource pattern: `?` is one character, so the hash is 64 of
+# them, and a slot (12 digits) never matches (ADR-0046).
+ATTACHMENTS = ["arn:aws:s3:::bkt/_attachments/" + "?" * 64, "arn:aws:s3:::bkt/*/_attachments/" + "?" * 64]
+DEPLOY_SIDS = {"GatewayPuts", "OnlyTheGatewayPuts", "DenyInsecureTransport", "DenyPresignedSlotPuts"}
+PRESIGNED_DENY = {"Sid": "DenyPresignedSlotPuts", "Effect": "Deny", "Principal": "*", "Action": "s3:PutObject",
+                  "NotResource": ATTACHMENTS, "Condition": {"StringEquals": {"s3:authType": "REST-QUERY-STRING"}}}
+
+
+def test_bucket_policy_denies_a_presigned_put_to_anything_but_an_attachment(policies):
+    s = by_sid(policies["bucket policy (bkt), merged onto what gateway/deploy.sh writes"])
+    assert s["DenyPresignedSlotPuts"] == PRESIGNED_DENY
+
+
+def test_role_policy_lets_the_gateway_read_an_attachments_retention(policies):
+    s = by_sid(policies["execution role inline policy (gw-role)"])
+    assert s["ReadAttachmentRetention"] == {"Sid": "ReadAttachmentRetention", "Effect": "Allow",
+                                            "Action": "s3:GetObjectRetention", "Resource": ATTACHMENTS}
 
 
 def test_print_policies_shows_the_read_grants_deploy_sh_adds():
@@ -166,6 +185,12 @@ elif cmd == "s3api put-bucket-lifecycle-configuration":
         fail("AccessDenied", "PutBucketLifecycleConfiguration")
 elif cmd in ("s3api put-object", "s3api delete-object"):
     fail("AccessDenied", "PutObject" if args[1] == "put-object" else "DeleteObject")
+elif cmd == "iam put-role-policy":
+    with open(os.path.join(state, "role-policy-" + opt("--policy-name")), "w") as f:
+        f.write(opt("--policy-document"))
+elif cmd == "iam get-role-policy":
+    answer({"PolicyDocument": json.loads(stored("role-policy-" + opt("--policy-name"), "NoSuchEntity",
+                                                "GetRolePolicy"))})
 elif cmd == "kms list-aliases":
     print("k1")
 elif cmd == "kms describe-key":
@@ -258,6 +283,45 @@ def test_deploy_grants_writers_invoke_only_via_the_function_url(tmp_path):
             assert action == "lambda:InvokeFunction" and "--invoked-via-function-url" in c
 
 
+def role_policy(calls, name):
+    (put,) = [c for c in calls if c[:2] == ["iam", "put-role-policy"] and c[c.index("--policy-name") + 1] == name]
+    return json.loads(put[put.index("--policy-document") + 1])
+
+
+def test_deploy_lets_the_role_head_and_tag_attachments_and_put_any_key(tmp_path):
+    r, calls = run_deploy(tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert by_sid(role_policy(calls, "chaintables-gateway-put")) == {
+        "PutSlots": {"Sid": "PutSlots", "Effect": "Allow", "Action": "s3:PutObject", "Resource": "arn:aws:s3:::bkt/*"},
+        # HEAD is GetObject; ListBucket makes an absent key 404, not 403
+        "HeadAttachments": {"Sid": "HeadAttachments", "Effect": "Allow", "Action": "s3:GetObject",
+                            "Resource": ATTACHMENTS},
+        "ListBucket": {"Sid": "ListBucket", "Effect": "Allow", "Action": "s3:ListBucket",
+                       "Resource": "arn:aws:s3:::bkt"},
+        # a presigned PUT signing x-amz-tagging is 403 without it (probed, ADR-0046)
+        "TagAttachments": {"Sid": "TagAttachments", "Effect": "Allow", "Action": "s3:PutObjectTagging",
+                           "Resource": ATTACHMENTS},
+    }
+
+
+def test_deploy_denies_presigned_puts_outside_attachments(tmp_path):
+    r, calls = run_deploy(tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert by_sid(put_policy(calls))["DenyPresignedSlotPuts"] == PRESIGNED_DENY
+
+
+def test_deploy_smoke_proves_both_routes_are_in_the_deployed_zip(tmp_path):
+    env, log = fake_aws(tmp_path)
+    write_zip(tmp_path / "gw.zip")
+    r = subprocess.run(
+        ["bash", os.path.join(HERE, "deploy.sh"), "--bucket", "bkt", "--function", "gw", "--region", "eu-north-1",
+         "--role", "gw-role", "--zip", str(tmp_path / "gw.zip")], capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stderr
+    payloads = [json.loads(c[c.index("--payload") + 1]) for c in logged(log) if c[:2] == ["lambda", "invoke"]]
+    assert [(p["requestContext"]["http"]["method"], p["requestContext"]["http"]["path"]) for p in payloads] == [
+        ("PUT", "/"), ("POST", "/mint")]
+
+
 def test_deploy_refuses_a_zip_built_from_another_handler(tmp_path):
     r, calls = run_deploy(tmp_path, handler_source=b"# an older gateway\n")
     assert r.returncode != 0
@@ -333,7 +397,7 @@ def test_deploy_drops_unlisted_grants_when_told_to(tmp_path):
     assert r.returncode == 0, r.stderr
     assert not [c for c in calls if c[:2] == ["lambda", "add-permission"]]
     assert len([c for c in calls if c[:2] == ["lambda", "remove-permission"]]) == 2
-    assert set(by_sid(put_policy(calls))) == {"GatewayPuts", "OnlyTheGatewayPuts", "DenyInsecureTransport"}
+    assert set(by_sid(put_policy(calls))) == DEPLOY_SIDS
 
 
 def test_deploy_fails_when_the_function_resource_policy_cannot_be_read(tmp_path):
@@ -365,19 +429,19 @@ def test_deploy_keeps_every_statement_it_does_not_own(tmp_path):
                           lock="Enabled", bucket_policy=json.dumps(before))
     assert r.returncode == 0, r.stderr
     after = by_sid(put_policy(calls))
-    lock_denies = {sid: st for sid, st in by_sid(before).items() if sid.startswith("Deny") and sid != "DenyInsecureTransport"}
+    lock_denies = {sid: st for sid, st in by_sid(before).items() if sid.startswith("Deny") and sid not in DEPLOY_SIDS}
     assert len(lock_denies) == 9
     for sid, st in lock_denies.items():
         assert after[sid] == st
     # its own statements are rewritten from the arguments: the stale Read3 is gone
-    assert set(after) == set(lock_denies) | {"GatewayPuts", "OnlyTheGatewayPuts", "DenyInsecureTransport", "Read1"}
+    assert set(after) == set(lock_denies) | DEPLOY_SIDS | {"Read1"}
     assert after["Read1"]["Principal"] == {"AWS": "arn:aws:iam::444455556666:role/r1"}
 
 
 def test_deploy_on_a_plain_bucket_without_a_policy_writes_its_own(tmp_path):
     r, calls = run_deploy(tmp_path)
     assert r.returncode == 0, r.stderr
-    assert set(by_sid(put_policy(calls))) == {"GatewayPuts", "OnlyTheGatewayPuts", "DenyInsecureTransport"}
+    assert set(by_sid(put_policy(calls))) == DEPLOY_SIDS
 
 
 def test_deploy_keeps_the_lock_variables_in_the_function_environment(tmp_path):
@@ -482,7 +546,8 @@ def test_setup_on_a_fresh_locked_bucket_passes_its_own_verification(tmp_path):
     r, calls, held = run_setup(tmp_path)
     assert r.returncode == 0, r.stderr
     assert "ok: public access, ownership, versioning, Object Lock, SSE-KMS, bucket policy, lifecycle" in r.stdout
-    assert set(by_sid(held)) == {"GatewayPuts", "OnlyTheGatewayPuts", "DenyInsecureTransport", "DenyNotKms",
+    assert set(by_sid(held)) == {"GatewayPuts", "OnlyTheGatewayPuts", "DenyInsecureTransport", "DenyPresignedSlotPuts",
+                                 "DenyNotKms",
                                  "DenyNoSseHeader", "DenyWrongKey", "DenyNoKeyHeader", "DenyNoRetainUntil",
                                  "DenyNotCompliance", "DenyNoLockMode", "DenyDeleteMarkers", "DenyLifecycleChanges"}
     # the lifecycle probe changes nothing even if it were let through: one disabled rule
@@ -532,6 +597,27 @@ def test_setup_fails_when_the_bucket_policy_cannot_be_read(tmp_path):
     assert r.returncode != 0
     assert "reading the bucket policy of bkt failed" in r.stderr and "AccessDenied" in r.stderr
     assert not [c for c in calls if c[:2] == ["s3api", "put-bucket-policy"]]
+
+
+def test_setup_grants_the_role_attachment_retention_and_verifies_its_policies(tmp_path):
+    r, calls, held = run_setup(tmp_path)
+    assert r.returncode == 0, r.stderr
+    s = by_sid(role_policy(calls, "chaintables-lock-kms"))
+    assert s["ReadAttachmentRetention"]["Resource"] == ATTACHMENTS
+    read_back = {c[c.index("--policy-name") + 1] for c in calls if c[:2] == ["iam", "get-role-policy"]}
+    assert read_back == {"chaintables-gateway-put", "chaintables-lock-kms"}
+    assert "ok: execution role policies" in r.stdout
+
+
+def test_setup_fails_when_a_role_policy_drifts(tmp_path):
+    # --skip-gateway: deploy.sh does not run, so the put policy the fake holds is whatever was there
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state" / "role-policy-chaintables-gateway-put").write_text(json.dumps(
+        {"Version": "2012-10-17", "Statement": [{"Sid": "PutSlots", "Effect": "Allow", "Action": "s3:PutObject",
+                                                 "Resource": "arn:aws:s3:::bkt/*"}]}))
+    r, calls, held = run_setup(tmp_path, "--skip-gateway")
+    assert r.returncode != 0
+    assert "execution role policy chaintables-gateway-put" in r.stderr and "HeadAttachments" in r.stderr
 
 
 def test_setup_fails_when_a_lifecycle_change_is_not_denied(tmp_path):

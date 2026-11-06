@@ -43,11 +43,13 @@
 #      object, enforced by the bucket policy); default encryption SSE-KMS with the key
 #      and Bucket Key on.
 #   3. Gateway: build.sh + deploy.sh beside this script (bucket policy
-#      GatewayPuts/OnlyTheGatewayPuts, execution role, function, IAM function URL), with
-#      CHAINTABLES_KMS_KEY_ARN and CHAINTABLES_RETENTION_DAYS in the function's
-#      environment, which makes the gateway dress every put as the contract below requires.
-#      Then an extra inline policy on the execution role: s3:PutObjectRetention on the
-#      bucket, kms:GenerateDataKey/Decrypt on the key.
+#      GatewayPuts/OnlyTheGatewayPuts/DenyPresignedSlotPuts, execution role, function, IAM
+#      function URL), with CHAINTABLES_KMS_KEY_ARN and CHAINTABLES_RETENTION_DAYS in the
+#      function's environment, which makes the gateway dress every put as the contract below
+#      requires. Then an extra inline policy on the execution role: s3:PutObjectRetention on
+#      the bucket, s3:GetObjectRetention on its attachment keys (the mint route reads a present
+#      attachment's retain-until before it extends it, ADR-0046), kms:GenerateDataKey/Decrypt
+#      on the key.
 #   4. Bucket policy: deploy.sh's statements kept, merged by Sid with
 #        DenyInsecureTransport  s3:* when aws:SecureTransport is false
 #        DenyNotKms / DenyNoSseHeader        PutObject unless x-amz-server-side-encryption = aws:kms
@@ -128,6 +130,11 @@ bucket_arn="arn:aws:s3:::$bucket"
 role_arn="arn:aws:iam::$account:role/$role"
 function_arn="arn:aws:lambda:$region:$account:function:$function"
 root_arn="arn:aws:iam::$account:root"
+# The attachment keys as IAM resource patterns, as deploy.sh writes them: '?' is one
+# character, so the hash is 64 of them and a slot never ends one (ADR-0046).
+hash_pattern="$(python3 -c 'print("?" * 64)')"
+attachments="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' \
+    "$bucket_arn/_attachments/$hash_pattern" "$bucket_arn/*/_attachments/$hash_pattern")"
 
 # ---------------------------------------------------------------------------- policies
 # Every policy is assembled by python3 from its inputs so the JSON is exact.
@@ -151,12 +158,14 @@ PY
 }
 
 role_policy() {  # $1 key ARN
-    python3 - "$bucket_arn" "$1" <<'PY'
+    python3 - "$bucket_arn" "$1" "$attachments" <<'PY'
 import json, sys
-bucket_arn, key_arn = sys.argv[1], sys.argv[2]
+bucket_arn, key_arn, attachments = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])
 print(json.dumps({"Version": "2012-10-17", "Statement": [
     {"Sid": "LockSlots", "Effect": "Allow",
      "Action": "s3:PutObjectRetention", "Resource": f"{bucket_arn}/*"},
+    {"Sid": "ReadAttachmentRetention", "Effect": "Allow",
+     "Action": "s3:GetObjectRetention", "Resource": attachments},
     {"Sid": "EncryptSlots", "Effect": "Allow",
      "Action": ["kms:GenerateDataKey", "kms:Decrypt"], "Resource": key_arn}]}))
 PY
@@ -196,15 +205,17 @@ if [ "$print_only" = 1 ]; then
     readers="$(json_array "arn:aws:iam::$account:role/aws-reserved/sso.amazonaws.com/$region/AWSReservedSSO_<permission-set>_<hash>" \
                           ${decrypt_roles[@]+"${decrypt_roles[@]}"})"
     # what deploy.sh writes: its Read<n> numbers the readers, then the writers
-    gateway_policy="$(python3 - "$bucket_arn" "$role_arn" ${grants[@]+"${grants[@]}"} <<'PY'
+    gateway_policy="$(python3 - "$bucket_arn" "$role_arn" "$attachments" ${grants[@]+"${grants[@]}"} <<'PY'
 import json, sys
-bucket_arn, role_arn, grants = sys.argv[1], sys.argv[2], sys.argv[3:]
+bucket_arn, role_arn, attachments, grants = sys.argv[1], sys.argv[2], json.loads(sys.argv[3]), sys.argv[4:]
 pairs = [(grants[i], grants[i + 1]) for i in range(len(grants)) if grants[i] in ("--writer", "--reader")]
 principals = [a for f, a in pairs if f == "--reader"] + [a for f, a in pairs if f == "--writer"]
 objects = f"{bucket_arn}/*"
 st = [{"Sid": "GatewayPuts", "Effect": "Allow", "Principal": {"AWS": role_arn}, "Action": "s3:PutObject", "Resource": objects},
       {"Sid": "OnlyTheGatewayPuts", "Effect": "Deny", "Principal": "*", "Action": "s3:PutObject", "Resource": objects,
-       "Condition": {"ArnNotEquals": {"aws:PrincipalArn": role_arn}}}]
+       "Condition": {"ArnNotEquals": {"aws:PrincipalArn": role_arn}}},
+      {"Sid": "DenyPresignedSlotPuts", "Effect": "Deny", "Principal": "*", "Action": "s3:PutObject",
+       "NotResource": attachments, "Condition": {"StringEquals": {"s3:authType": "REST-QUERY-STRING"}}}]
 st += [{"Sid": f"Read{n}", "Effect": "Allow", "Principal": {"AWS": a}, "Action": ["s3:GetObject", "s3:ListBucket"],
         "Resource": [bucket_arn, objects]} for n, a in enumerate(principals, 1)]
 print(json.dumps({"Version": "2012-10-17", "Statement": st}))
@@ -324,9 +335,10 @@ aws s3api put-bucket-policy --bucket "$bucket" --policy "$desired"
 
 # ---------------------------------------------------------------------------- 6. verify
 say "verifying the configuration against the spec"
-python3 - "$bucket" "$key_arn" "$role_arn" "$desired" <<'PY'
+python3 - "$bucket" "$key_arn" "$role_arn" "$desired" "$role" "$(role_policy "$key_arn")" <<'PY'
 import json, subprocess, sys
 bucket, key_arn, role_arn, desired = sys.argv[1], sys.argv[2], sys.argv[3], json.loads(sys.argv[4])
+role, lock_policy = sys.argv[5], json.loads(sys.argv[6])
 def get(*args):
     return json.loads(subprocess.run(["aws", "s3api", *args, "--bucket", bucket, "--output", "json"],
                                      check=True, capture_output=True, text=True).stdout)
@@ -348,7 +360,7 @@ expect("SSE key", enc["ApplyServerSideEncryptionByDefault"].get("KMSMasterKeyID"
 expect("bucket key", enc.get("BucketKeyEnabled"), True)
 policy = json.loads(get("get-bucket-policy")["Policy"])
 statements = {s.get("Sid"): s for s in policy["Statement"]}
-for sid in ("GatewayPuts", "OnlyTheGatewayPuts", "DenyInsecureTransport", "DenyNotKms", "DenyNoSseHeader",
+for sid in ("GatewayPuts", "OnlyTheGatewayPuts", "DenyInsecureTransport", "DenyPresignedSlotPuts", "DenyNotKms", "DenyNoSseHeader",
             "DenyWrongKey", "DenyNoKeyHeader", "DenyNoRetainUntil", "DenyNotCompliance", "DenyNoLockMode",
             "DenyDeleteMarkers", "DenyLifecycleChanges"):
     if sid not in statements:
@@ -370,9 +382,29 @@ if lc.returncode == 0:
             problems.append(f"lifecycle rule {rule.get('ID')!r} expires current versions, which hides slots behind delete markers")
 elif "NoSuchLifecycleConfiguration" not in lc.stderr:
     problems.append(f"reading the lifecycle configuration failed: {lc.stderr.strip()}")
+# The execution role's inline policies: this script's own must read back as it was put, and
+# deploy.sh's must hold the grants the mint route needs (ADR-0046), or every mint is 502.
+def role_policy(name):
+    r = subprocess.run(["aws", "iam", "get-role-policy", "--role-name", role, "--policy-name", name, "--output", "json"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        problems.append(f"reading execution role policy {name} failed: {r.stderr.strip()}")
+        return None
+    return json.loads(r.stdout)["PolicyDocument"]
+held = role_policy("chaintables-lock-kms")
+if held is not None:
+    expect("execution role policy chaintables-lock-kms", held, lock_policy)
+held = role_policy("chaintables-gateway-put")
+if held is not None:
+    sids = {s.get("Sid") for s in held.get("Statement", [])}
+    missing = sorted({"PutSlots", "HeadAttachments", "ListBucket", "TagAttachments"} - sids)
+    if missing:
+        problems.append(f"execution role policy chaintables-gateway-put lacks {missing}: redeploy with this "
+                        "directory's deploy.sh")
 if problems:
     sys.exit("setup-locked-bucket.sh: configuration drifts from the spec:\n  " + "\n  ".join(problems))
 print("   ok: public access, ownership, versioning, Object Lock, SSE-KMS, bucket policy, lifecycle")
+print("   ok: execution role policies")
 PY
 say "probing: a bare PutObject as $caller_arn must be denied"
 probe_body="$(mktemp)"

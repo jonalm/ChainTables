@@ -17,7 +17,7 @@ The code, tests and build are under [`gateway/`](../gateway/README.md).
 | resource | name | holds |
 |---|---|---|
 | S3 bucket | your choice, e.g. `chaintables-gateway-<account>-<region>` | the chains; public access blocked; the bucket policy below |
-| IAM role | your choice, e.g. `chaintables-gateway` | the function's execution role: `s3:PutObject` on the bucket's keys and nothing else on S3, plus its own log group |
+| IAM role | your choice, e.g. `chaintables-gateway` | the function's execution role: `s3:PutObject` on the bucket's keys, `s3:GetObject` and `s3:PutObjectTagging` on its attachment keys, `s3:ListBucket`, and nothing else on S3, plus its own log group |
 | Lambda function | your choice, e.g. `chaintables-gateway` | `gateway/handler.py` with the policy config bundled as `policy.json`; `CHAINTABLES_BUCKET` in its environment |
 | function URL | assigned by AWS: `https://<id>.lambda-url.<region>.on.aws/` | `AuthType=AWS_IAM`, buffered |
 
@@ -105,12 +105,20 @@ account and role as well as the name ([ADR-0036](adr/0036-only-the-function-url-
 Created by `deploy.sh`. Trusts `lambda.amazonaws.com`; two inline policies:
 
 ```json
-{"Sid": "PutSlots", "Effect": "Allow", "Action": "s3:PutObject", "Resource": "arn:aws:s3:::<bucket>/*"}
+{"Sid": "PutSlots",        "Effect": "Allow", "Action": "s3:PutObject", "Resource": "arn:aws:s3:::<bucket>/*"}
+{"Sid": "HeadAttachments", "Effect": "Allow", "Action": "s3:GetObject", "Resource": <attachments>}
+{"Sid": "ListBucket",      "Effect": "Allow", "Action": "s3:ListBucket", "Resource": "arn:aws:s3:::<bucket>"}
+{"Sid": "TagAttachments",  "Effect": "Allow", "Action": "s3:PutObjectTagging", "Resource": <attachments>}
 {"Sid": "OwnLogs",  "Effect": "Allow", "Action": ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
  "Resource": "arn:aws:logs:<region>:<account>:log-group:/aws/lambda/<function>:*"}
 ```
 
-No `GetObject`: the conditional put (`If-None-Match: *`) needs none. No managed policies.
+`<attachments>` is the attachment keys as IAM resource patterns,
+`["arn:aws:s3:::<bucket>/_attachments/<64 × ?>", "arn:aws:s3:::<bucket>/*/_attachments/<64 × ?>"]`:
+`?` matches one character, so a slot key (12 digits) never ends one. The slot put needs no
+`GetObject`; the mint route HEADs an attachment (`GetObject`, with `ListBucket` so that an
+absent key is 404, not 403), and the URL it mints signs `x-amz-tagging`, which S3 refuses
+without `PutObjectTagging` (ADR-0046). No managed policies.
 
 ### A writer principal
 
@@ -165,7 +173,7 @@ deployment granted but this one is not given is a refusal before any change, and
 
 `deploy.sh` writes these statements, and they are what make the bucket a gateway bucket.
 It merges them by `Sid` into the policy in place: it rewrites its own (`GatewayPuts`,
-`OnlyTheGatewayPuts`, `DenyInsecureTransport`, `Read<n>`) and keeps every other statement,
+`OnlyTheGatewayPuts`, `DenyInsecureTransport`, `DenyPresignedSlotPuts`, `Read<n>`) and keeps every other statement,
 such as a locked bucket's denies (ADR-0037).
 
 ```json
@@ -179,12 +187,20 @@ such as a locked bucket's denies (ADR-0037).
   {"Sid": "DenyInsecureTransport", "Effect": "Deny", "Principal": "*",
    "Action": "s3:*", "Resource": ["arn:aws:s3:::<bucket>", "arn:aws:s3:::<bucket>/*"],
    "Condition": {"Bool": {"aws:SecureTransport": "false"}}},
+  {"Sid": "DenyPresignedSlotPuts", "Effect": "Deny", "Principal": "*",
+   "Action": "s3:PutObject", "NotResource": <attachments>,
+   "Condition": {"StringEquals": {"s3:authType": "REST-QUERY-STRING"}}},
   {"Sid": "Read1", "Effect": "Allow", "Principal": {"AWS": "<each --reader and --writer ARN>"},
    "Action": ["s3:GetObject", "s3:ListBucket"], "Resource": ["arn:aws:s3:::<bucket>", "arn:aws:s3:::<bucket>/*"]}]}
 ```
 
 The Deny is the guarantee: only the gateway can fill a slot, and an administrator with
-`s3:*` on the account cannot either. What the policy does **not** prevent: an administrator
+`s3:*` on the account cannot either. `DenyPresignedSlotPuts` keeps the gateway's own presigned
+URLs to attachment keys, so a gateway bug can never mint a working URL for a slot, which
+would bypass the author check (ADR-0046). The pattern cannot spell "64 lowercase hex": a
+slot under a contrived prefix whose last 64 characters span a `/`, such as
+`p/_attachments/<51 characters>/<12 digits>`, still matches, and only the gateway's own key
+check refuses it. What the policy does **not** prevent: an administrator
 can still delete objects, and can rewrite this policy. And an administrator whose policy
 grants `lambda:InvokeFunction` without the `InvokedViaFunctionUrl` condition can have the
 gateway fill a slot under any listed name (ADR-0036). The trust boundary is one fact wide, that
@@ -207,14 +223,17 @@ be filled again. Break glass by editing the bucket policy. For the same reason a
 bucket must have no lifecycle rule that expires current versions (ADR-0038), and nobody may
 change its lifecycle configuration at all (ADR-0042): set up any storage-class transitions
 before the setup, or break glass for them later. The execution
-role also needs `s3:PutObjectRetention` and `kms:GenerateDataKey` on the key, and every reader
-`kms:Decrypt`; `deploy.sh` grants none of those.
+role also needs `s3:PutObjectRetention`, `s3:GetObjectRetention` on the attachment keys (the
+mint route reads a present attachment's retain-until before it extends it), and
+`kms:GenerateDataKey` on the key, and every reader `kms:Decrypt`; `deploy.sh` grants none of
+those.
 
 `gateway/setup-locked-bucket.sh` establishes all of it, and is as generic and idempotent as
 `deploy.sh`, which it runs: the key and its policy, the bucket with Object Lock and default
 SSE-KMS, the gateway with the two variables, the role's extra grants, and the deny statements
 merged into the bucket policy by `Sid`. It then reads the configuration back, compares
-every bucket policy statement with what it put, refuses a lifecycle rule that expires
+every bucket policy statement with what it put, reads the execution role's two S3 policies
+back (its own exactly, `deploy.sh`'s for the mint route's grants), refuses a lifecycle rule that expires
 current versions, and proves a bare `PutObject`, a `DeleteObject` and a lifecycle change are
 denied.
 Re-run it, not `deploy.sh`, to redeploy a locked bucket's gateway, naming every
