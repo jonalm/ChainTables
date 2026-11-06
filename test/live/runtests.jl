@@ -5,7 +5,7 @@ import ChainTables
 # The live suite (ADR-0030): the tests only AWS can answer. It is never part of `Pkg.test()`.
 # Run it through its one entry point,
 #
-#     test/live/run.sh [gateway]        # no argument: all
+#     test/live/run.sh [gateway] [attachments]        # no argument: all
 #
 # which reads the configuration from a file outside the repository (env/live.env, git-ignored;
 # test/live/live.env.example lists the variables), checks the login sessions, and runs this

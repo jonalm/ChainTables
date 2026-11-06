@@ -4,8 +4,9 @@ status: accepted
 
 # Live tests are a separate command, configured from outside the repository, and never skip
 
-The tests only AWS can answer — a gateway bucket end to end (issue #60) — live in
-`test/live/` and run through one entry point, `test/live/run.sh [gateway]`.
+The tests only AWS can answer — a gateway bucket end to end (issue #60), and
+attachments on a locked gateway bucket (issue #90, ADR-0046) — live in
+`test/live/` and run through one entry point, `test/live/run.sh [gateway] [attachments]`.
 `Pkg.test()` is offline: it reads no live configuration and makes no request
 beyond loopback, whatever the shell exports. The live configuration is a git-ignored file, `env/live.env`
 (`test/live/live.env.example` lists the variables), and **every variable of a
@@ -72,6 +73,12 @@ themselves on from the environment.
   plain bucket's direct conditional put. No deployment uses a plain bucket, so it
   was dropped; its session-token and `stat_object` checks moved into the gateway
   test, and the direct put stays covered offline by `test/s3.jl` only.
+- **Amended: a live attachments test** (`run.sh attachments`, issue #90) proves
+  ADR-0046's list on a locked gateway bucket, configured apart from the gateway
+  test because it needs a locked bucket whose gateway has the mint route and a
+  policy shaped for the classification check. Its one item no gateway can mint
+  for — a presigned PUT to a slot is denied — is the `slot` case of
+  `gateway/probe/attachment_probe.py`, run by the bucket's operator.
 - Considered and not done: a live `GatewayMismatchError` test. It needs two
   deployments and strands a record in the wrong bucket on every run; the
   loopback test in `test/gateway.jl` covers the path.

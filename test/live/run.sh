@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The one entry point of the live suite (ADR-0030):
 #
-#     test/live/run.sh [gateway]        # no argument: all
+#     test/live/run.sh [gateway] [attachments]        # no argument: all
 #
 # Reads the configuration from the file CHAINTABLES_LIVE_ENV names, default env/live.env
 # (git-ignored; copy test/live/live.env.example), checks the login session of every profile
@@ -45,7 +45,7 @@ export JULIA_LOAD_PATH="@:@stdlib"      # the package's own environment and the 
 sessions="$("$julia" --startup-file=no test/live/config.jl "$@")"
 while IFS=$'\t' read -r profile region; do
     aws sts get-caller-identity --profile "$profile" --region "$region" >/dev/null ||
-        die "no valid session for profile '$profile'. Run: aws sso login --profile $profile   (--use-device-code if the browser balks)"
+        die "no valid session for profile '$profile'. For an Identity Center profile run: aws sso login --profile $profile   (--use-device-code if the browser balks); otherwise fix the profile's credentials"
 done < <(printf '%s\n' "$sessions" | sort -u)
 
 exec "$julia" --startup-file=no --project="$root" test/live/runtests.jl "$@"
