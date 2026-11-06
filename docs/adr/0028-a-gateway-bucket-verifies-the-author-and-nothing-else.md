@@ -47,9 +47,11 @@ body `{"code", "message"}` (the wire contract is issue #54 §5 and the top of
    (*Amended by ADR-0039*: a rule may also pin the caller's account and role.)
 2. The key is a slot — `<prefix>/<12 digits>`, or `<12 digits>` at the bucket
    root — and never a reserved name (ADR-0011) → else `400 not_a_slot`.
-   (*Amended by ADR-0046*: the mint route accepts an attachment key, which is
-   classified before check 1 so that the policy is checked against its
-   `<prefix>`; `not_a_slot` then means "neither a slot nor an attachment".)
+   (*Amended by ADR-0046*: the mint route, `POST /mint?key=&size=`, accepts
+   an attachment key, which is classified before check 1 so that the policy
+   is checked against its `<prefix>`; `not_a_slot` then means "neither a slot
+   nor an attachment". It replies `present`, `minted` or
+   `503 session_ending`.)
 3. The body decodes, under a strict CBOR decoder, as a map → else
    `400 not_cbor_map`. (*Amended by ADR-0035*: "strict" means the record
    format the Julia reader accepts, checked by domain and by a canonical

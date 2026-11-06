@@ -52,17 +52,27 @@ never pass through the gateway. Instead it gains a **mint route**. Every
 gateway bucket uses it; a locked one adds the KMS and lock headers.
 
 1. The client hashes the attachment and asks the mint route for its key, with
-   a declared size.
+   a declared size: `POST /mint?key=<attachment key>&size=<bytes>`, signed
+   like the slot route, with an empty body. The checksum is derived from the
+   key and is not sent. A gateway without the route answers `400 bad_request`.
 2. The gateway checks, first failure wins:
-   1. the caller is allowed on `<prefix>` → else `403 not_allowed`;
-   2. the key is an attachment key → else `400 not_a_slot`, which now means
-      "neither a slot nor an attachment";
-   3. the declared size is at most 5 GiB, 5,368,709,120 bytes, S3's limit for
-      one PUT → else `413 too_large`.
+   1. the method, path, `key` and `size` are present and the body is empty
+      → else `400 bad_request`;
+   2. the caller is allowed on `<prefix>` → else `403 not_allowed`;
+   3. the key is an attachment key with a prefix `prefix_problem` passes
+      → else `400 not_a_slot`, which now means "neither a slot nor an
+      attachment";
+   4. the declared size is a decimal count → else `400 bad_request`, and at
+      most 5 GiB, 5,368,709,120 bytes, S3's limit for one PUT → else
+      `413 too_large`. A size of 0 is allowed.
 3. The gateway HEADs the key.
    - **Present**: on a locked bucket it moves the version's COMPLIANCE
      retain-until to `now + N + margin` with `PutObjectRetention`, unless the
-     current date is later. It replies `present`, and nothing is uploaded.
+     current date is later. It replies `200 present`, and nothing is
+     uploaded; on a locked bucket the reply carries `retain_until`. The
+     current date is read with `GetObjectRetention`, never inferred from a
+     refused `PutObjectRetention`, so a role that lacks the grant is
+     `502 s3_refused`, not taken as "already later".
    - **Absent**: it replies with a presigned PUT, signed under its own role,
      whose signed headers are `x-amz-checksum-sha256` = the **base64** of the
      digest (as the slot put sends it, not the hex), `If-None-Match: *`,
@@ -74,8 +84,16 @@ gateway bucket uses it; a locked one adds the KMS and lock headers.
      `ContentLength`, ...) and adds no default checksum. The S3 client
      presigns with `addressing_style = "virtual"`: by default botocore signs
      the global host `<bucket>.s3.amazonaws.com`, which answers a young bucket
-     outside us-east-1 with `307`. The reply carries the URL and the exact
-     headers to send.
+     outside us-east-1 with `307`. The reply is `200 minted` with `url`,
+     `expires` and `headers`: a flat JSON object of the lowercase names and
+     values the URL signs, in botocore's own serialization, `host` excepted.
+     The client reads it as it reads every reply, with no JSON parser; every
+     value is ASCII with no quote. On a locked bucket it also carries
+     `retain_until`. A failed HEAD, `GetObjectRetention` or
+     `PutObjectRetention` is mapped as for the put: an S3 4xx is
+     `502 s3_refused`, a 5xx or transport failure `502 s3_error`.
+   - A slot route `PUT /` given an attachment key checks the policy against
+     `<prefix>`, then answers `400 not_a_slot` naming the mint route.
 4. The gateway logs the caller, the key, the declared size and which of the
    two it did.
 5. Before sending a byte, the client checks the URL: https, host the chain's
@@ -97,8 +115,11 @@ no expiry to the function, so the gateway records when its execution
 environment started, at import, and caps the lifetime at 12 h minus the
 environment's age minus 1 h; the hour covers the credentials being issued
 somewhat before the import. Below the 15-minute floor it mints nothing and
-refuses with `503`, which the client retries, since another environment may be
-younger; the code's name is settled with the code. The 12 h is probed, not
+refuses with `503 session_ending`, which the client retries, since another
+environment may be younger. The present path is never capped: it mints no URL.
+The lifetime is 15 minutes plus the declared size at 1 MiB/s, about 100 minutes
+at 5 GiB, so a slow link does not rely on an upload surviving its URL's expiry.
+The present path's margin uses the same uncapped lifetime of the declared size. The 12 h is probed, not
 documented by AWS. S3 checks the
 expiry when a request starts, so an upload that has begun survives it
 (per AWS; not yet probed).

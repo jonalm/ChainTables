@@ -1,7 +1,7 @@
 """ChainTables gateway: the one writer of a gateway bucket.
 
-A Lambda function behind a function URL with ``AuthType=AWS_IAM``. It fills a slot only
-after checking, in this order (issue #54 §5, the first failure wins):
+A Lambda function behind a function URL with ``AuthType=AWS_IAM``. On ``PUT /?key=<slot key>``
+it fills a slot only after checking, in this order (issue #54 §5, the first failure wins):
 
 1. the caller is an IAM user or assumed role that the policy allows for the key's prefix
    (its name, and its account and role where the rule pins them), else ``403 not_allowed``;
@@ -21,6 +21,29 @@ after checking, in this order (issue #54 §5, the first failure wins):
    S3 4xx (a misconfigured deployment: the role, the bucket, the lock) → ``502 s3_refused``,
    which the client does not retry, and an S3 5xx or a transport failure → ``502 s3_error``,
    which it does. The gateway never retries S3; the client's retry loop owns retries.
+
+An attachment key (``<prefix>/_attachments/<sha256 hex>``) is classified before check 1, so the
+policy is checked against its ``<prefix>``; on ``PUT /`` it is then ``400 not_a_slot``.
+
+**The mint route** (ADR-0046), ``POST /mint?key=<attachment key>&size=<declared bytes>`` with
+an empty body, the first failure winning:
+
+1. method, path, ``key`` and ``size`` present, no body, else ``400 bad_request``;
+2. the policy on the attachment's ``<prefix>``, else ``403 not_allowed``;
+3. an attachment key with a prefix a client accepts, else ``400 not_a_slot``;
+4. ``size`` a decimal count, else ``400 bad_request``; at most 5 GiB, else ``413 too_large``;
+5. HEAD the key (S3 failures mapped as for the put: ``502 s3_refused`` / ``502 s3_error``).
+   Present → ``200 present``; on a locked bucket the version's COMPLIANCE retain-until is
+   read and moved to now + N + margin unless later, and the reply carries ``retain_until``.
+   Absent → ``200 minted`` with ``url`` (regional host), ``expires`` and ``headers``, a flat
+   object of the lowercase names and values the URL signs, which the client sends exactly
+   (``content-type``, ``content-length``, ``if-none-match``, the base64
+   ``x-amz-checksum-sha256``, ``x-amz-tagging``, and on a locked bucket the SSE-KMS and lock
+   headers, plus ``retain_until`` in the reply). A URL lives 15 min plus the size at 1 MiB/s,
+   capped at 12 h less the environment's age less 1 h; under 15 min it is
+   ``503 session_ending``, which the client retries. The margin is the lifetime plus a day.
+   The role also needs ``s3:GetObject`` and ``s3:ListBucket`` (so an absent key HEADs 404,
+   not 403) and ``s3:PutObjectTagging``, and on a locked bucket ``s3:GetObjectRetention``.
 
 The gateway validates and never authors: it does not read ``prev_hash``, ``chain_id`` or
 the ops, and it is not a ChainTables client. The caller's name is the text after the last
@@ -51,12 +74,13 @@ import fnmatch
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Callable
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 
 import cbor2
 from botocore.exceptions import BotoCoreError, ClientError
@@ -69,10 +93,32 @@ log.setLevel(logging.INFO)
 MAX_RECORD_BYTES = 4 * 1024 * 1024
 POLICY_FORMAT_VERSION = 1
 
+# When this execution environment started, recorded at import (ADR-0046). Lambda exposes no
+# expiry of the role's credentials; they were probed to last about 12 h from the
+# environment's start, and a presigned URL dies with the credentials that signed it.
+ENVIRONMENT_START = datetime.now(timezone.utc)
+
+# The mint route (ADR-0046). S3's limit for one PUT; a URL lives 15 min plus the declared
+# size at 1 MiB/s, capped at 12 h less the environment's age less 1 h, and none is minted
+# under the 15 min floor. The margin, added to an attachment's retention, is the URL's
+# lifetime plus a day between upload and commit.
+MAX_ATTACHMENT_BYTES = 5 * 1024 ** 3
+MIN_URL_SECONDS = 15 * 60
+URL_BYTES_PER_SECOND = 1024 * 1024
+SESSION_SECONDS = 12 * 3600
+SESSION_SLACK_SECONDS = 3600
+COMMIT_ALLOWANCE = timedelta(days=1)
+ATTACHMENT_TAG = "chaintables=attachment"
+
 # `<prefix>/<12 digits>` with a non-empty prefix that neither begins nor ends with '/',
 # or `<12 digits>` alone at the bucket root (ADR-0011). DOTALL so a control character in the
 # prefix reaches `prefix_problem`, which names it; `fullmatch` still refuses one after the digits.
 SLOT_KEY = re.compile(r"(?:(?P<prefix>[^/](?:.*[^/])?)/)?(?P<slot>[0-9]{12})", re.DOTALL)
+
+# `<prefix>/_attachments/<sha256 in lowercase hex>`, or `_attachments/<h>` at the bucket root
+# (ADR-0046). Its chain is `<prefix>`, not the key up to its last '/'.
+ATTACHMENT_KEY = re.compile(r"(?:(?P<prefix>[^/](?:.*[^/])?)/)?_attachments/(?P<hash>[0-9a-f]{64})", re.DOTALL)
+DECIMAL = re.compile(r"[0-9]+")
 
 # The Julia client's prefix rules (`check_prefix` in src/chain.jl, `portable_segment_problem`
 # in src/store.jl, ADR-0034), mirrored so the gateway refuses every key a client refuses
@@ -265,6 +311,20 @@ def chain_prefix(key: str) -> str:
     return "" if i < 0 else key[:i]
 
 
+def classify(key: str) -> tuple[str, bool]:
+    """The prefix the policy is checked against, and whether the key is an attachment key.
+    An attachment's chain is the prefix before `_attachments/`: the key up to its last '/'
+    would let a writer of chain `x/_attachments` write chain `x`'s attachments (ADR-0046)."""
+    m = ATTACHMENT_KEY.fullmatch(key)
+    if m is not None:
+        return m.group("prefix") or "", True
+    return chain_prefix(key), False
+
+
+def iso_z(t: datetime) -> str:
+    return t.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 @dataclass(frozen=True)
 class Lock:
     """How a put to a locked bucket is dressed: the KMS key, the retention, and the clock
@@ -292,20 +352,37 @@ class Refusal(Exception):
         self.status, self.code, self.message = status, code, message
 
 
-def response(status: int, code: str, message: str) -> dict:
+def response(status: int, code: str, message: str, **extra) -> dict:
     return {
         "statusCode": status,
         "headers": {"content-type": "application/json"},
-        "body": json.dumps({"code": code, "message": message}),
+        "body": json.dumps({"code": code, "message": message, **extra}),
     }
+
+
+def s3_failure(e: Exception, what: str) -> Refusal:
+    """The refusal for an S3 call that failed: an S3 4xx is a misconfigured deployment, which
+    the client does not retry; an S3 5xx or a transport failure is transient."""
+    if isinstance(e, BotoCoreError):
+        log.error("S3 %s: transport failure: %s", what, e)
+        return Refusal(502, "s3_error", f"the gateway could not reach S3 for {what}: {e}")
+    status = e.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+    code = e.response.get("Error", {}).get("Code")
+    log.error("S3 %s failed: %s %s", what, status, code)
+    if isinstance(status, int) and 400 <= status < 500:
+        return Refusal(502, "s3_refused", f"S3 answered {status} {code} to {what}: the gateway's deployment (its "
+                                          "role, its bucket or the lock) is wrong; report it to the bucket's operator")
+    return Refusal(502, "s3_error", f"S3 answered {status} {code} to {what}: transient, retry")
 
 
 @dataclass(frozen=True)
 class Gateway:
     policy: Policy
     bucket: str
-    s3: object  # a boto3 S3 client
+    s3: object  # a boto3 S3 client, with virtual addressing so that a presigned URL's host is regional
     lock: Lock | None = None  # set on a locked bucket
+    now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)  # the mint route's clock
+    started: datetime = ENVIRONMENT_START  # injectable so a test can age the environment
 
     def handle(self, event: dict) -> dict:
         try:
@@ -315,14 +392,20 @@ class Gateway:
             return response(r.status, r.code, r.message)
 
     def _handle(self, event: dict) -> dict:
+        http = (event.get("requestContext") or {}).get("http") or {}
+        route = (http.get("method"), http.get("path"))
+        if route == ("PUT", "/"):
+            return self._slot(event)
+        if route == ("POST", "/mint"):
+            return self._mint(event)
+        raise Refusal(400, "bad_request",
+                      f"{http.get('method')} {http.get('path')} is not one of the gateway's routes, "
+                      "PUT /?key=<slot key> and POST /mint?key=<attachment key>&size=<bytes>")
+
+    def _allowed(self, event: dict, prefix: str) -> str:
+        """The caller's name, if the policy allows it on `prefix`; else `403 not_allowed`."""
         ctx = event.get("requestContext") or {}
-        http = ctx.get("http") or {}
-        if http.get("method") != "PUT" or http.get("path") != "/":
-            raise Refusal(400, "bad_request",
-                          f"{http.get('method')} {http.get('path')} is not the gateway's one route, PUT /?key=<slot key>")
-        key = request_key(event)
         caller = parse_caller(((ctx.get("authorizer") or {}).get("iam") or {}).get("userArn"))
-        prefix = chain_prefix(key)
         if caller is None or not self.policy.allows(caller, prefix):
             who = ("a principal that is neither an IAM user nor an assumed role" if caller is None else
                    f"{caller.name} (account {caller.account}, "
@@ -330,7 +413,16 @@ class Gateway:
             raise Refusal(403, "not_allowed",
                           f"{who} may not write under prefix {prefix!r}: "
                           "ask the bucket's operator to add the name to the gateway policy")
-        name = caller.name
+        return caller.name
+
+    def _slot(self, event: dict) -> dict:
+        key = request_param(event, "key")
+        prefix, is_attachment = classify(key)
+        name = self._allowed(event, prefix)
+        if is_attachment:
+            raise Refusal(400, "not_a_slot",
+                          f"key {key!r} is an attachment, not a slot: an attachment is written through the mint "
+                          "route, POST /mint?key=<attachment key>&size=<bytes>")
         if SLOT_KEY.fullmatch(key) is None:
             raise Refusal(400, "not_a_slot",
                           f"key {key!r} is not a slot: a slot key is <prefix>/<12 digits>, or <12 digits> at the "
@@ -359,22 +451,139 @@ class Gateway:
                                ContentType="application/cbor", **extra)
         except ClientError as e:
             status = e.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
-            code = e.response.get("Error", {}).get("Code")
             if status == 412:
                 raise Refusal(412, "slot_taken", f"slot {key!r} already holds a record")
             if status == 409:
                 raise Refusal(409, "conflict", f"a concurrent conditional write to {key!r} is in progress; retry")
-            log.error("S3 put_object %s failed: %s %s", key, status, code)
-            if isinstance(status, int) and 400 <= status < 500:
-                raise Refusal(502, "s3_refused", f"S3 answered {status} {code} to the put of {key!r}: the gateway's "
-                                                 "deployment (its role, its bucket or the lock) is wrong; report it to "
-                                                 "the bucket's operator")
-            raise Refusal(502, "s3_error", f"S3 answered {status} {code} to the put of {key!r}: transient, retry")
+            raise s3_failure(e, f"the put of {key!r}")
         except BotoCoreError as e:
-            log.error("S3 put_object %s: transport failure: %s", key, e)
-            raise Refusal(502, "s3_error", f"the gateway could not reach S3 for {key!r}: {e}")
+            raise s3_failure(e, f"the put of {key!r}")
         log.info("created %s by %s (%d bytes)", key, name, len(body))
         return response(200, "created", f"slot {key!r} now holds the record")
+
+    # --- the mint route (ADR-0046) ---------------------------------------------------------
+
+    def _mint(self, event: dict) -> dict:
+        key = request_param(event, "key")
+        size_text = request_param(event, "size")
+        if request_body(event) != b"":
+            raise Refusal(400, "bad_request", "the mint route takes no body: the attachment's bytes go to S3 through "
+                                              "the minted URL")
+        prefix, is_attachment = classify(key)
+        name = self._allowed(event, prefix)
+        if not is_attachment:
+            raise Refusal(400, "not_a_slot",
+                          f"key {key!r} is neither a slot nor an attachment: an attachment key is "
+                          "<prefix>/_attachments/<SHA-256 in 64 lowercase hex>, or _attachments/<hash> at the "
+                          "bucket root")
+        problem = prefix_problem(prefix)
+        if problem is not None:
+            raise Refusal(400, "not_a_slot",
+                          f"key {key!r} is neither a slot nor an attachment: its prefix {problem}; a ChainTables "
+                          "client refuses such a prefix, so the gateway never writes under it")
+        if DECIMAL.fullmatch(size_text) is None:
+            raise Refusal(400, "bad_request", f"size {size_text!r} is not a decimal count of bytes")
+        size = int(size_text)
+        if size > MAX_ATTACHMENT_BYTES:
+            raise Refusal(413, "too_large", f"the attachment is declared {size} bytes; S3 takes at most "
+                                            f"{MAX_ATTACHMENT_BYTES} bytes (5 GiB) in one PUT")
+        try:
+            head = self.s3.head_object(Bucket=self.bucket, Key=key)
+        except ClientError as e:
+            if e.response.get("ResponseMetadata", {}).get("HTTPStatusCode") != 404:
+                raise s3_failure(e, f"the HEAD of {key!r}")
+            return self._mint_absent(key, size, name)
+        except BotoCoreError as e:
+            raise s3_failure(e, f"the HEAD of {key!r}")
+        return self._present(key, size, name, head.get("VersionId"))
+
+    def _wanted_seconds(self, size: int) -> int:
+        return MIN_URL_SECONDS + -(-size // URL_BYTES_PER_SECOND)
+
+    def _present(self, key: str, size: int, name: str, version: str | None) -> dict:
+        """The attachment is present: nothing is uploaded, and on a locked bucket its retention
+        is moved to now + N + margin unless it is already later. The margin is uncapped here,
+        since no URL is minted."""
+        if self.lock is None:
+            log.info("present %s by %s", key, name)
+            return response(200, "present", f"attachment {key!r} is already stored; upload nothing")
+        if not version:
+            raise Refusal(502, "s3_refused", f"S3 gave no version id for {key!r}: a locked bucket is versioned, so "
+                                             "the gateway's bucket is wrong; report it to the bucket's operator")
+        now = self.now().astimezone(timezone.utc).replace(microsecond=0)
+        target = (now + timedelta(days=self.lock.retention_days) + timedelta(seconds=self._wanted_seconds(size))
+                  + COMMIT_ALLOWANCE)
+        try:
+            retention = self.s3.get_object_retention(Bucket=self.bucket, Key=key, VersionId=version)["Retention"]
+        except (ClientError, BotoCoreError) as e:
+            raise s3_failure(e, f"GetObjectRetention of {key!r}")
+        if retention.get("Mode") != "COMPLIANCE":
+            raise Refusal(502, "s3_refused", f"attachment {key!r} is retained in mode {retention.get('Mode')!r}, not "
+                                             "COMPLIANCE: the bucket is not locked as the gateway was told; report it "
+                                             "to the bucket's operator")
+        current = retention["RetainUntilDate"]
+        if current >= target:
+            until, how = current, "already later"
+        else:
+            try:
+                self.s3.put_object_retention(Bucket=self.bucket, Key=key, VersionId=version,
+                                             Retention={"Mode": "COMPLIANCE", "RetainUntilDate": target})
+            except (ClientError, BotoCoreError) as e:
+                raise s3_failure(e, f"PutObjectRetention of {key!r}")
+            until, how = target, "extended"
+        log.info("present %s by %s (retain-until %s, %s)", key, name, iso_z(until), how)
+        return response(200, "present", f"attachment {key!r} is already stored and retained until {iso_z(until)}; "
+                                         "upload nothing", retain_until=iso_z(until))
+
+    def _mint_absent(self, key: str, size: int, name: str) -> dict:
+        clock = self.now()
+        now = clock.astimezone(timezone.utc).replace(microsecond=0)
+        cap = math.floor(SESSION_SECONDS - SESSION_SLACK_SECONDS - (clock - self.started).total_seconds())
+        if cap < MIN_URL_SECONDS:
+            raise Refusal(503, "session_ending",
+                          f"this gateway's AWS session ends too soon to mint a URL that lives {MIN_URL_SECONDS} "
+                          "seconds: retry, and another execution environment answers")
+        seconds = min(self._wanted_seconds(size), cap)
+        params = {"Bucket": self.bucket, "Key": key, "ContentType": "application/octet-stream", "ContentLength": size,
+                  "IfNoneMatch": "*", "ChecksumSHA256": base64.b64encode(bytes.fromhex(key[-64:])).decode("ascii"),
+                  "Tagging": ATTACHMENT_TAG}
+        extra = {}
+        if self.lock is not None:
+            until = now + timedelta(days=self.lock.retention_days) + timedelta(seconds=seconds) + COMMIT_ALLOWANCE
+            params |= {"ServerSideEncryption": "aws:kms", "SSEKMSKeyId": self.lock.kms_key_arn,
+                       "BucketKeyEnabled": True, "ObjectLockMode": "COMPLIANCE", "ObjectLockRetainUntilDate": until}
+            extra["retain_until"] = iso_z(until)
+        url, headers = self._presign(params, seconds)
+        expires = iso_z(now + timedelta(seconds=seconds))
+        log.info("minted %s by %s (%d bytes, expires %s)", key, name, size, expires)
+        return response(200, "minted", f"PUT the attachment's {size} bytes to the url with exactly these headers "
+                                       f"before {expires}", url=url, expires=expires, headers=headers, **extra)
+
+    def _presign(self, params: dict, seconds: int) -> tuple[str, dict]:
+        """A presigned PUT and the headers it signs, in botocore's own serialization, so the
+        client sends exactly what was signed. A URL on any host but the bucket's regional one
+        is a deployment bug: the global host answers a young bucket with 307."""
+        headers = {}
+
+        def grab(request, **_):
+            headers.update((k.lower(), v.decode("ascii") if isinstance(v, bytes) else v)
+                           for k, v in request.headers.items())
+
+        events = self.s3.meta.events
+        events.register("before-sign.s3.PutObject", grab, unique_id="chaintables-mint")
+        try:
+            url = self.s3.generate_presigned_url("put_object", Params=params, ExpiresIn=seconds)
+        finally:
+            events.unregister("before-sign.s3.PutObject", unique_id="chaintables-mint")
+        u = urlsplit(url)
+        host = f"{self.bucket}.s3.{self.s3.meta.region_name}.amazonaws.com"
+        if u.scheme != "https" or u.netloc != host:
+            raise RuntimeError(f"presigned {u.scheme}://{u.netloc}, not https://{host}: the S3 client must be built "
+                               "with addressing_style 'virtual' and the bucket's region")
+        signed = set(parse_qs(u.query)["X-Amz-SignedHeaders"][0].split(";")) - {"host"}
+        if set(headers) != signed:
+            raise RuntimeError(f"captured headers {sorted(headers)} are not the signed ones {sorted(signed)}")
+        return url, headers
 
 
 def request_body(event: dict) -> bytes:
@@ -458,16 +667,16 @@ def record_author(body: bytes) -> str:
     return user
 
 
-def request_key(event: dict) -> str:
+def request_param(event: dict, name: str) -> str:
     q = event.get("queryStringParameters")
-    if isinstance(q, dict) and isinstance(q.get("key"), str):
-        return q["key"]
+    if isinstance(q, dict) and isinstance(q.get(name), str):
+        return q[name]
     raw = event.get("rawQueryString")
     if isinstance(raw, str):
-        keys = parse_qs(raw, keep_blank_values=True).get("key")
-        if keys:
-            return keys[0]
-    raise Refusal(400, "bad_request", "the request has no 'key' query parameter")
+        values = parse_qs(raw, keep_blank_values=True).get(name)
+        if values:
+            return values[0]
+    raise Refusal(400, "bad_request", f"the request has no {name!r} query parameter")
 
 
 # --- the Lambda entry point ---------------------------------------------------------------
@@ -477,8 +686,10 @@ _gateway: Gateway | None = None
 
 def _s3_client():
     import boto3  # imported here so the tests, which inject a client, never build one
+    from botocore.config import Config
 
-    return boto3.client("s3")
+    # virtual addressing presigns the bucket's regional host; the default global one 307s (ADR-0046)
+    return boto3.client("s3", config=Config(s3={"addressing_style": "virtual"}))
 
 
 def configure(environ=os.environ, s3=None) -> Gateway:

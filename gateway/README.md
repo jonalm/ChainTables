@@ -2,7 +2,8 @@
 
 The one writer of a **gateway bucket**: a Lambda function behind a function URL with
 `AuthType=AWS_IAM` that fills a slot only after checking that the caller may write under
-that chain's prefix and that the record's author is the caller. It validates and never
+that chain's prefix and that the record's author is the caller, and that mints a presigned
+PUT for an attachment (`POST /mint`, ADR-0046). It validates and never
 authors, and it is not a ChainTables client. The contract it implements, and that the Julia
 `gateway =` store calls, is issue [#54](https://github.com/jonalm/ChainTables/issues/54);
 the checks and status codes are listed at the top of [`handler.py`](handler.py).

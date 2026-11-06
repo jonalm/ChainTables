@@ -12,6 +12,7 @@ from urllib.parse import quote
 import boto3
 import cbor2
 import pytest
+from botocore.config import Config
 from botocore.stub import Stubber
 
 import handler as gw
@@ -95,8 +96,10 @@ class StubbedS3:
     """A boto3 S3 client under `Stubber`, with helpers for the outcomes the gateway maps."""
 
     def __init__(self):
+        # virtual addressing, as the deployed client (`_s3_client`), so a presigned URL's host is regional
         self.client = boto3.client("s3", region_name="eu-north-1",
-                                   aws_access_key_id="x", aws_secret_access_key="y")
+                                   aws_access_key_id="x", aws_secret_access_key="y",
+                                   config=Config(s3={"addressing_style": "virtual"}))
         self.stubber = Stubber(self.client)
         self.stubber.activate()
 
@@ -111,6 +114,40 @@ class StubbedS3:
         self.stubber.add_client_error("put_object", service_error_code=code,
                                       service_message=message, http_status_code=status,
                                       expected_params=self.expect_put(key, body))
+
+    def head_absent(self, key):
+        self.stubber.add_client_error("head_object", service_error_code="404", service_message="Not Found",
+                                      http_status_code=404, expected_params={"Bucket": BUCKET, "Key": key})
+
+    def head_present(self, key, version="v1"):
+        self.stubber.add_response("head_object", {"VersionId": version, "ContentLength": 5},
+                                  {"Bucket": BUCKET, "Key": key})
+
+    def head_fails(self, key, status, code):
+        self.stubber.add_client_error("head_object", service_error_code=code, service_message="stubbed",
+                                      http_status_code=status, expected_params={"Bucket": BUCKET, "Key": key})
+
+    def retention_is(self, key, until, version="v1"):
+        self.stubber.add_response("get_object_retention",
+                                  {"Retention": {"Mode": "COMPLIANCE", "RetainUntilDate": until}},
+                                  {"Bucket": BUCKET, "Key": key, "VersionId": version})
+
+    def retention_fails(self, key, status, code, version="v1"):
+        self.stubber.add_client_error("get_object_retention", service_error_code=code, service_message="stubbed",
+                                      http_status_code=status,
+                                      expected_params={"Bucket": BUCKET, "Key": key, "VersionId": version})
+
+    def expect_retention_put(self, key, until, version="v1"):
+        return {"Bucket": BUCKET, "Key": key, "VersionId": version,
+                "Retention": {"Mode": "COMPLIANCE", "RetainUntilDate": until}}
+
+    def retention_set(self, key, until, version="v1"):
+        self.stubber.add_response("put_object_retention", {}, self.expect_retention_put(key, until, version))
+
+    def retention_set_fails(self, key, until, status, code, version="v1"):
+        self.stubber.add_client_error("put_object_retention", service_error_code=code, service_message="stubbed",
+                                      http_status_code=status,
+                                      expected_params=self.expect_retention_put(key, until, version))
 
     def assert_done(self):
         self.stubber.assert_no_pending_responses()
