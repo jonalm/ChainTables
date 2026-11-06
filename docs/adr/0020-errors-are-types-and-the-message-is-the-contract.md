@@ -25,11 +25,12 @@ function to call, where there is one.
 | `WrongChainError` | open | this copy belongs to another chain |
 | `LocalCopyInconsistentError` | open, load | a damaged copy — a head not self-consistent, or a table file whose bytes do not hash to its name: `repair!(copy)`; no readable head: delete the directory and sync |
 | `MalformedRecordError` | apply | none under this format version: the committer had a bug, the chain is dead beyond that slot (ADR-0025) |
-| `WriteRefusedError` | commit, create_chain, put_attachment | stop and have a person act: the bucket's operator adds the name to the gateway policy, grants the writer permission set or redeploys a gateway with no mint route (`"no_mint_route"`), or a mismatch is reported as a bug — `reason` says which (ADR-0028, ADR-0046) |
-| `GatewayMismatchError` | commit, create_chain, put_attachment | the gateway fills another bucket than the one this chain reads, or minted a URL outside it: pair the bucket with its own gateway, as one `Bucket` (ADR-0029, ADR-0046) |
+| `WriteRefusedError` | commit, create_chain, put_attachment, touch_attachment | stop and have a person act: the bucket's operator adds the name to the gateway policy, grants the writer permission set or redeploys a gateway with no mint route (`"no_mint_route"`), or a mismatch is reported as a bug — `reason` says which (ADR-0028, ADR-0046) |
+| `GatewayMismatchError` | commit, create_chain, put_attachment, touch_attachment | the gateway fills another bucket than the one this chain reads, or minted a URL outside it: pair the bucket with its own gateway, as one `Bucket` (ADR-0029, ADR-0046) |
 | `RecordCacheError` | verify (full); repair! | the record cache, not the chain, lacks or has damaged a record: `repair!(copy)` fetches it again; or a cache file changed between two reads, because another process writes the cache or the disk damaged it: run the call again (ADR-0040) |
 | `AttachmentChangedError` | put_attachment | the bytes sent do not hash to the attachment's key (S3's `BadDigest`): the file changed between hashing and upload; stop whatever writes it, and put it again (ADR-0046) |
 | `AttachmentURLExpiredError` | put_attachment | the URL the gateway minted expired before the upload began: put the attachment again, which mints a new one; if it recurs, check the clock (ADR-0046) |
+| `AttachmentAbsentError` | touch_attachment | the chain's store holds no such attachment — never put, or deleted after its retention ended: put it again before a row refers to it (ADR-0046) |
 
 ADR-0023 and ADR-0014 both close by saying each failure must be
 *distinguishable* and that the names were issue #16's. This is that list
@@ -41,7 +42,9 @@ refused and the next move is the configuration's; `RecordCacheError` added by
 ADR-0040, because a damaged record cache is not a damaged chain or copy;
 `AttachmentChangedError` and `AttachmentURLExpiredError` added by ADR-0046,
 because the next move for each is to put the attachment again, which is
-neither a refusal nor a mismatch).
+neither a refusal nor a mismatch; `AttachmentAbsentError` added with
+`touch_attachment`, because an attachment gone from the store is neither the
+chain's absence nor a damaged copy).
 
 ## Why types at all, when the message is the target
 

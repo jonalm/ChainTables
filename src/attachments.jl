@@ -300,3 +300,61 @@ function put_attachment(chain::Chain, io::IO)
     end
     return h
 end
+
+const ATTACHMENT_HASH = r"\A[0-9a-f]{64}\z"
+
+function check_attachment_hash(h::AbstractString)
+    occursin(ATTACHMENT_HASH, h) || throw(ArgumentError("$(repr(h)) is not an attachment hash, the SHA-256 of its " *
+                                                        "bytes in 64 lowercase hex (ADR-0046)"))
+    return String(h)
+end
+
+"""
+    touch_attachment(store, key) -> Bool
+
+ADR-0046's reuse of a stored attachment: `false` when `store` lacks `key`, else `true`,
+having extended its retention where the store keeps one. A HEAD first, so an absent
+attachment fails and a gateway bucket's mint is given the size the present path needs.
+"""
+function touch_attachment(store::AbstractObjectStore, key::AbstractString)
+    attachment_hash(key)
+    return stat_object(store, key) !== nothing
+end
+
+function touch_attachment(store::GatewayObjectStore, key::AbstractString)
+    key = String(key)
+    attachment_hash(key)
+    meta = stat_object(store.s3, key)
+    meta === nothing && return false
+    reply = mint(store, key, Int64(meta.size))
+    reply.code == "present" && return true
+    bucket = store.s3.bucket
+    throw(GatewayMismatchError("gateway mismatch: bucket $bucket holds the attachment $key, but the gateway at " *
+        "$(store.function_url) found it absent and minted a URL to upload it, so it extended no retention. This " *
+        "gateway fronts another bucket than the one this chain reads: pair the bucket with its own gateway, as one " *
+        "ChainTables.Bucket value (ADR-0029, ADR-0046)."; key, bucket, gateway = store.function_url))
+end
+
+"""
+    touch_attachment(chain, hash) -> nothing
+
+Before a row reuses an attachment of `chain` — one a row does not refer to for the first
+time — extend its retention, so that the row never outlives it (ADR-0046). `hash` is its
+SHA-256 in 64 lowercase hex, as [`put_attachment`](@ref) returned it.
+
+A HEAD of the key in the chain's bucket, then on a gateway bucket the mint route with its
+size, which finds it present and moves a locked bucket's retain-until later; a plain
+bucket keeps no retention, so the HEAD is all. Retried as `put_attachment` is.
+
+Raises [`AttachmentAbsentError`](@ref) when the store lacks it, [`WriteRefusedError`](@ref)
+when the gateway refuses, and [`GatewayMismatchError`](@ref) when the gateway finds absent
+what the chain's bucket holds; an `ArgumentError` for a hash that is not 64 lowercase hex.
+"""
+function touch_attachment(chain::Chain, h::AbstractString)
+    h = check_attachment_hash(h)
+    key = attachment_key(chain, h)
+    with_retries(() -> touch_attachment(chain.store, key)) && return nothing
+    throw(AttachmentAbsentError("attachment absent: the store of the chain at $(location(chain)) holds no attachment " *
+        "$key — it was never put, or its retention ended and it was deleted. A row cannot refer to it until it is put " *
+        "again: put_attachment(chain, file) (ADR-0046)."; key))
+end

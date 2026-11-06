@@ -368,6 +368,20 @@ end
 AttachmentURLExpiredError(msg; chain_id = nothing, key = nothing, expires = nothing) =
     AttachmentURLExpiredError(msg, chain_id, key, expires)
 
+"""
+    AttachmentAbsentError(msg; chain_id, key)
+
+Raised by `touch_attachment`: the chain's store holds no attachment at `key` — it was
+never put, or its retention ended and it was deleted (ADR-0046). The next move: put it
+again with `put_attachment(chain, file)` before a row refers to it.
+"""
+struct AttachmentAbsentError <: ChainTablesError
+    msg::String
+    chain_id::MaybeString
+    key::MaybeString
+end
+AttachmentAbsentError(msg; chain_id = nothing, key = nothing) = AttachmentAbsentError(msg, chain_id, key)
+
 # The message is the contract (ADR-0020): every type shows as its message, so a
 # `@test_throws "…"` matches the text a user reads.
 Base.showerror(io::IO, e::ChainTablesError) = print(io, nameof(typeof(e)), ": ", e.msg)

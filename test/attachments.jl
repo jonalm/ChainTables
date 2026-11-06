@@ -77,7 +77,34 @@ const ATT = ChainTables
         end
     end
 
-    @testset "through a gateway: put retries session_ending" begin
+    @testset "touch_attachment(chain, hash): present is enough on a plain store, absent fails" begin
+        mktempdir() do dir
+            store = InMemoryObjectStore()
+            chain = Chain("bkt", "p"; store, cache_dir = joinpath(dir, "cache"))
+            h = ATT.put_attachment(chain, IOBuffer(b"held"))
+            empty!(store.calls)
+            @test ATT.touch_attachment(chain, h) === nothing
+            @test store.calls == [(:stat_object, "p/_attachments/$h")]
+            absent = bytes2hex(sha256(b"never stored"))
+            e = try ATT.touch_attachment(chain, absent); nothing catch e; e end
+            @test e isa ATT.AttachmentAbsentError && e.key == "p/_attachments/$absent"
+            @test sprint(showerror, e) == "AttachmentAbsentError: attachment absent: the store of the chain at bkt/p holds no " *
+                "attachment p/_attachments/$absent — it was never put, or its retention ended and it was deleted. A row " *
+                "cannot refer to it until it is put again: put_attachment(chain, file) (ADR-0046)."
+            # a hash that is not 64 lowercase hex is the caller's bug, refused before any request
+            empty!(store.calls)
+            for bad in (uppercase(h), h[1:63], h * "0", "../" * h[4:end])
+                @test_throws "$(repr(bad)) is not an attachment hash, the SHA-256 of its bytes in 64 lowercase hex (ADR-0046)" ATT.touch_attachment(chain, bad)
+            end
+            @test isempty(store.calls)
+            # a retryable failure of the HEAD is retried, as for a put
+            failed = Ref(0)
+            store.fault = (verb, k, phase) -> (verb == :stat_object && failed[] < 1) && (failed[] += 1; throw(TransportError("x"; status = 500)))
+            @test ATT.touch_attachment(chain, h) === nothing && count(c -> c[1] == :stat_object, store.calls) == 2
+        end
+    end
+
+    @testset "through a gateway: put retries session_ending; touch HEADs, then mints with the size, which must be present" begin
         s3 = S3TestServer(; bucket = "bkt", credentials = GWTEST_CREDS)
         double = GatewayDouble(s3, GWTEST_CREDS, "eu-north-1", "alice@example.com", ["p" => ["alice@example.com"]], _ -> nothing)
         gw = LoopbackServer(double)
@@ -96,6 +123,29 @@ const ATT = ChainTables
                     (ending[] = false; gwtest_json(503, "session_ending", "this environment's session ends too soon")) : nothing
                 @test ATT.put_attachment(chain, IOBuffer(bytes)) == h && s3.objects[key] == bytes
                 @test length(mints()) == 2
+                double.respond = _ -> nothing
+                # touch: a HEAD in our bucket, then the mint with the size it gave, answered present
+                empty!(gw.requests); empty!(s3.requests)
+                @test ATT.touch_attachment(chain, h) === nothing
+                @test [r.method for r in s3.requests] == ["HEAD"]
+                @test only(mints()).query == ["key" => key, "size" => string(length(bytes))]
+                # absent from our bucket: no mint
+                absent = bytes2hex(sha256(b"absent"))
+                empty!(gw.requests)
+                @test_throws ATT.AttachmentAbsentError ATT.touch_attachment(chain, absent)
+                @test isempty(gw.requests)
+                # the gateway finds it absent where our bucket holds it: it fronts another bucket
+                double.respond = req -> req.rawpath == "/mint" ? gwtest_minted(s3, key, length(bytes)) : nothing
+                e = try ATT.touch_attachment(chain, h); nothing catch e; e end
+                @test e isa ATT.GatewayMismatchError && e.key == key && e.bucket == "bkt"
+                @test occursin("bucket bkt holds the attachment $key, but the gateway at $(loopback_url(gw)) found it absent " *
+                               "and minted a URL to upload it", sprint(showerror, e))
+                @test count(r -> r.method == "PUT", s3.requests) == 0
+                # a refusal is the gateway's, as for a put
+                double.respond = _ -> nothing
+                double.caller = "bob@example.com"
+                e = try ATT.touch_attachment(chain, h); nothing catch e; e end
+                @test e isa WriteRefusedError && e.reason == "not_allowed"
             finally
                 close(gw); close(s3)
             end
