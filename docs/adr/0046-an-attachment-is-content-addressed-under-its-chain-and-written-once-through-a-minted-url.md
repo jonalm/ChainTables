@@ -220,12 +220,23 @@ download leaves is never swept; deleting it, or any entry, is always safe.
 A read checks the file against the sidecar, not against the hash: hashing 5 GiB
 on every read costs too much. That is weaker than the record cache's check
 (ADR-0040), and `verify(copy; full = true)` makes up for it by hashing the
-files. A file that differs from its sidecar is `AttachmentCacheError`, not
-healed in place as a record is (ADR-0040): a re-fetch can be 5 GiB inside a
-read, and the store may no longer hold the key. Two processes filling one hash
-at once can pair one's sidecar with the other's file; the message's first move,
-"run the call again", covers that, and its second is `repair!(copy)`. A cache
-copied without its mtimes makes every entry differ: delete it.
+files. A file that differs from its sidecar is hashed, once, on that read. Two
+processes filling one hash at once can pair one's sidecar with the other's
+file, and a cache copied without its mtimes makes every entry differ; in both
+the file hashes to `<h>`, and its sidecar is rewritten from it, `.tmp` and
+rename, and the read goes on. Raising instead wedged the entry: every read in
+every copy raised, and `verify` with them, until `repair!` or a delete. The hash
+and the sidecar's size and mtime come from one open file, stat before and after
+the hash, so a file renamed in meanwhile leaves only another mismatch, healed by
+the next read, and a file changed while hashed is not healed. Every file a fill
+renames in was hashed first, so no race heals a wrong file. A file that does
+not hash to `<h>` is `AttachmentCacheError`, not fetched again in place as a
+record is (ADR-0040): a re-fetch can be 5 GiB inside a read, and the store may
+no longer hold the key. `verify(copy; full = true)` counts a file that hashes
+right as sound whatever its sidecar says, and writes nothing. On Windows,
+Julia opens a file without delete sharing, so while a heal, a `verify` or a
+reader holds the file open, a concurrent fill's removal of the old file fails
+and that fill raises; running it again settles it.
 
 A shared file must not stand in for the chain's word, so the **first read of an
 attachment through a copy HEADs its key in that chain's store**, even on a
@@ -242,8 +253,8 @@ with no head has no chain to confirm against and is refused. Otherwise a file
 cached from another chain, or by the uploader itself, would hide an attachment
 this chain's store lacks, and every other client would fail. `verify(copy;
 full = true)` and `repair!(copy)` cover only the hashes confirmed through the
-copy, and `repair!` fetches them from its chain's store: it hashes each, rewrites
-the sidecar of one that hashes right, fetches the rest, and counts both in its
+copy, and `repair!` fetches them from its chain's store: it hashes each, heals
+one that hashes right as a read does, fetches the rest, and counts both in its
 report's `attachments_repaired`. `attachment` and `repair!` retry as
 `put_attachment` does.
 

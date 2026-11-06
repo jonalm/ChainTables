@@ -381,12 +381,50 @@ function cache_entry(path::AbstractString)
     return sidecar_text(stat(path)) == recorded ? :ok : recorded
 end
 
-function damaged_entry(chain_id, key, path, recorded)
+# Write the sidecar of `path` recording `st`: to a `.tmp`, renamed.
+function write_sidecar(path::AbstractString, st)
+    meta = sidecar_path(path)
+    metatmp = "$meta.$(bytes2hex(rand(UInt8, 8))).tmp"
+    try
+        write(metatmp, sidecar_text(st))
+        Base.Filesystem.rename(metatmp, meta)
+    catch
+        rm(metatmp; force = true)
+        rethrow()
+    end
+    return nothing
+end
+
+# Heal the entry at `path`, whose file differs from its sidecar or has none: the file is
+# hashed, and when it hashes to `h` its sidecar is rewritten from it — `:ok`. Two fills of
+# one hash at once can pair one's sidecar with the other's file, and both files hashed
+# right. The hash and the sidecar's size and mtime come from one open file, so a file
+# renamed in meanwhile only leaves another mismatch, healed by the next read; a file
+# changed while it was hashed is not healed. `:absent` when the file is gone, else the
+# hash the file has.
+function heal_entry(path::AbstractString, h::AbstractString)
+    io = try
+        Base.open(path)
+    catch e
+        e isa SystemError && e.errnum == Libc.ENOENT && return :absent
+        rethrow()
+    end
+    st, found, after = try
+        (stat(io), bytes2hex(hash_file(io)), stat(io))
+    finally
+        close(io)
+    end
+    (found == h && sidecar_text(st) == sidecar_text(after)) || return found
+    write_sidecar(path, st)
+    return :ok
+end
+
+function damaged_entry(chain_id, key, path, recorded, found)
     st = stat(path)
-    return AttachmentCacheError("attachment cache: the cached file $path is $(st.size) bytes modified at $(st.mtime), " *
-        "its sidecar $path.meta records $(repr(recorded)). Another process may be writing the cache: run the call " *
-        "again. Otherwise the file was changed, or copied without its modification time: repair!(copy) checks it and " *
-        "fetches it again, and deleting $path and $path.meta is always safe (ADR-0046)."; chain_id, key, path)
+    return AttachmentCacheError("attachment cache: the cached file $path is $(st.size) bytes modified at $(st.mtime) " *
+        "and hashes to $found, not to its name; its sidecar $path.meta records $(repr(recorded)). The file was " *
+        "changed: repair!(copy) checks it and fetches it again, and deleting $path and $path.meta is always safe " *
+        "(ADR-0046)."; chain_id, key, path)
 end
 
 # A cache hit whose HEAD gives another size than the cached file's: one side is wrong, and
@@ -433,7 +471,7 @@ read-only; then the sidecar is written (to a `.tmp`, renamed), and last the file
 renamed into place, which is the commit: a rename keeps the size and mtime the sidecar
 records. An entry another process completed meanwhile is kept, and the download dropped.
 Two processes filling one hash at once can still pair one's sidecar with the other's
-file; a read then raises [`AttachmentCacheError`](@ref), and running it again settles it.
+file; the next read hashes the file and rewrites the sidecar (`heal_entry`).
 """
 function fill_attachment!(chain::Chain, chain_id, key::String, h::String, path::String)
     dir = dirname(path)
@@ -449,15 +487,7 @@ function fill_attachment!(chain::Chain, chain_id, key::String, h::String, path::
             "report it (ADR-0046)."; chain_id, key, found, size))
         cache_entry(path) === :ok && return true
         chmod(tmp, 0o444)
-        meta = sidecar_path(path)
-        metatmp = "$meta.$(bytes2hex(rand(UInt8, 8))).tmp"
-        try
-            write(metatmp, sidecar_text(stat(tmp)))
-            Base.Filesystem.rename(metatmp, meta)
-        catch
-            rm(metatmp; force = true)
-            rethrow()
-        end
+        write_sidecar(path, stat(tmp))
         replace_file(tmp, path)
     finally
         if isfile(tmp)
@@ -482,8 +512,10 @@ cache, `cache_dir/attachments/<h[1:2]>/<h>`, shared by every chain and bucket (A
 Fetched on first use, never by `sync!`; nothing checks that a row of the copy refers to
 the hash.
 
-The cache serves a file only while it matches its sidecar's size and mtime — it is not
-hashed on every read; `verify(copy; full = true)` hashes it. A cached file does not stand
+The cache serves a file while it matches its sidecar's size and mtime — it is not hashed
+on every read; `verify(copy; full = true)` hashes it. A file that differs from its
+sidecar is hashed: when it hashes to `hash` the sidecar is rewritten and the read goes
+on, else it raises. A cached file does not stand
 in for the chain's word: the first read of a hash through a copy HEADs its key in the
 chain's store, even on a cache hit, and records it as confirmed in the copy
 (`<copy>/confirmed/<h>`); a miss is confirmed by its download. The HEAD's size must be
@@ -495,8 +527,9 @@ and `repair!(copy)` cover the confirmed hashes. Requests are retried as
 Raises [`AttachmentAbsentError`](@ref) when the chain's store lacks it,
 [`AttachmentDigestError`](@ref) when the store's bytes do not hash to it — or, on a hit,
 the store's size differs from a cached file that does — and
-[`AttachmentCacheError`](@ref) when the cached file differs from its sidecar, or, on a
-hit, differs in size from the store's and does not hash to its name; an
+[`AttachmentCacheError`](@ref) when the cached file differs from its sidecar and does
+not hash to its name, or, on a hit, differs in size from the store's and does not hash
+to its name; an
 `ArgumentError` for a copy with no head yet, or a hash that is not 64 lowercase hex.
 """
 function attachment(copy::LocalCopy, h::AbstractString)
@@ -509,15 +542,18 @@ function attachment(copy::LocalCopy, h::AbstractString)
     key = attachment_key(chain, h)
     path = attachment_cache_path(chain.cache, h)
     entry = cache_entry(path)
+    if entry isa String
+        healed = heal_entry(path, h)
+        healed isa String && throw(damaged_entry(chain_id, key, path, entry, healed))
+        entry = healed
+    end
     if entry === :ok
         isfile(confirmed_path(copy, h)) && return path
         meta = with_retries(() -> stat_object(chain.store, key))
         meta === nothing && throw(absent_for_reader(chain, chain_id, key))
         meta.size == filesize(path) || throw(size_mismatch(chain, chain_id, key, h, path, meta.size))
-    elseif entry === :absent
-        fill_attachment!(chain, chain_id, key, h, path) || throw(absent_for_reader(chain, chain_id, key))
     else
-        throw(damaged_entry(chain_id, key, path, entry))
+        fill_attachment!(chain, chain_id, key, h, path) || throw(absent_for_reader(chain, chain_id, key))
     end
     confirm!(copy, h)
     return path
@@ -530,16 +566,14 @@ end
 confirmed_hashes(copy::LocalCopy) = (d = joinpath(copy.path, "confirmed");
     isdir(d) ? sort!(filter(f -> occursin(ATTACHMENT_HASH, f), readdir(d))) : String[])
 
-# What is wrong with the cache entry of `h`, hashing the file, or `nothing`.
+# What is wrong with the cache entry of `h`, hashing the file, or `nothing`. A file that
+# hashes right is sound whatever its sidecar says: the next read rewrites the sidecar.
 function attachment_problem(cache::RecordCache, h::String)
     path = attachment_cache_path(cache, h)
-    entry = cache_entry(path)
-    entry === :absent && return "$path is not in the attachment cache"
+    cache_entry(path) === :absent && return "$path is not in the attachment cache"
     found = bytes2hex(hash_file(path))
     found == h || return "$path hashes to $found, not its name"
-    entry === :ok && return nothing
-    st = stat(path)
-    return "$path is $(st.size) bytes modified at $(st.mtime), its sidecar $path.meta records $(repr(entry))"
+    return nothing
 end
 
 # `verify(copy; full = true)`'s pass over the confirmed attachments: local, every file hashed.
@@ -561,20 +595,17 @@ function repair_attachments!(copy::LocalCopy, chain::Chain)
     repaired = 0
     for h in confirmed_hashes(copy)
         path = attachment_cache_path(chain.cache, h)
-        entry = cache_entry(path)
-        entry === :ok && bytes2hex(hash_file(path)) == h && continue
-        meta = sidecar_path(path)
-        if isfile(path) && bytes2hex(hash_file(path)) == h
-            metatmp = "$meta.$(bytes2hex(rand(UInt8, 8))).tmp"
-            write(metatmp, sidecar_text(stat(path)))
-            Base.Filesystem.rename(metatmp, meta)
-        else
-            rm(meta; force = true)
-            isfile(path) && (chmod(path, 0o644); rm(path))
-            key = attachment_key(chain, h)
-            fill_attachment!(chain, copy.head.chain_id, key, h, path) ||
-                throw(absent_for_reader(chain, copy.head.chain_id, key))
+        if cache_entry(path) === :ok
+            bytes2hex(hash_file(path)) == h && continue
+        elseif heal_entry(path, h) === :ok
+            repaired += 1
+            continue
         end
+        rm(sidecar_path(path); force = true)
+        isfile(path) && (chmod(path, 0o644); rm(path))
+        key = attachment_key(chain, h)
+        fill_attachment!(chain, copy.head.chain_id, key, h, path) ||
+            throw(absent_for_reader(chain, copy.head.chain_id, key))
         repaired += 1
     end
     return repaired

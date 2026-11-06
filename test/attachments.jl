@@ -296,20 +296,36 @@ const ATT = ChainTables
                 "stop and report it (ADR-0046)."
             @test length(store.calls) == 1 && isempty(readdir(joinpath(cache_dir, "attachments", h[1:2])))
             @test !isfile(joinpath(copy.path, "confirmed", h))
-            # a cached file whose size or mtime differs from its sidecar: raised, not fetched again
+            # a sidecar for another mtime beside a file that hashes right — two fills of one hash
+            # at once pair one's sidecar with the other's file — is rewritten, nothing fetched
             bytes = rand(UInt8, 100)
             h = ATT.put_attachment(chain, IOBuffer(bytes))
             path = ATT.attachment(copy, h)
-            meta = read(path * ".meta", String)
-            chmod(path, 0o644); write(path, rand(UInt8, 100)); chmod(path, 0o444)
+            write(path * ".meta", "100 0.0")
+            empty!(store.calls)
+            @test ATT.attachment(copy, h) == path && isempty(store.calls)      # confirmed: no HEAD either
+            @test read(path * ".meta", String) == ATT.sidecar_text(stat(path))
+            @test isempty(filter(f -> endswith(f, ".tmp"), readdir(dirname(path))))
+            # through a copy that has not confirmed it: healed, then HEADed and confirmed
+            two = ATT.open(chain, joinpath(dir, "two"))
+            ATT.sync!(two)
+            write(path * ".meta", "100 0.0")
+            empty!(store.calls)
+            @test ATT.attachment(two, h) == path && store.calls == [(:stat_object, "p/_attachments/$h")]
+            @test isfile(joinpath(two.path, "confirmed", h)) && ATT.verify(two; full = true) === nothing
+            close(two)
+            # a cached file that differs from its sidecar and does not hash to its name: raised, not fetched again
+            chmod(path, 0o644); write(path, rand(UInt8, 101)); chmod(path, 0o444)
             st = stat(path)
+            meta = read(path * ".meta", String)
+            found = bytes2hex(ATT.hash_file(path))
             empty!(store.calls)
             e = try ATT.attachment(copy, h); nothing catch e; e end
             @test e isa ATT.AttachmentCacheError && e.path == path && e.chain_id == copy.head.chain_id
             @test sprint(showerror, e) == "AttachmentCacheError: attachment cache: the cached file $path is $(st.size) " *
-                "bytes modified at $(st.mtime), its sidecar $path.meta records \"$meta\". Another process may be writing " *
-                "the cache: run the call again. Otherwise the file was changed, or copied without its modification time: " *
-                "repair!(copy) checks it and fetches it again, and deleting $path and $path.meta is always safe (ADR-0046)."
+                "bytes modified at $(st.mtime) and hashes to $found, not to its name; its sidecar $path.meta records " *
+                "\"$meta\". The file was changed: repair!(copy) checks it and fetches it again, and deleting $path and " *
+                "$path.meta is always safe (ADR-0046)."
             @test isempty(store.calls)
             # a cached file with no sidecar is absent: fetched again over the read-only file
             rm(path * ".meta")
@@ -402,7 +418,8 @@ const ATT = ChainTables
             @test ATT.verify(copy; full = true) === nothing
             # a sidecar that disagrees with a file that hashes right: the sidecar is rewritten, nothing fetched
             write(pa * ".meta", "0 0.0")
-            @test_throws "its sidecar $pa.meta records \"0 0.0\"" ATT.verify(copy; full = true)
+            @test ATT.verify(copy; full = true) === nothing                    # not damage: the next read heals it
+            @test read(pa * ".meta", String) == "0 0.0"                        # verify writes nothing
             empty!(store.calls)
             @test ATT.repair!(copy).attachments_repaired == 1
             @test !any(c -> c[1] == :fetch_object_to, store.calls) && ATT.attachment(copy, ha) == pa

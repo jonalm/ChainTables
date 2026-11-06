@@ -408,11 +408,11 @@ AttachmentDigestError(msg; chain_id = nothing, key = nothing, found = nothing, s
     AttachmentCacheError(msg; chain_id, key, path)
 
 Raised by `attachment` and `verify(copy; full = true)`: the attachment cache's file at
-`path` is not what its sidecar records, or (verify, and a cache hit whose HEAD gives
-another size) does not hash to its name (ADR-0046).
-The attachment cache is damaged, not the chain. The next move: run the call again, since
-another process may be writing the cache; else `repair!(copy)`, which checks the file and
-fetches it again. Deleting the file and its `.meta` is always safe.
+`path` does not hash to its name — found by `attachment` when the file is not what its
+sidecar records, or a cache hit's HEAD gives another size (ADR-0046). A file that does
+hash to its name has its sidecar rewritten instead.
+The attachment cache is damaged, not the chain. The next move: `repair!(copy)`, which
+checks the file and fetches it again. Deleting the file and its `.meta` is always safe.
 """
 struct AttachmentCacheError <: ChainTablesError
     msg::String

@@ -548,14 +548,14 @@ end
 # Lazy load with hash-before-use (ADR-0023, ADR-0013)
 # ---------------------------------------------------------------------------
 
-function hash_file(file::AbstractString)
+hash_file(file::AbstractString) = Base.open(hash_file, file)
+
+function hash_file(io::IO)
     ctx = SHA.SHA256_CTX()
     buf = Vector{UInt8}(undef, 1 << 20)
-    Base.open(file) do io
-        while !eof(io)
-            n = readbytes!(io, buf)
-            SHA.update!(ctx, view(buf, 1:n))
-        end
+    while !eof(io)
+        n = readbytes!(io, buf)
+        SHA.update!(ctx, view(buf, 1:n))
     end
     return SHA.digest!(ctx)
 end
