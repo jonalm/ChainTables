@@ -216,6 +216,64 @@ const ATT = ChainTables
         end
     end
 
+    @testset "attachment(copy, hash) on a gateway chain: put through the mint, read straight from the bucket" begin
+        s3 = S3TestServer(; bucket = "bkt", credentials = GWTEST_CREDS)
+        double = GatewayDouble(s3, GWTEST_CREDS, "eu-north-1", "alice@example.com", ["exp" => ["alice@example.com"]], _ -> nothing)
+        gw = LoopbackServer(double)
+        sts = LoopbackServer(gwtest_sts(GWTEST_CREDS, "eu-north-1", GWTEST_ARN))
+        mktempdir() do dir
+            try
+                cache_dir = joinpath(dir, "cache")
+                store = GatewayObjectStore("bkt", loopback_url(gw); region = "eu-north-1", credentials = GWTEST_CREDS,
+                                           endpoint = s3test_endpoint(s3), path_style = true, sts_endpoint = loopback_url(sts))
+                chain = Chain("bkt", "exp/run-1"; store, cache_dir, assume_first_writer_wins = true)
+                ATT.create_chain(chain)
+                empty!(gw.requests)
+                bytes = rand(UInt8, 5000)
+                # the put: one mint, one presigned PUT to the bucket, nothing PUT to the gateway
+                h = ATT.put_attachment(chain, IOBuffer(bytes))
+                key = "exp/run-1/_attachments/$h"
+                @test s3.objects[key] == bytes
+                @test count(r -> r.rawpath == "/mint", gw.requests) == 1 && !any(r -> r.method == "PUT", gw.requests)
+                # a reference to it, committed through the gateway
+                copy = ATT.open(chain, joinpath(dir, "one"))
+                ATT.sync!(copy)
+                w = ATT.write_builder(copy)
+                ATT.create_table!(w, :files) do t
+                    ATT.column!(t, :id, Int64); ATT.column!(t, :hash, String); ATT.primary_key!(t, :id)
+                end
+                ATT.insert_rows!(w, :files, [(id = 1, hash = h)])
+                ATT.commit!(w)
+                # a miss: one GET from the bucket, none of it through the gateway
+                empty!(gw.requests); empty!(s3.requests)
+                path = ATT.attachment(copy, ATT.table(copy, :files)[1].hash)
+                @test read(path) == bytes && path == joinpath(cache_dir, "attachments", h[1:2], h)
+                @test [(r.method, r.path) for r in s3.requests] == [("GET", "/bkt/$key")]
+                @test isempty(gw.requests)
+                # confirmed: no request
+                empty!(s3.requests)
+                @test ATT.attachment(copy, h) == path && isempty(s3.requests)
+                # a hit through a second copy: one HEAD of the bucket, then confirmed
+                two = ATT.open(chain, joinpath(dir, "two"))
+                ATT.sync!(two)
+                empty!(s3.requests)
+                @test ATT.attachment(two, h) == path
+                @test [(r.method, r.path) for r in s3.requests] == [("HEAD", "/bkt/$key")]
+                @test ATT.attachment(two, h) == path && length(s3.requests) == 1
+                @test isempty(gw.requests)
+                # verify(copy; full = true) over it, on the gateway chain
+                @test ATT.verify(two; full = true) === nothing
+                # absent from the bucket
+                absent = bytes2hex(sha256(b"absent"))
+                @test_throws "attachment absent: the store of the chain at bkt/exp/run-1 holds no attachment exp/run-1/_attachments/$absent" ATT.attachment(copy, absent)
+                @test isempty(gw.requests)
+                close(two); close(copy)
+            finally
+                close(gw); close(sts); close(s3)
+            end
+        end
+    end
+
     @testset "attachment(copy, hash): a download that does not hash to its key, a damaged cache entry" begin
         mktempdir() do dir
             store = InMemoryObjectStore()
