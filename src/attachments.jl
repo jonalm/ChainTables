@@ -358,3 +358,145 @@ function touch_attachment(chain::Chain, h::AbstractString)
         "$key — it was never put, or its retention ended and it was deleted. A row cannot refer to it until it is put " *
         "again: put_attachment(chain, file) (ADR-0046)."; key))
 end
+
+# ---------------------------------------------------------------------------
+# The attachment cache (ADR-0046): `cache_dir/attachments/<h[1:2]>/<h>`, shared by every
+# chain and bucket, read-only, with a sidecar `<h>.meta` holding "<size> <mtime>" that a
+# read checks the file against. A copy records each hash its chain's store confirmed as
+# an empty file `<copy>/confirmed/<h>`.
+# ---------------------------------------------------------------------------
+
+attachment_cache_path(cache::RecordCache, h::AbstractString) = joinpath(cache.dir, ATTACHMENT_CACHE_NAME, h[1:2], h)
+sidecar_path(path::AbstractString) = path * ".meta"
+confirmed_path(copy::LocalCopy, h::AbstractString) = joinpath(copy.path, "confirmed", h)
+sidecar_text(st) = "$(st.size) $(st.mtime)"
+
+# The cache entry at `path`: `:absent` when the file or its sidecar is missing — an
+# interrupted fill, filled again — `:ok` when the file is what its sidecar records, else
+# the sidecar's text, for the error.
+function cache_entry(path::AbstractString)
+    meta = sidecar_path(path)
+    (isfile(path) && isfile(meta)) || return :absent
+    recorded = read(meta, String)
+    return sidecar_text(stat(path)) == recorded ? :ok : recorded
+end
+
+function damaged_entry(chain_id, key, path, recorded)
+    st = stat(path)
+    return AttachmentCacheError("attachment cache: the cached file $path is $(st.size) bytes modified at $(st.mtime), " *
+        "its sidecar $path.meta records $(repr(recorded)). Another process may be writing the cache: run the call " *
+        "again. Otherwise the file was changed, or copied without its modification time: repair!(copy) checks it and " *
+        "fetches it again, and deleting $path and $path.meta is always safe (ADR-0046)."; chain_id, key, path)
+end
+
+function absent_for_reader(chain::Chain, chain_id, key)
+    return AttachmentAbsentError("attachment absent: the store of the chain at $(location(chain)) holds no attachment " *
+        "$key — it was never put to this chain, or its retention ended and it was deleted — so attachment(copy, hash) " *
+        "has nothing to serve, whatever this machine has cached. Only someone holding the file can bring it back, with " *
+        "put_attachment(chain, file) (ADR-0046)."; chain_id, key)
+end
+
+# Rename `from` onto `to`. Windows refuses to rename over a read-only file, so there the
+# old one is removed first.
+function replace_file(from::AbstractString, to::AbstractString)
+    if Sys.iswindows() && isfile(to)
+        chmod(to, 0o644)
+        rm(to)
+    end
+    Base.Filesystem.rename(from, to)
+    return nothing
+end
+
+"""
+    fill_attachment!(chain, chain_id, key, h, path) -> Bool
+
+Fetch the attachment at `key` into the cache at `path`: `false` when the store lacks it.
+The download goes to `<h>.<16 hex>.part` beside `path`, is hashed against `h` —
+[`AttachmentDigestError`](@ref) otherwise, with the download deleted — and made
+read-only; then the sidecar is written (to a `.tmp`, renamed), and last the file is
+renamed into place, which is the commit: a rename keeps the size and mtime the sidecar
+records. An entry another process completed meanwhile is kept, and the download dropped.
+Two processes filling one hash at once can still pair one's sidecar with the other's
+file; a read then raises [`AttachmentCacheError`](@ref), and running it again settles it.
+"""
+function fill_attachment!(chain::Chain, chain_id, key::String, h::String, path::String)
+    dir = dirname(path)
+    mkpath(dir)
+    tmp = joinpath(dir, "$h.$(bytes2hex(rand(UInt8, 8))).part")
+    try
+        size = with_retries(() -> fetch_object_to(chain.store, key, tmp))
+        size === nothing && return false
+        found = bytes2hex(hash_file(tmp))
+        found == h || throw(AttachmentDigestError("attachment digest: the store of the chain at $(location(chain)) " *
+            "returned $size bytes for $key, which hash to $found, not to the key's hash. Nothing was cached. S3 checked " *
+            "the hash when the attachment was stored, so the bucket was written from outside the protocol: stop and " *
+            "report it (ADR-0046)."; chain_id, key, found, size))
+        cache_entry(path) === :ok && return true
+        chmod(tmp, 0o444)
+        meta = sidecar_path(path)
+        metatmp = "$meta.$(bytes2hex(rand(UInt8, 8))).tmp"
+        try
+            write(metatmp, sidecar_text(stat(tmp)))
+            Base.Filesystem.rename(metatmp, meta)
+        catch
+            rm(metatmp; force = true)
+            rethrow()
+        end
+        replace_file(tmp, path)
+    finally
+        if isfile(tmp)
+            chmod(tmp, 0o644)
+            rm(tmp)
+        end
+    end
+    return true
+end
+
+function confirm!(copy::LocalCopy, h::String)
+    mkpath(joinpath(copy.path, "confirmed"))
+    touch(confirmed_path(copy, h))
+    return nothing
+end
+
+"""
+    attachment(copy, hash) -> String
+
+The path of the attachment `hash` of `copy`'s chain, a read-only file in the attachment
+cache, `cache_dir/attachments/<h[1:2]>/<h>`, shared by every chain and bucket (ADR-0046).
+Fetched on first use, never by `sync!`; nothing checks that a row of the copy refers to
+the hash.
+
+The cache serves a file only while it matches its sidecar's size and mtime — it is not
+hashed on every read; `verify(copy; full = true)` hashes it. A cached file does not stand
+in for the chain's word: the first read of a hash through a copy HEADs its key in the
+chain's store, even on a cache hit, and records it as confirmed in the copy
+(`<copy>/confirmed/<h>`); a miss is confirmed by its download. `verify(copy; full = true)`
+and `repair!(copy)` cover the confirmed hashes. Requests are retried as
+[`put_attachment`](@ref)'s are.
+
+Raises [`AttachmentAbsentError`](@ref) when the chain's store lacks it,
+[`AttachmentDigestError`](@ref) when the store's bytes do not hash to it, and
+[`AttachmentCacheError`](@ref) when the cached file differs from its sidecar; an
+`ArgumentError` for a copy with no head yet, or a hash that is not 64 lowercase hex.
+"""
+function attachment(copy::LocalCopy, h::AbstractString)
+    check_open(copy)
+    copy.head === nothing && throw(ArgumentError("attachment(copy, hash): the local copy at $(copy.path) has no head " *
+        "yet, so it belongs to no chain whose attachment it could read; sync!(copy) binds it"))
+    h = check_attachment_hash(h)
+    chain = chain_of(copy, "attachment(copy, hash)")
+    chain_id = copy.head.chain_id
+    key = attachment_key(chain, h)
+    path = attachment_cache_path(chain.cache, h)
+    entry = cache_entry(path)
+    if entry === :ok
+        isfile(confirmed_path(copy, h)) && return path
+        with_retries(() -> stat_object(chain.store, key)) === nothing && throw(absent_for_reader(chain, chain_id, key))
+    elseif entry === :absent
+        fill_attachment!(chain, chain_id, key, h, path) || throw(absent_for_reader(chain, chain_id, key))
+    else
+        throw(damaged_entry(chain_id, key, path, entry))
+    end
+    confirm!(copy, h)
+    return path
+end

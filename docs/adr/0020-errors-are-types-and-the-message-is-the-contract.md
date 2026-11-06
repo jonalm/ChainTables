@@ -30,7 +30,9 @@ function to call, where there is one.
 | `RecordCacheError` | verify (full); repair! | the record cache, not the chain, lacks or has damaged a record: `repair!(copy)` fetches it again; or a cache file changed between two reads, because another process writes the cache or the disk damaged it: run the call again (ADR-0040) |
 | `AttachmentChangedError` | put_attachment | the bytes sent do not hash to the attachment's key (S3's `BadDigest`): the file changed between hashing and upload; stop whatever writes it, and put it again (ADR-0046) |
 | `AttachmentURLExpiredError` | put_attachment | the URL the gateway minted expired before the upload began: put the attachment again, which mints a new one; if it recurs, check the clock (ADR-0046) |
-| `AttachmentAbsentError` | touch_attachment | the chain's store holds no such attachment — never put, or deleted after its retention ended: put it again before a row refers to it (ADR-0046) |
+| `AttachmentAbsentError` | touch_attachment, attachment | the chain's store holds no such attachment — never put, or deleted after its retention ended: whoever holds the file puts it again; a reader without it cannot (ADR-0046) |
+| `AttachmentDigestError` | attachment, repair! | the store returned bytes that do not hash to the attachment's key; nothing was cached: stop, the bucket was written from outside the protocol (ADR-0046) |
+| `AttachmentCacheError` | attachment, verify (full) | the attachment cache's file is not what its sidecar records, or does not hash to its name: run the call again, since another process may be writing the cache; else `repair!(copy)`; deleting the entry is always safe (ADR-0046) |
 
 ADR-0023 and ADR-0014 both close by saying each failure must be
 *distinguishable* and that the names were issue #16's. This is that list
@@ -44,7 +46,10 @@ ADR-0040, because a damaged record cache is not a damaged chain or copy;
 because the next move for each is to put the attachment again, which is
 neither a refusal nor a mismatch; `AttachmentAbsentError` added with
 `touch_attachment`, because an attachment gone from the store is neither the
-chain's absence nor a damaged copy).
+chain's absence nor a damaged copy; `AttachmentDigestError` and
+`AttachmentCacheError` added with `attachment`, the first because bad bytes in
+the store are not a rewritten chain, the second because `RecordCacheError`'s
+evidence, a slot and a transaction hash, does not fit an attachment).
 
 ## Why types at all, when the message is the target
 

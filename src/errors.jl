@@ -371,9 +371,10 @@ AttachmentURLExpiredError(msg; chain_id = nothing, key = nothing, expires = noth
 """
     AttachmentAbsentError(msg; chain_id, key)
 
-Raised by `touch_attachment`: the chain's store holds no attachment at `key` — it was
-never put, or its retention ended and it was deleted (ADR-0046). The next move: put it
-again with `put_attachment(chain, file)` before a row refers to it.
+Raised by `touch_attachment` and `attachment`: the chain's store holds no attachment at
+`key` — it was never put, or its retention ended and it was deleted (ADR-0046). The next
+move: whoever holds the file puts it again with `put_attachment(chain, file)`; a reader
+without it cannot.
 """
 struct AttachmentAbsentError <: ChainTablesError
     msg::String
@@ -381,6 +382,42 @@ struct AttachmentAbsentError <: ChainTablesError
     key::MaybeString
 end
 AttachmentAbsentError(msg; chain_id = nothing, key = nothing) = AttachmentAbsentError(msg, chain_id, key)
+
+"""
+    AttachmentDigestError(msg; chain_id, key, found, size)
+
+Raised by `attachment` (and `repair!`): the store returned `size` bytes for an attachment's
+`key` that hash to `found`, not to the `<h>` the key names (ADR-0046). Nothing was cached,
+and the download was deleted: it can be 5 GiB. Not retried — S3 checked the hash when the
+attachment was stored, so the bucket was written from outside the protocol. The next
+move: stop and report it.
+"""
+struct AttachmentDigestError <: ChainTablesError
+    msg::String
+    chain_id::MaybeString
+    key::MaybeString
+    found::MaybeString
+    size::MaybeInt
+end
+AttachmentDigestError(msg; chain_id = nothing, key = nothing, found = nothing, size = nothing) =
+    AttachmentDigestError(msg, chain_id, key, found, size)
+
+"""
+    AttachmentCacheError(msg; chain_id, key, path)
+
+Raised by `attachment` and `verify(copy; full = true)`: the attachment cache's file at
+`path` is not what its sidecar records, or (verify) does not hash to its name (ADR-0046).
+The attachment cache is damaged, not the chain. The next move: run the call again, since
+another process may be writing the cache; else `repair!(copy)`, which checks the file and
+fetches it again. Deleting the file and its `.meta` is always safe.
+"""
+struct AttachmentCacheError <: ChainTablesError
+    msg::String
+    chain_id::MaybeString
+    key::MaybeString
+    path::MaybeString
+end
+AttachmentCacheError(msg; chain_id = nothing, key = nothing, path = nothing) = AttachmentCacheError(msg, chain_id, key, path)
 
 # The message is the contract (ADR-0020): every type shows as its message, so a
 # `@test_throws "…"` matches the text a user reads.

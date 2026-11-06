@@ -1,4 +1,4 @@
-# ADR-0020 — the taxonomy: twenty-one types under one supertype, each with `msg` and its evidence as
+# ADR-0020 — the taxonomy: twenty-three types under one supertype, each with `msg` and its evidence as
 # keyword fields defaulting to nothing. Every type is provoked, with @test_throws "<message>", in
 # the test file of the lane that raises it (localcopy.jl, ops.jl, builder.jl, chain.jl, recovery.jl,
 # gateway.jl); the one step 9 raises — UnsupportedStoreError — is checked by construction here.
@@ -11,6 +11,7 @@
         ChainTables.LocalCopyInconsistentError, ChainTables.MalformedRecordError, ChainTables.WriteRefusedError,
         ChainTables.GatewayMismatchError, ChainTables.RecordCacheError, ChainTables.CommitOutcomeUnknownError,
         ChainTables.AttachmentChangedError, ChainTables.AttachmentURLExpiredError, ChainTables.AttachmentAbsentError,
+        ChainTables.AttachmentDigestError, ChainTables.AttachmentCacheError,
     )
         @test T <: ChainTables.ChainTablesError
         @test ChainTables.ChainTablesError <: Exception
@@ -53,5 +54,7 @@
     @test (e.key, e.expires) == ("p/_attachments/" * "0"^64, "2026-11-06T12:00:00Z") && !ChainTables.retryable(e)
     @test fieldnames(ChainTables.AttachmentChangedError) == (:msg, :chain_id, :key)
     @test fieldnames(ChainTables.AttachmentAbsentError) == (:msg, :chain_id, :key)
+    @test fieldnames(ChainTables.AttachmentDigestError) == (:msg, :chain_id, :key, :found, :size)
+    @test fieldnames(ChainTables.AttachmentCacheError) == (:msg, :chain_id, :key, :path)
     @test isabstracttype(ChainTables.AbstractObjectStore)
 end

@@ -151,4 +151,114 @@ const ATT = ChainTables
             end
         end
     end
+
+    @testset "attachment(copy, hash): fetched once into the shared cache, confirmed once per copy" begin
+        mktempdir() do dir
+            store = InMemoryObjectStore()
+            cache_dir = joinpath(dir, "cache")
+            chain = Chain("bkt", "p"; store, cache_dir, record_host = false, record_user = false)
+            ATT.create_chain(chain)
+            copy = ATT.open(chain, joinpath(dir, "one"))
+            ATT.sync!(copy)
+            bytes = rand(UInt8, 5000)
+            h = ATT.put_attachment(chain, IOBuffer(bytes))
+            key = "p/_attachments/$h"
+            cached = joinpath(cache_dir, "attachments", h[1:2], h)
+            # an unbound copy, a bad hash: refused before any request
+            fresh = ATT.open(chain, joinpath(dir, "fresh"))
+            empty!(store.calls)
+            @test_throws "attachment(copy, hash): the local copy at $(joinpath(dir, "fresh")) has no head yet, so it belongs to no chain whose attachment it could read; sync!(copy) binds it" ATT.attachment(fresh, h)
+            @test_throws "\"$(uppercase(h))\" is not an attachment hash" ATT.attachment(copy, uppercase(h))
+            @test isempty(store.calls)
+            # a miss: one GET into the cache, read-only, with its sidecar, and the copy's marker
+            path = ATT.attachment(copy, h)
+            @test path == cached && read(path) == bytes
+            @test store.calls == [(:fetch_object_to, key)]
+            @test filemode(path) & 0o222 == 0
+            st = stat(path)
+            @test read(path * ".meta", String) == "$(st.size) $(st.mtime)"
+            @test isfile(joinpath(copy.path, "confirmed", h))
+            @test sort(readdir(dirname(path))) == [h, h * ".meta"]          # no temporary file left
+            # a hit, confirmed: no request, and so after a reopen
+            empty!(store.calls)
+            @test ATT.attachment(copy, h) == path && isempty(store.calls)
+            close(copy)
+            copy = ATT.open(chain, joinpath(dir, "one"))
+            @test ATT.attachment(copy, h) == path && isempty(store.calls)
+            # a hit through another copy: its first read HEADs the key in its chain's store, once
+            two = ATT.open(chain, joinpath(dir, "two"))
+            ATT.sync!(two)
+            empty!(store.calls)
+            @test ATT.attachment(two, h) == path && store.calls == [(:stat_object, key)]
+            @test ATT.attachment(two, h) == path && length(store.calls) == 1
+            # a hit cached from another chain, which this chain's store lacks: the file does not stand in for it
+            other = Chain("bkt", "q"; store, cache_dir, record_host = false, record_user = false)
+            ATT.create_chain(other)
+            oc = ATT.open(other, joinpath(dir, "other"))
+            ATT.sync!(oc)
+            e = try ATT.attachment(oc, h); nothing catch e; e end
+            @test e isa ATT.AttachmentAbsentError && e.key == "q/_attachments/$h" && e.chain_id == oc.head.chain_id
+            @test sprint(showerror, e) == "AttachmentAbsentError: attachment absent: the store of the chain at bkt/q holds " *
+                "no attachment q/_attachments/$h — it was never put to this chain, or its retention ended and it was " *
+                "deleted — so attachment(copy, hash) has nothing to serve, whatever this machine has cached. Only someone " *
+                "holding the file can bring it back, with put_attachment(chain, file) (ADR-0046)."
+            @test !isfile(joinpath(oc.path, "confirmed", h))
+            # a miss the store lacks: the same error, nothing cached
+            absent = bytes2hex(sha256(b"absent"))
+            @test_throws "attachment absent: the store of the chain at bkt/p holds no attachment p/_attachments/$absent" ATT.attachment(copy, absent)
+            @test !ispath(joinpath(cache_dir, "attachments", absent[1:2], absent))
+            # a retryable failure of the GET is retried
+            hr = ATT.put_attachment(chain, IOBuffer(b"retried"))
+            failed = Ref(0)
+            store.fault = (verb, k, phase) -> (verb == :fetch_object_to && failed[] < 1) && (failed[] += 1; throw(TransportError("x"; status = 503)))
+            @test read(ATT.attachment(copy, hr)) == b"retried" && failed[] == 1
+            store.fault = (verb, k, phase) -> nothing
+        end
+    end
+
+    @testset "attachment(copy, hash): a download that does not hash to its key, a damaged cache entry" begin
+        mktempdir() do dir
+            store = InMemoryObjectStore()
+            cache_dir = joinpath(dir, "cache")
+            chain = Chain("bkt", "p"; store, cache_dir, record_host = false, record_user = false)
+            ATT.create_chain(chain)
+            copy = ATT.open(chain, joinpath(dir, "one"))
+            ATT.sync!(copy)
+            # the store holds other bytes under a hash: nothing cached, not retried
+            h = bytes2hex(sha256(b"what the key names"))
+            store.objects["p/_attachments/$h"] = b"other bytes"; store.modified["p/_attachments/$h"] = 0
+            empty!(store.calls)
+            e = try ATT.attachment(copy, h); nothing catch e; e end
+            found = bytes2hex(sha256(b"other bytes"))
+            @test e isa ATT.AttachmentDigestError && e.key == "p/_attachments/$h" && e.found == found && e.size == 11
+            @test e.chain_id == copy.head.chain_id
+            @test sprint(showerror, e) == "AttachmentDigestError: attachment digest: the store of the chain at bkt/p " *
+                "returned 11 bytes for p/_attachments/$h, which hash to $found, not to the key's hash. Nothing was cached. " *
+                "S3 checked the hash when the attachment was stored, so the bucket was written from outside the protocol: " *
+                "stop and report it (ADR-0046)."
+            @test length(store.calls) == 1 && isempty(readdir(joinpath(cache_dir, "attachments", h[1:2])))
+            @test !isfile(joinpath(copy.path, "confirmed", h))
+            # a cached file whose size or mtime differs from its sidecar: raised, not fetched again
+            bytes = rand(UInt8, 100)
+            h = ATT.put_attachment(chain, IOBuffer(bytes))
+            path = ATT.attachment(copy, h)
+            meta = read(path * ".meta", String)
+            chmod(path, 0o644); write(path, rand(UInt8, 100)); chmod(path, 0o444)
+            st = stat(path)
+            empty!(store.calls)
+            e = try ATT.attachment(copy, h); nothing catch e; e end
+            @test e isa ATT.AttachmentCacheError && e.path == path && e.chain_id == copy.head.chain_id
+            @test sprint(showerror, e) == "AttachmentCacheError: attachment cache: the cached file $path is $(st.size) " *
+                "bytes modified at $(st.mtime), its sidecar $path.meta records \"$meta\". Another process may be writing " *
+                "the cache: run the call again. Otherwise the file was changed, or copied without its modification time: " *
+                "repair!(copy) checks it and fetches it again, and deleting $path and $path.meta is always safe (ADR-0046)."
+            @test isempty(store.calls)
+            # a cached file with no sidecar is absent: fetched again over the read-only file
+            rm(path * ".meta")
+            @test read(ATT.attachment(copy, h)) == bytes && store.calls == [(:fetch_object_to, "p/_attachments/$h")]
+            # a sidecar with no file is absent too
+            chmod(path, 0o644); rm(path)
+            @test read(ATT.attachment(copy, h)) == bytes
+        end
+    end
 end
