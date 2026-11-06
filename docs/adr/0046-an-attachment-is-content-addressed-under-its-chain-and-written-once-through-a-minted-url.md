@@ -346,6 +346,10 @@ a signed header, which S3 enforces like any other.
     URL;
   - a presigned PUT to a slot is denied;
   - `x/_attachments/<h>` is checked against `x`.
+
+  `test/live/attachments.jl` (`run.sh attachments`) proves all but the slot
+  item, which no gateway mints a URL for: `gateway/probe/attachment_probe.py
+  slot` proves it with a URL signed under the gateway role.
 - **Probed on 2026-10-28** (`gateway/probe/attachment_probe.py`, a locked
   bucket, URLs signed in Lambda under the gateway role, botocore 1.43.93):
   - a correct PUT is stored with COMPLIANCE, the key, the Bucket Key and the
@@ -365,6 +369,13 @@ a signed header, which S3 enforces like any other.
     after 11.25 h and refused with `400 ExpiredToken` at 12.08 h: the role's
     credentials last about 12 h from the environment's start. Lambda exposes
     no expiry to the function.
+- **Proved on 2026-11-06** on the same bucket, redeployed with a `live/*`
+  policy rule:
+  - `run.sh attachments` passed, 53 of 53;
+  - the probe's `slot` case: a URL signed under the gateway role, with every
+    lock and KMS header, is `403 AccessDenied` "explicit deny in a
+    resource-based policy" for a slot key and stores nothing, while the same
+    headers for an attachment key in the same run are stored.
 - **Still unverified**:
   - whether an upload that starts before its URL expires survives the
     expiry.
