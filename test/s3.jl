@@ -432,6 +432,89 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
     end
 
     # ------------------------------------------------------------------------
+    # Streaming (ADR-0046): an attachment's bytes go from a file and to a file, never held
+    # in memory; a stall timeout instead of a total one; no redirect is followed.
+    # ------------------------------------------------------------------------
+    @testset "streaming: a PUT from a file, a GET to one, no redirect, a stall timeout (ADR-0046)" begin
+        creds = Credentials("AKIATEST", "topsecret"; session_token = "session-token")
+        server = S3TestServer(; bucket = "bkt", credentials = creds)
+        dir = mktempdir()
+        try
+            store = S3ObjectStore("bkt"; region = "eu-north-1", credentials = creds, endpoint = s3test_endpoint(server),
+                                  path_style = true, timeout = 30)
+            bytes = rand(UInt8, 3 * 1024 * 1024 + 7)          # over libcurl's 1 MiB threshold for Expect: 100-continue
+            h = bytes2hex(sha256(bytes))
+            key = "p/_attachments/" * h
+            src = joinpath(dir, "src")
+            write(src, bytes)
+            # a signed PUT streamed from a file: the payload hash and length are given, not computed from a body
+            req = S3T.request_headers(store, "PUT", key; payload_hash = h, content_length = length(bytes),
+                                      headers = ["if-none-match" => "*"])
+            response = open(io -> S3T.http_stream(req.url, "PUT", req.headers; input = io, stall = store.timeout), src)
+            @test response.status == 200
+            @test server.objects[key] == bytes
+            put = server.requests[end]
+            @test put.headers["x-amz-content-sha256"] == h && put.headers["content-length"] == string(length(bytes))
+            # a GET to a file: its size, and the bytes in the file
+            dst = joinpath(dir, "dst")
+            @test S3T.fetch_object_to(store, key, dst) == length(bytes)
+            @test read(dst) == bytes
+            # absent: nothing, and no file left behind
+            gone = joinpath(dir, "gone")
+            @test S3T.fetch_object_to(store, "p/_attachments/" * "0"^64, gone) === nothing
+            @test !ispath(gone)
+            # a refusal: a TransportError carrying S3's code, and no file left holding the error document
+            server.respond = req -> (403, [], s3test_error("AccessDenied", "Access Denied"))
+            e = try S3T.fetch_object_to(store, key, gone); nothing catch e; e end
+            @test e isa TransportError && e.status == 403 && !S3T.retryable(e)
+            @test occursin("GET http://127.0.0.1:$(server.port)/bkt/$key: HTTP 403 AccessDenied: Access Denied", sprint(showerror, e))
+            @test !ispath(gone)
+            # a redirect is a TransportError with its status, never followed — on the GET and on the PUT
+            n = length(server.requests)
+            server.respond = req -> req.rawpath == "/elsewhere" ? (200, [], b"followed") :
+                (307, ["location" => "http://127.0.0.1:$(server.port)/elsewhere"],
+                 s3test_error("TemporaryRedirect", "Please re-send this request to the specified temporary endpoint."))
+            e = try S3T.fetch_object_to(store, key, gone); nothing catch e; e end
+            @test e isa TransportError && e.status == 307
+            @test occursin("HTTP 307 TemporaryRedirect: Please re-send", sprint(showerror, e))
+            @test length(server.requests) == n + 1 && !ispath(gone)
+            url = "http://127.0.0.1:$(server.port)/bkt/x"
+            response = open(io -> S3T.http_stream(url, "PUT", ["content-length" => string(length(bytes))]; input = io, stall = 30), src)
+            @test response.status == 307 && length(server.requests) == n + 2
+            server.respond = _ -> nothing
+            # a PUT states its length, or libcurl sends a chunked body, which S3 refuses
+            @test_throws "a streamed PUT needs a content-length header" open(io -> S3T.http_stream(url, "PUT", Pair{String,String}[]; input = io, stall = 30), src)
+            @test_throws "stall is 0 seconds; it must be positive" S3T.http_stream(url, "GET", Pair{String,String}[]; output = IOBuffer(), stall = 0)
+        finally
+            close(server)
+            rm(dir; recursive = true)
+        end
+        # a stall: a peer that accepts and never answers is a TransportError with no status, after `stall` seconds
+        mute = listen(ip"127.0.0.1", 0)
+        port = Int(getsockname(mute)[2])
+        held = Any[]
+        @async try
+            while isopen(mute)
+                push!(held, accept(mute))
+            end
+        catch
+        end
+        try
+            t = @elapsed e = try
+                S3T.http_stream("http://127.0.0.1:$port/bkt/k", "GET", Pair{String,String}[]; output = IOBuffer(), stall = 1); nothing
+            catch e
+                e
+            end
+            @test e isa TransportError && e.status === nothing && S3T.retryable(e)
+            @test startswith(sprint(showerror, e), "TransportError: GET http://127.0.0.1:$port/bkt/k: no response")
+            @test t < 10
+        finally
+            close(mute)
+            foreach(close, held)
+        end
+    end
+
+    # ------------------------------------------------------------------------
     # The gate (ADR-0016, ADR-0019, ADR-0020): a non-AWS endpoint warns once at open,
     # syncs, and refuses at commit! and create_chain before anything is applied;
     # assume_first_writer_wins lifts the refusal, and the message names the four things.

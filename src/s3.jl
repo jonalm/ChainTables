@@ -270,7 +270,9 @@ on its own, so ADR-0010's "the transport never retries" is obtained, not configu
   `.amazonaws.com.cn` (ADR-0016; see [`is_aws`](@ref)); anything else warns at `open`
   and refuses at `commit!` unless the chain's `assume_first_writer_wins` is set.
 - `timeout`: seconds for one request to complete; a request that does not raises
-  `TransportError` with no status, which the commit layer retries (ADR-0010).
+  `TransportError` with no status, which the commit layer retries (ADR-0010). An
+  attachment's streamed transfer (ADR-0046) has no total timeout, and `timeout` is
+  instead how long it may move no byte.
 
 A bucket name containing a dot is refused: it breaks certificate matching under the
 virtual-hosted URL (ADR-0010).
@@ -526,20 +528,22 @@ object_path(store::S3ObjectStore, key::AbstractString) =
     (store.path_style ? "/" * store.bucket : "") * "/" * uri_encode(key; keep_slash = true)
 
 """
-    signed_headers(credentials, region, service, host, method, path; query, body, headers, now) -> Vector{Pair{String,String}}
+    signed_headers(credentials, region, service, host, method, path; query, body, headers, now,
+                   payload_hash, content_length) -> Vector{Pair{String,String}}
 
 The full header list of one signed request to `service` (ADR-0010, ADR-0028): `host`,
 `x-amz-content-sha256`, `x-amz-date`, `x-amz-security-token` under a session, the
 caller's `headers`, then `authorization` over all of them, and `content-length` —
 unsigned, because libcurl owns it — for a `PUT` or `POST`. `path` is the already-encoded
-canonical URI.
+canonical URI. `payload_hash` (hex SHA-256) and `content_length` default to `body`'s; a
+body streamed from a file (ADR-0046) passes both instead of `body`.
 """
 function signed_headers(credentials::Credentials, region::AbstractString, service::AbstractString, host::AbstractString,
                         method::AbstractString, path::AbstractString;
                         query = Pair{String,String}[], body = UInt8[], headers = Pair{String,String}[],
-                        now::Integer = floor(Int64, time()))
+                        now::Integer = floor(Int64, time()),
+                        payload_hash::AbstractString = bytes2hex(sha256(body)), content_length::Integer = length(body))
     amzdate = amz_date(now)
-    payload_hash = bytes2hex(sha256(body))
     signed = Pair{String,String}["host" => String(host), "x-amz-content-sha256" => payload_hash, "x-amz-date" => amzdate]
     credentials.session_token === nothing || push!(signed, "x-amz-security-token" => credentials.session_token)
     for (k, v) in headers
@@ -548,22 +552,24 @@ function signed_headers(credentials::Credentials, region::AbstractString, servic
     sig = sign_request(credentials, region, method, path, query, signed, payload_hash, amzdate; service)
     sent = copy(signed)
     push!(sent, "authorization" => sig.authorization)
-    method in ("PUT", "POST") && push!(sent, "content-length" => string(length(body)))
+    method in ("PUT", "POST") && push!(sent, "content-length" => string(content_length))
     return sent
 end
 
 """
-    request_headers(store, method, key; query, body, headers, now) -> (; url, headers)
+    request_headers(store, method, key; query, body, headers, now, payload_hash, content_length) -> (; url, headers)
 
 The URL and the full header list of one signed S3 request — [`signed_headers`](@ref) for
 service `s3` at the object's path. Split from [`s3_request`](@ref) so a test can see
-what is signed.
+what is signed, and so a streamed request (ADR-0046) can be signed without its body.
 """
 function request_headers(store::S3ObjectStore, method::AbstractString, key::AbstractString;
                          query = Pair{String,String}[], body = UInt8[], headers = Pair{String,String}[],
-                         now::Integer = floor(Int64, time()))
+                         now::Integer = floor(Int64, time()),
+                         payload_hash::AbstractString = bytes2hex(sha256(body)), content_length::Integer = length(body))
     path = object_path(store, key)
-    sent = signed_headers(current_credentials(store), store.region, "s3", store.host, method, path; query, body, headers, now)
+    sent = signed_headers(current_credentials(store), store.region, "s3", store.host, method, path; query, body, headers, now,
+                          payload_hash, content_length)
     return (; url = store.base * path * query_string(query), headers = sent)
 end
 
@@ -581,6 +587,77 @@ function http_request(url::AbstractString, method::AbstractString, headers, body
     response isa Downloads.RequestError &&
         throw(TransportError("$method $url: no response — $(response.message)"))
     return (; status = response.status, headers = response.headers, body = take!(output))
+end
+
+# ---------------------------------------------------------------------------
+# Streaming (ADR-0046): an attachment's bytes, up to 5 GiB, go from a file and to a file
+# and are never held in memory. Such a transfer has no total timeout — how long 5 GiB
+# takes depends on the link — but a stall timeout: `stall` seconds in which no byte moves
+# either way is a `TransportError` with no status. No redirect is followed: a minted
+# URL's host is checked before the PUT, and S3 redirecting a bucket's request means the
+# region or the host is wrong, which a retry elsewhere would hide.
+# ---------------------------------------------------------------------------
+
+# One `Downloader` per transfer, since its hook is where libcurl's options are set and
+# the stall differs by store; connection reuse matters little at these sizes.
+function stream_downloader(stall::Real)
+    seconds = ceil(Int, stall)               # libcurl counts the low-speed window in whole seconds
+    downloader = Downloads.Downloader(; grace = 0)
+    downloader.easy_hook = (easy, info) -> begin
+        Downloads.Curl.setopt(easy, Downloads.Curl.CURLOPT_FOLLOWLOCATION, false)
+        Downloads.Curl.setopt(easy, Downloads.Curl.CURLOPT_LOW_SPEED_LIMIT, 1)
+        Downloads.Curl.setopt(easy, Downloads.Curl.CURLOPT_LOW_SPEED_TIME, seconds)
+    end
+    return downloader
+end
+
+"""
+    http_stream(url, method, headers; input = nothing, output = nothing, stall) -> (; status, headers)
+
+One streamed request over stdlib `Downloads`, no retry inside (ADR-0010, ADR-0046): the
+body is read from `input`, an IO at its start, and the response's body written to
+`output`. The response is returned whatever its status — a `3xx` among them, since no
+redirect is followed — and no response at all, a stall of `stall` seconds included, is a
+`TransportError` with no status. A `PUT` must carry a `content-length` header, else
+libcurl would send a chunked body, which S3 refuses.
+"""
+function http_stream(url::AbstractString, method::AbstractString, headers; input = nothing, output = nothing, stall::Real)
+    stall > 0 || throw(ArgumentError("http_stream: stall is $stall seconds; it must be positive"))
+    method == "PUT" && !any(kv -> lowercase(first(kv)) == "content-length", headers) &&
+        throw(ArgumentError("http_stream: a streamed PUT needs a content-length header; without one libcurl sends a " *
+                            "chunked body, which S3 refuses"))
+    response = Downloads.request(url; method, headers, input, output = something(output, devnull),
+                                 throw = false, downloader = stream_downloader(stall))
+    response isa Downloads.RequestError &&
+        throw(TransportError("$method $url: no response — $(response.message)"))
+    return (; status = response.status, headers = response.headers)
+end
+
+# What a failed streamed GET wrote to its file is the error document, read back for the
+# message; capped, since a misbehaving peer could send anything.
+const ERROR_DOCUMENT_BYTES = 64 * 1024
+
+"""
+    fetch_object_to(store, key, path) -> Union{Int64,Nothing}
+
+The object at `key` streamed into the file `path`, created or truncated (ADR-0046): its
+size in bytes, or `nothing` when the key is absent. On anything but a `200` no file is
+left at `path`, and a failure raises as [`fetch_object`](@ref) does. Checks nothing about
+the bytes; the caller hashes them.
+"""
+function fetch_object_to(store::S3ObjectStore, key::AbstractString, path::AbstractString)
+    req = request_headers(store, "GET", key)
+    response = try
+        Base.open(io -> http_stream(req.url, "GET", req.headers; output = io, stall = store.timeout), path, "w")
+    catch
+        rm(path; force = true)
+        rethrow()
+    end
+    response.status == 200 && return Int64(filesize(path))
+    body = Base.open(io -> read(io, ERROR_DOCUMENT_BYTES), path)
+    rm(path)
+    response.status == 404 && return nothing
+    throw(failure("GET", store, key, (; response.status, body)))
 end
 
 function s3_request(store::S3ObjectStore, method::AbstractString, key::AbstractString;
