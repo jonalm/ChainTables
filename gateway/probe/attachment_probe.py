@@ -4,6 +4,7 @@
       deploy   --role R --function F --region X   # throwaway signer Lambda under the gateway role R
       run      --bucket B --function F --state S.json   # the cases below
       poll     --state S.json                     # session-lifetime canary; repeat until it changes
+      slot     --bucket B --function F            # DenyPresignedSlotPuts: a role-signed URL for a slot is denied
       teardown --function F --region X
 
 Credentials: the ambient AWS profile (an administrator: lambda create, iam:PassRole, s3 head).
@@ -194,6 +195,58 @@ def run(a):
     print(f"\nstate → {a.state}; run `attachment_probe.py poll --state {a.state}` until the canary's code changes")
 
 
+def slot(a):
+    """ADR-0046's "a presigned PUT to a slot is denied", which the live suite cannot prove: the
+    gateway never mints for a slot. Two URLs signed in one Lambda call under the gateway role,
+    each with every lock and KMS header the bucket policy requires, so that only
+    DenyPresignedSlotPuts can refuse the slot: an attachment key (the control, which must be
+    stored) and a slot key in the same run. A slot PUT that is stored instead leaves a COMPLIANCE
+    object at attachment-probe/<run>/000000000000 for a day. Exits non-zero unless the control is
+    200 and the slot 403 AccessDenied with nothing stored."""
+    sess = boto3.Session()
+    region = sess.client("s3").get_bucket_location(Bucket=a.bucket)["LocationConstraint"] or "us-east-1"
+    s3 = sess.client("s3", region_name=region)
+    lam = sess.client("lambda", region_name=region)
+    key_arn = s3.get_bucket_encryption(Bucket=a.bucket)["ServerSideEncryptionConfiguration"]["Rules"][0][
+        "ApplyServerSideEncryptionByDefault"]["KMSMasterKeyID"]
+    assert key_arn.startswith("arn:aws:kms:"), key_arn
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(3)
+    retain_iso = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    body = secrets.token_bytes(64)
+    digest = hashlib.sha256(body).digest()
+    b64 = base64.b64encode(digest).decode()
+    control_key = f"attachment-probe/{run_id}/_attachments/{digest.hex()}"
+    slot_key = f"attachment-probe/{run_id}/000000000000"
+    print(f"bucket {a.bucket} ({region}), run {run_id}, retain-until {retain_iso}")
+    params = {"Bucket": a.bucket, "ChecksumSHA256": b64, "IfNoneMatch": "*", "ContentType": "application/octet-stream",
+              "ServerSideEncryption": "aws:kms", "SSEKMSKeyId": key_arn, "BucketKeyEnabled": True,
+              "ObjectLockMode": "COMPLIANCE", "ObjectLockRetainUntilDate": retain_iso}
+    sent = {"x-amz-checksum-sha256": b64, "If-None-Match": "*", "Content-Type": "application/octet-stream",
+            "x-amz-server-side-encryption": "aws:kms", "x-amz-server-side-encryption-aws-kms-key-id": key_arn,
+            "x-amz-server-side-encryption-bucket-key-enabled": "true", "x-amz-object-lock-mode": "COMPLIANCE",
+            "x-amz-object-lock-retain-until-date": retain_iso}
+    urls = mint(lam, a.function, [{"method": "put_object", "params": {**params, "Key": k}, "expires": 900}
+                                  for k in (control_key, slot_key)])["urls"]
+
+    def stored(key):
+        try:
+            s3.head_object(Bucket=a.bucket, Key=key)
+            return True
+        except s3.exceptions.ClientError as e:
+            if e.response["ResponseMetadata"]["HTTPStatusCode"] != 404:
+                raise
+            return False
+
+    control = call("PUT", urls[0], body, sent)
+    denied = call("PUT", urls[1], body, sent)
+    control_ok = control[0] == 200 and stored(control_key)
+    slot_ok = denied[0] == 403 and denied[1] == "AccessDenied" and not stored(slot_key)
+    print(f"[control: attachment key] {control} stored={stored(control_key)} {'ok' if control_ok else 'UNEXPECTED'}")
+    print(f"[slot key]                {denied} stored={stored(slot_key)} {'ok' if slot_ok else 'UNEXPECTED'}")
+    if not (control_ok and slot_ok):
+        sys.exit("slot probe: not the expected outcome (control 200 and stored; slot 403 AccessDenied, not stored)")
+
+
 def poll(a):
     with open(a.state) as f:
         st = json.load(f)
@@ -213,9 +266,10 @@ def main():
     r = sp.add_parser("run"); r.add_argument("--bucket", required=True); r.add_argument("--function", required=True)
     r.add_argument("--state", required=True)
     q = sp.add_parser("poll"); q.add_argument("--state", required=True)
+    s = sp.add_parser("slot"); s.add_argument("--bucket", required=True); s.add_argument("--function", required=True)
     t = sp.add_parser("teardown"); t.add_argument("--function", required=True); t.add_argument("--region", required=True)
     a = p.parse_args()
-    {"deploy": deploy, "run": run, "poll": poll, "teardown": teardown}[a.cmd](a)
+    {"deploy": deploy, "run": run, "poll": poll, "slot": slot, "teardown": teardown}[a.cmd](a)
 
 
 if __name__ == "__main__":
