@@ -103,7 +103,7 @@ prevent. `verify(copy; full = true)` puts the bisected first bad slot in the
 exception's fields and in its message, rather than returning it, for the same
 reason.
 
-`repair!` is the one function that returns a report — `(; slot, files_rewritten)`,
+`repair!` is the one function that returns a report — `(; slot, files_rewritten, attachments_repaired)`,
 since ADR-0023 made repair an in-place rewrite of mismatching table files (this
 ADR first returned a rebuilt-to slot and a count of recreated local indexes,
 which left with ADR-0022) — because it succeeded at something the user asked

@@ -181,7 +181,7 @@ ChainTables.stat_object(s::RecoveryTestNoGenesis, key) = ChainTables.stat_object
             @test (err.chain_id, err.slot, err.expected, err.computed) == (cid, 4, fill(0x04, 32), fps[5])
             @test err.record_client == (; lib = "L4", julia = "J") && err.this_client.julia == string(VERSION)
             # the head's own content is what the replay yields, so repair! has nothing to rewrite
-            @test CT.repair!(copy) == (; slot = 6, files_rewritten = 0)
+            @test CT.repair!(copy) == (; slot = 6, files_rewritten = 0, attachments_repaired = 0)
             # a missing cached record: the check is local and stops, a damaged record cache (ADR-0040)
             cached(s) = record_path(chain.cache, chain.store, "bkt", slotkey(s))
             two = read(cached(2))
@@ -260,12 +260,12 @@ ChainTables.stat_object(s::RecoveryTestNoGenesis, key) = ChainTables.stat_object
         mktempdir() do dir
             store, chain, copy, rs = seeded(dir)
             cid = copy.head.chain_id
-            @test CT.repair!(copy) == (; slot = 3, files_rewritten = 0)
+            @test CT.repair!(copy) == (; slot = 3, files_rewritten = 0, attachments_repaired = 0)
             file, good = damage!(copy, "samples")
             touch(joinpath(copy.path, "pin"))
             headbytes = read(headfile(copy, 3))
             files = sort(readdir(joinpath(copy.path, "tables")))
-            @test CT.repair!(copy) == (; slot = 3, files_rewritten = 1)
+            @test CT.repair!(copy) == (; slot = 3, files_rewritten = 1, attachments_repaired = 0)
             @test read(file) == good
             @test read(headfile(copy, 3)) == headbytes && CT.ispinned(copy)      # head and pin untouched
             @test sort(readdir(joinpath(copy.path, "tables"))) == files          # no temporary left
@@ -276,18 +276,18 @@ ChainTables.stat_object(s::RecoveryTestNoGenesis, key) = ChainTables.stat_object
             twin = tablefile(copy, "tags")
             @test twin == tablefile(copy, "twin")
             rm(twin)
-            @test CT.repair!(copy) == (; slot = 3, files_rewritten = 1)
+            @test CT.repair!(copy) == (; slot = 3, files_rewritten = 1, attachments_repaired = 0)
             @test isfile(twin) && hex(sha256(read(twin))) == basename(twin)
             damage!(copy, "tags")
             damage!(copy, "samples")
-            @test CT.repair!(copy) == (; slot = 3, files_rewritten = 2)
+            @test CT.repair!(copy) == (; slot = 3, files_rewritten = 2, attachments_repaired = 0)
             @test CT.verify(copy) === nothing
             # a record the cache lacks is fetched; a damaged cached record is fetched again, with a warning
             cached(s) = record_path(chain.cache, chain.store, "bkt", slotkey(s))
             rm(cached(1))
             damage!(copy, "samples")
             n = length(store.calls)
-            @test CT.repair!(copy) == (; slot = 3, files_rewritten = 1)
+            @test CT.repair!(copy) == (; slot = 3, files_rewritten = 1, attachments_repaired = 0)
             @test isfile(cached(1)) && store.calls[n+1:end] == [(:fetch_object, slotkey(1))]
             two = read(cached(2))
             badbytes = Base.copy(two)
@@ -296,7 +296,7 @@ ChainTables.stat_object(s::RecoveryTestNoGenesis, key) = ChainTables.stat_object
             damage!(copy, "samples")
             n = length(store.calls)
             healed = r"record cache: the cached copy of p/000000000002 in bucket bkt is not what the store holds"
-            @test (@test_logs (:warn, healed) CT.repair!(copy)) == (; slot = 3, files_rewritten = 1)
+            @test (@test_logs (:warn, healed) CT.repair!(copy)) == (; slot = 3, files_rewritten = 1, attachments_repaired = 0)
             @test read(cached(2)) == two && store.calls[n+1:end] == [(:fetch_object, slotkey(2))]
             # the store's bytes not hashing to what the chain names either: a rewritten chain, nothing written,
             # and the cached file left as it was
@@ -315,7 +315,7 @@ ChainTables.stat_object(s::RecoveryTestNoGenesis, key) = ChainTables.stat_object
             @test read(cached(2)) == b"cached damage"
             plant!(store, slotkey(2), two)
             write(cached(2), two)
-            @test CT.repair!(copy) == (; slot = 3, files_rewritten = 1)
+            @test CT.repair!(copy) == (; slot = 3, files_rewritten = 1, attachments_repaired = 0)
             fresh = CT.open(chain, joinpath(dir, "fresh"))
             @test_throws "repair!(copy): the local copy at $(fresh.path) has no head yet, so there is nothing to repair; sync!(copy) binds it" CT.repair!(fresh)
             close(fresh)

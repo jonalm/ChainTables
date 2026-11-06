@@ -500,3 +500,60 @@ function attachment(copy::LocalCopy, h::AbstractString)
     confirm!(copy, h)
     return path
 end
+
+# ---------------------------------------------------------------------------
+# verify and repair! over the attachments a copy confirmed (ADR-0046).
+# ---------------------------------------------------------------------------
+
+confirmed_hashes(copy::LocalCopy) = (d = joinpath(copy.path, "confirmed");
+    isdir(d) ? sort!(filter(f -> occursin(ATTACHMENT_HASH, f), readdir(d))) : String[])
+
+# What is wrong with the cache entry of `h`, hashing the file, or `nothing`.
+function attachment_problem(cache::RecordCache, h::String)
+    path = attachment_cache_path(cache, h)
+    entry = cache_entry(path)
+    entry === :absent && return "$path is not in the attachment cache"
+    found = bytes2hex(hash_file(path))
+    found == h || return "$path hashes to $found, not its name"
+    entry === :ok && return nothing
+    st = stat(path)
+    return "$path is $(st.size) bytes modified at $(st.mtime), its sidecar $path.meta records $(repr(entry))"
+end
+
+# `verify(copy; full = true)`'s pass over the confirmed attachments: local, every file hashed.
+function verify_attachments(copy::LocalCopy, chain::Chain)
+    problems = String[]
+    for h in confirmed_hashes(copy)
+        problem = attachment_problem(chain.cache, h)
+        problem === nothing || push!(problems, problem)
+    end
+    isempty(problems) && return nothing
+    throw(AttachmentCacheError("verify(copy; full = true): the attachment cache is damaged for attachments this copy " *
+        "confirmed: $(join(problems, "; ")). The cache is damaged, not the chain: repair!(copy) fetches them again " *
+        "(ADR-0046)."; chain_id = copy.head.chain_id))
+end
+
+# `repair!(copy)`'s pass: an entry whose file hashes right gets its sidecar rewritten;
+# any other is removed and fetched again from the chain's store. Returns the count.
+function repair_attachments!(copy::LocalCopy, chain::Chain)
+    repaired = 0
+    for h in confirmed_hashes(copy)
+        path = attachment_cache_path(chain.cache, h)
+        entry = cache_entry(path)
+        entry === :ok && bytes2hex(hash_file(path)) == h && continue
+        meta = sidecar_path(path)
+        if isfile(path) && bytes2hex(hash_file(path)) == h
+            metatmp = "$meta.$(bytes2hex(rand(UInt8, 8))).tmp"
+            write(metatmp, sidecar_text(stat(path)))
+            Base.Filesystem.rename(metatmp, meta)
+        else
+            rm(meta; force = true)
+            isfile(path) && (chmod(path, 0o644); rm(path))
+            key = attachment_key(chain, h)
+            fill_attachment!(chain, copy.head.chain_id, key, h, path) ||
+                throw(absent_for_reader(chain, copy.head.chain_id, key))
+        end
+        repaired += 1
+    end
+    return repaired
+end

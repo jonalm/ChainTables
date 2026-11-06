@@ -105,6 +105,9 @@ what determinism gives: once a slot fails to reproduce, so does every later one.
 check is local, so a record the cache lacks, or a cached record whose bytes do not hash
 to what the chain names, stops it with `RecordCacheError` naming the file: the record
 cache is damaged, not the chain, and `repair!(copy)` fetches the record again (ADR-0040).
+Last, on success, every attachment the copy confirmed (`<copy>/confirmed/<h>`) is hashed
+in the attachment cache: one that is missing, does not hash to its name, or differs from
+its sidecar is `AttachmentCacheError`, and `repair!(copy)` fetches it again (ADR-0046).
 """
 function verify(copy::LocalCopy; full = false)
     check_open(copy)
@@ -120,7 +123,7 @@ function verify(copy::LocalCopy; full = false)
     replay_to(content, from, to) = (for s in from:to; Ops.apply!(content, records[s+1]); end; content)
     reproduces(content, s) = Model.state_fingerprint(content) == records[s+1].state_fingerprint
     top = replay_to(Content(), 0, h.slot)
-    reproduces(top, h.slot) && return nothing
+    reproduces(top, h.slot) && (verify_attachments(copy, chain); return nothing)
     # bisect: `lo` reproduces (or is -1), `hi` does not; `base` is the content at `lo`
     lo, hi, base = -1, h.slot, Content()
     while hi - lo > 1
@@ -189,7 +192,7 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    repair!(copy) -> (; slot, files_rewritten)
+    repair!(copy) -> (; slot, files_rewritten, attachments_repaired)
 
 Repair a damaged copy in place (ADR-0014, ADR-0023): replay the chain from the record
 cache to the head's slot in memory, encode and hash every table, and hold the list
@@ -207,6 +210,12 @@ fingerprints and the tables that differ, and **nothing is written** — this mac
 cannot reproduce the chain, the copy stays readable, and the commit pre-check keeps it
 from committing onto the chain. The one function on the surface that returns a report
 rather than raising: it succeeded at something the user asked for (ADR-0020).
+
+Then the attachments the copy confirmed (ADR-0046): a cache entry whose file hashes to
+its name but differs from its sidecar has the sidecar rewritten; a missing or damaged one
+is fetched again from the chain's store — `AttachmentAbsentError` if the store lacks it,
+`AttachmentDigestError` if its bytes do not hash right. `attachments_repaired` counts
+both.
 
 A copy with no readable head never opens, so it cannot reach here: the error at `open`
 says to delete the directory and sync again. A fresh, unbound copy has nothing to repair.
@@ -247,7 +256,7 @@ function repair!(copy::LocalCopy)
         rewrite_table_file!(copy, content[names[1]], hash)
         rewritten += 1
     end
-    return (; slot = h.slot, files_rewritten = rewritten)
+    return (; slot = h.slot, files_rewritten = rewritten, attachments_repaired = repair_attachments!(copy, chain))
 end
 
 # The one write that replaces a file: to a .tmp, checked to hash to the name it is

@@ -261,4 +261,49 @@ const ATT = ChainTables
             @test read(ATT.attachment(copy, h)) == bytes
         end
     end
+
+    @testset "verify(copy; full = true) hashes the confirmed attachments; repair!(copy) fetches what is bad" begin
+        mktempdir() do dir
+            store = InMemoryObjectStore()
+            cache_dir = joinpath(dir, "cache")
+            chain = Chain("bkt", "p"; store, cache_dir, record_host = false, record_user = false)
+            ATT.create_chain(chain)
+            copy = ATT.open(chain, joinpath(dir, "one"))
+            ATT.sync!(copy)
+            a, b = rand(UInt8, 300), rand(UInt8, 400)
+            ha, hb = ATT.put_attachment(chain, IOBuffer(a)), ATT.put_attachment(chain, IOBuffer(b))
+            pa, pb = ATT.attachment(copy, ha), ATT.attachment(copy, hb)
+            ATT.put_attachment(chain, IOBuffer(b"never read"))                  # not confirmed: not covered
+            @test ATT.verify(copy; full = true) === nothing
+            @test ATT.repair!(copy) == (; slot = 0, files_rewritten = 0, attachments_repaired = 0)
+            # damage no sidecar can see: other bytes, the sidecar rewritten to match
+            chmod(pa, 0o644); write(pa, rand(UInt8, 300)); chmod(pa, 0o444)
+            write(pa * ".meta", "$(stat(pa).size) $(stat(pa).mtime)")
+            found = bytes2hex(ATT.hash_file(pa))
+            rm(pb); rm(pb * ".meta")
+            @test ATT.verify(copy) === nothing                                  # not full: the attachments are not checked
+            e = try ATT.verify(copy; full = true); nothing catch e; e end
+            @test e isa ATT.AttachmentCacheError && e.chain_id == copy.head.chain_id
+            problems = ["$pa hashes to $found, not its name", "$pb is not in the attachment cache"]
+            ha < hb || reverse!(problems)                                       # in hash order
+            @test sprint(showerror, e) == "AttachmentCacheError: verify(copy; full = true): the attachment cache is " *
+                "damaged for attachments this copy confirmed: $(join(problems, "; ")). The cache is damaged, not the " *
+                "chain: repair!(copy) fetches them again (ADR-0046)."
+            # repair!: fetched again from the chain's store
+            empty!(store.calls)
+            @test ATT.repair!(copy) == (; slot = 0, files_rewritten = 0, attachments_repaired = 2)
+            @test read(pa) == a && read(pb) == b && filemode(pa) & 0o222 == 0
+            @test sort([c for c in store.calls if c[1] == :fetch_object_to]) == sort([(:fetch_object_to, "p/_attachments/$ha"), (:fetch_object_to, "p/_attachments/$hb")])
+            @test ATT.verify(copy; full = true) === nothing
+            # a sidecar that disagrees with a file that hashes right: the sidecar is rewritten, nothing fetched
+            write(pa * ".meta", "0 0.0")
+            @test_throws "its sidecar $pa.meta records \"0 0.0\"" ATT.verify(copy; full = true)
+            empty!(store.calls)
+            @test ATT.repair!(copy).attachments_repaired == 1
+            @test !any(c -> c[1] == :fetch_object_to, store.calls) && ATT.attachment(copy, ha) == pa
+            # gone from the chain's store as well: repair! cannot bring it back
+            delete!(store.objects, "p/_attachments/$hb"); chmod(pb, 0o644); rm(pb)
+            @test_throws "attachment absent: the store of the chain at bkt/p holds no attachment p/_attachments/$hb" ATT.repair!(copy)
+        end
+    end
 end
