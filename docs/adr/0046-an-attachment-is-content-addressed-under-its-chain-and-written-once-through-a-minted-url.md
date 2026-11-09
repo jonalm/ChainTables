@@ -75,7 +75,13 @@ gateway bucket uses it; a locked one adds the KMS and lock headers.
      uploaded; on a locked bucket the reply carries `retain_until`. The
      current date is read with `GetObjectRetention`, never inferred from a
      refused `PutObjectRetention`, so a role that lacks the grant is
-     `502 s3_refused`, not taken as "already later".
+     `502 s3_refused`, not taken as "already later". A 4xx to
+     `PutObjectRetention` is followed by a second `GetObjectRetention` (#92):
+     a concurrent touch whose later date landed between the read and the put
+     makes COMPLIANCE refuse the earlier one with 403. If the date read again
+     is at or past the target, the reply is `200 present` with it; else the
+     refusal stands, so a role lacking the grant is still `502 s3_refused`
+     unless another writer has meanwhile retained the version long enough.
    - **Absent**: it replies with a presigned PUT, signed under its own role,
      whose signed headers are `x-amz-checksum-sha256` = the **base64** of the
      digest (as the slot put sends it, not the hex), `If-None-Match: *`,

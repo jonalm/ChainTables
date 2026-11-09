@@ -371,6 +371,40 @@ def test_extending_the_retention_failing_is_s3_error(locked, s3):
     assert (st, out["code"]) == (502, "s3_error")
 
 
+@pytest.mark.parametrize("stored", [present_target(), present_target() + timedelta(seconds=7)], ids=["at", "past"])
+def test_a_refused_extension_that_a_concurrent_touch_already_made_is_present(locked, s3, caplog, stored):
+    # B's later PutObjectRetention lands first; COMPLIANCE refuses A's earlier date with 403
+    s3.head_present(KEY)
+    s3.retention_is(KEY, NOW)
+    s3.retention_set_fails(KEY, present_target(), 403, "AccessDenied")
+    s3.retention_is(KEY, stored)
+    status, out = parse(locked.handle(mint_event()))
+    assert (status, out["code"]) == (200, "present")
+    assert out["retain_until"] == iso(stored)
+    assert (f"present {KEY} by alice@example.com (5 bytes, retain-until {iso(stored)}, already later after a "
+            "refused extension)") in caplog.messages
+
+
+def test_a_refused_extension_still_short_of_the_target_is_s3_refused(locked, s3):
+    s3.head_present(KEY)
+    s3.retention_is(KEY, NOW)
+    s3.retention_set_fails(KEY, present_target(), 403, "AccessDenied")
+    s3.retention_is(KEY, present_target() - timedelta(seconds=1))
+    st, out = parse(locked.handle(mint_event()))
+    assert (st, out["code"]) == (502, "s3_refused")
+    assert "AccessDenied" in out["message"] and "PutObjectRetention" in out["message"]
+
+
+def test_a_refused_extension_whose_reread_fails_is_mapped_as_that_failure(locked, s3):
+    s3.head_present(KEY)
+    s3.retention_is(KEY, NOW)
+    s3.retention_set_fails(KEY, present_target(), 403, "AccessDenied")
+    s3.retention_fails(KEY, 500, "InternalError")
+    st, out = parse(locked.handle(mint_event()))
+    assert (st, out["code"]) == (502, "s3_error")
+    assert "GetObjectRetention" in out["message"]
+
+
 def test_transport_failure_on_head_is_s3_error():
     class Down:
         def head_object(self, **kw):

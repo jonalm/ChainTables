@@ -35,6 +35,8 @@ an empty body, the first failure winning:
 5. HEAD the key (S3 failures mapped as for the put: ``502 s3_refused`` / ``502 s3_error``).
    Present → ``200 present``; on a locked bucket the version's COMPLIANCE retain-until is
    read and moved to now + N + margin unless later, and the reply carries ``retain_until``.
+   A 4xx to that move is read again: a concurrent touch may already have set a date at or past
+   the target, which COMPLIANCE refuses to shorten, and then the reply is ``present`` with it.
    Absent → ``200 minted`` with ``url`` (regional host), ``expires`` and ``headers``, a flat
    object of the lowercase names and values the URL signs, which the client sends exactly
    (``content-type``, ``content-length``, ``if-none-match``, the base64
@@ -520,6 +522,33 @@ class Gateway:
         now = self.now().astimezone(timezone.utc).replace(microsecond=0)
         target = (now + timedelta(days=self.lock.retention_days) + timedelta(seconds=self._wanted_seconds(size))
                   + COMMIT_ALLOWANCE)
+        current = self._retain_until(key, version)
+        if current >= target:
+            until, how = current, "already later"
+        else:
+            try:
+                self.s3.put_object_retention(Bucket=self.bucket, Key=key, VersionId=version,
+                                             Retention={"Mode": "COMPLIANCE", "RetainUntilDate": target})
+                until, how = target, "extended"
+            except ClientError as e:
+                # A concurrent touch may have set a later date between the read and this call, and
+                # COMPLIANCE refuses to shorten it (403, #92). Read again: at or past the target is
+                # what this call wanted; else the refusal stands.
+                status = e.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+                if not (isinstance(status, int) and 400 <= status < 500):
+                    raise s3_failure(e, f"PutObjectRetention of {key!r}")
+                current = self._retain_until(key, version)
+                if current < target:
+                    raise s3_failure(e, f"PutObjectRetention of {key!r}")
+                until, how = current, "already later after a refused extension"
+            except BotoCoreError as e:
+                raise s3_failure(e, f"PutObjectRetention of {key!r}")
+        log.info("present %s by %s (%d bytes, retain-until %s, %s)", key, name, size, iso_z(until), how)
+        return response(200, "present", f"attachment {key!r} is already stored and retained until {iso_z(until)}; "
+                                         "upload nothing", retain_until=iso_z(until))
+
+    def _retain_until(self, key: str, version: str) -> datetime:
+        """The version's COMPLIANCE retain-until date, read with GetObjectRetention."""
         try:
             retention = self.s3.get_object_retention(Bucket=self.bucket, Key=key, VersionId=version)["Retention"]
         except (ClientError, BotoCoreError) as e:
@@ -528,19 +557,7 @@ class Gateway:
             raise Refusal(502, "s3_refused", f"attachment {key!r} is retained in mode {retention.get('Mode')!r}, not "
                                              "COMPLIANCE: the bucket is not locked as the gateway was told; report it "
                                              "to the bucket's operator")
-        current = retention["RetainUntilDate"]
-        if current >= target:
-            until, how = current, "already later"
-        else:
-            try:
-                self.s3.put_object_retention(Bucket=self.bucket, Key=key, VersionId=version,
-                                             Retention={"Mode": "COMPLIANCE", "RetainUntilDate": target})
-            except (ClientError, BotoCoreError) as e:
-                raise s3_failure(e, f"PutObjectRetention of {key!r}")
-            until, how = target, "extended"
-        log.info("present %s by %s (%d bytes, retain-until %s, %s)", key, name, size, iso_z(until), how)
-        return response(200, "present", f"attachment {key!r} is already stored and retained until {iso_z(until)}; "
-                                         "upload nothing", retain_until=iso_z(until))
+        return retention["RetainUntilDate"]
 
     def _mint_absent(self, key: str, size: int, name: str) -> dict:
         clock = self.now()
