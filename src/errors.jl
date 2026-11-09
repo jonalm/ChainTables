@@ -341,7 +341,8 @@ GatewayMismatchError(msg; chain_id = nothing, slot = nothing, key = nothing, buc
 Raised by `put_attachment`: S3 refused the upload with `BadDigest` — the bytes sent do not
 hash to the `<h>` of the attachment's `key`, so the file changed between hashing and
 upload (ADR-0046). Nothing was stored. The next move: stop whatever writes the file, and
-put it again.
+put it again. `chain_id` is always `nothing`: `put_attachment` works on a `Chain`, and
+only a local copy knows its chain's id without reading the chain.
 """
 struct AttachmentChangedError <: ChainTablesError
     msg::String
@@ -357,7 +358,7 @@ Raised by `put_attachment` on a gateway bucket: S3 refused the upload because th
 gateway minted had expired, "Request has expired", before the upload began (ADR-0046).
 `expires` is the time the gateway gave, ISO 8601 in UTC. Nothing was stored. The next
 move: put the attachment again, which mints a new URL; if it recurs, check this machine's
-clock.
+clock. `chain_id` is always `nothing`, as for [`AttachmentChangedError`](@ref).
 """
 struct AttachmentURLExpiredError <: ChainTablesError
     msg::String
@@ -376,7 +377,8 @@ Raised by `touch_attachment` and `attachment`: the chain's store holds no attach
 move: whoever holds the file puts it again with `put_attachment(chain, file)`; a reader
 without it cannot. Also raised by `repair!(copy)`, once, after its pass, for every
 confirmed hash the store no longer holds: their markers were removed, and `key` is set
-only when there is one.
+only when there is one. `chain_id` is set by the copy-level calls, `attachment` and
+`repair!`, and is `nothing` from `touch_attachment`, which works on a `Chain`.
 """
 struct AttachmentAbsentError <: ChainTablesError
     msg::String

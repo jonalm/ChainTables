@@ -279,6 +279,9 @@ report's `attachments_repaired`. `attachment` and `repair!` retry as
 ### Errors
 
 Each has a message test (ADR-0020); the names are settled with the code.
+`chain_id` is filled only by the calls on a local copy, `attachment` and
+`repair!`: `put_attachment` and `touch_attachment` work on a `Chain`, whose id
+is known only by reading the chain, which a write does not need.
 
 - The file changed between hashing and upload: `AttachmentChangedError`, for
   S3's `BadDigest` on a minted URL and its `XAmzContentSHA256Mismatch` on a
