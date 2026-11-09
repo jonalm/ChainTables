@@ -40,6 +40,16 @@ def test_reserved_name_under_an_allowed_prefix_is_not_a_slot(gateway):
     assert "12" in body["message"]
 
 
+@pytest.mark.parametrize("key", ["/teams/alpha/000000000003", "/000000000003"])
+def test_slot_key_with_a_leading_slash_is_not_a_slot(key):
+    import handler as gw
+    from tests.conftest import BUCKET
+    g = gw.Gateway(policy=gw.Policy.from_dict({"format_version": 1, "rules": [{"prefix": "*", "writers": ["w"]}]}),
+                   bucket=BUCKET, s3=object())
+    status, body = parse(g.handle(event(key=key, user_arn=f"arn:aws:sts::{ACCOUNT}:assumed-role/r/w")))
+    assert (status, body["code"]) == (400, "not_a_slot")
+
+
 def test_slot_key_with_a_trailing_newline_is_not_a_slot(gateway):
     status, body = parse(gateway.handle(event(key="teams/alpha/000000000003\n")))
     assert (status, body["code"]) == (400, "not_a_slot")
@@ -62,6 +72,9 @@ CAROL_ARN = f"arn:aws:sts::{ACCOUNT}:assumed-role/AWSReservedSSO_chaintables-wri
     ("teams/" + "x" * 95 + "/000000000000", "over 100"),
     ("teams/" + "x" * 1100 + "/000000000000", "over 100"),   # S3 would refuse the key, not the deployment
     ("teams/_attachments/000000000000", "'_attachments', which is reserved for a chain's attachments"),
+    ("teams/\uff41/000000000000", "contains '\uff41'"),   # fullwidth a
+    ("teams/\u0430/000000000000", "contains '\u0430'"),   # Cyrillic a
+    ("teams/\u00e9/000000000000", "contains '\u00e9'"),
     ("teams/_attachments/x/000000000000", "'_attachments', which is reserved for a chain's attachments"),
 ])
 def test_prefix_a_client_refuses_is_not_a_slot(gateway, key, problem):

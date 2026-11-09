@@ -278,6 +278,14 @@ def test_a_malformed_attachment_key_is_checked_against_the_key_up_to_its_last_sl
     assert "'teams/alpha/_attachments'" in out["message"]
 
 
+def test_a_present_attachment_without_a_version_id_on_a_locked_bucket_is_s3_refused(locked, s3):
+    # a locked bucket is versioned: no version id means the gateway fronts another bucket
+    s3.stubber.add_response("head_object", {"ContentLength": 5}, {"Bucket": BUCKET, "Key": KEY})
+    st, out = parse(locked.handle(mint_event()))
+    assert (st, out["code"]) == (502, "s3_refused")
+    assert "no version id" in out["message"]
+
+
 def test_a_retention_not_in_compliance_mode_is_s3_refused(locked, s3):
     s3.head_present(KEY)
     s3.stubber.add_response("get_object_retention",
@@ -317,6 +325,28 @@ def test_an_attachment_of_a_chain_under_an_attachments_segment_is_not_a_slot(pla
     status, out = parse(plain.handle(mint_event(key=key, user_arn=arn("carol@example.com"))))
     assert (status, out["code"]) == (400, "not_a_slot")
     assert "'_attachments', which is reserved for a chain's attachments" in out["message"]
+
+
+@pytest.mark.parametrize("key, problem", [
+    (f"teams/../_attachments/{H}", "names a directory relative to its parent"),
+    (f"teams//_attachments/{H}", "neither a slot nor an attachment"),  # the key regex refuses a prefix ending in '/'
+    (f"teams//x/_attachments/{H}", "is empty"),
+    (f"teams/\uff41/_attachments/{H}", "contains '\uff41'"),   # fullwidth a
+    (f"teams/\u0430/_attachments/{H}", "contains '\u0430'"),   # Cyrillic a
+    (f"teams/\u00e9/_attachments/{H}", "contains '\u00e9'"),
+])
+def test_an_attachment_under_a_path_trick_is_not_a_slot(plain, key, problem):
+    status, out = parse(plain.handle(mint_event(key=key, user_arn=arn("carol@example.com"))))
+    assert (status, out["code"]) == (400, "not_a_slot")
+    assert problem in out["message"]
+
+
+def test_an_attachment_key_with_a_leading_slash_is_not_an_attachment(s3):
+    # the chain would be "" (root rule) up to its '/'; the key regex refuses an empty first segment
+    g = gw.Gateway(policy=gw.Policy.from_dict({"format_version": 1, "rules": [{"prefix": "*", "writers": ["w"]}]}),
+                   bucket=BUCKET, s3=s3.client, now=lambda: NOW, started=YOUNG)
+    status, out = parse(g.handle(mint_event(key=f"/teams/_attachments/{H}", user_arn=arn("w"))))
+    assert (status, out["code"]) == (400, "not_a_slot")
 
 
 def test_an_attachment_under_a_prefix_a_client_refuses_is_not_a_slot(plain):
