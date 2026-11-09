@@ -36,7 +36,10 @@ address. The integrity that hash keys would have provided is retained by carryin
 - **Clients never issue an S3 object deletion or an unconditional PUT** against a
   chain prefix. This is the one fork vector fully within our control, so it is closed
   by rule. (Deleting rows from the content is unaffected — that is an ordinary op,
-  and it makes the chain longer, not shorter.)
+  and it makes the chain longer, not shorter.) (*Amended by ADR-0046*: an
+  attachment is written once too, by `If-None-Match: *`, through a presigned PUT
+  the gateway mints or a direct conditional PUT on a plain bucket; neither is
+  unconditional, and neither writes a slot.)
 - **`seq` and `prev_hash` live inside the hashed envelope**, not only in the key.
   (**The envelope field is named `slot` per ADR-0006**, following the glossary;
   the 12-digit key and everything else here stands.)

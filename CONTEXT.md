@@ -57,7 +57,8 @@ _See_: [ADR-0032](docs/adr/0032-every-row-carries-the-slot-of-the-last-record-th
 Anything under a chain's prefix that is not a slot. Clients ignore reserved names,
 so whatever a later version of ChainTables keeps there cannot break an earlier one.
 _Avoid_: metadata object, sidecar, extra key. Distinct from a *head file*,
-which lives inside a local copy rather than in the bucket.
+which lives inside a local copy rather than in the bucket, and from an
+attachment cache entry's *sidecar*, a local file.
 _See_: [ADR-0011](docs/adr/0011-a-chain-is-flat-slot-keys-plus-reserved-names.md)
 
 **Attachment**:
@@ -65,6 +66,33 @@ An immutable object stored under a chain's prefix and named by the SHA-256 of
 its bytes, too large to belong in every local copy. A row refers to one by
 holding its hash; what the attachment means is the downstream package's.
 _Avoid_: blob, content object (*content* is the tables' state), file, payload
+_See_: [ADR-0046](docs/adr/0046-an-attachment-is-content-addressed-under-its-chain-and-written-once-through-a-minted-url.md)
+
+**Mint route**:
+The gateway's second route, `POST /mint`: given an attachment's key and size,
+it answers *present* — extending a locked bucket's retention — or *minted*, with
+a **minted URL**: a presigned PUT of exactly that key, the hash and
+`If-None-Match: *` among its signed headers, that the client streams the bytes
+to. The gateway never sees the bytes. Not to be confused with a *chain id*,
+which is minted in the plain sense of made up.
+_Avoid_: upload endpoint, signed URL route, presign
+_See_: [ADR-0046](docs/adr/0046-an-attachment-is-content-addressed-under-its-chain-and-written-once-through-a-minted-url.md)
+
+**Attachment cache**:
+The files of attachments this machine has fetched, one per hash, at
+`cache_dir/attachments/<h[1:2]>/<h>`, shared by every chain and bucket. Each is
+read-only and has a **sidecar**, `<h>.meta`, recording its size and mtime; a read
+checks the file against the sidecar, not the hash. Like the record cache it is
+never the chain's word: deleting any entry is safe, and the next read fetches it.
+_Avoid_: blob cache, download dir
+_See_: [ADR-0046](docs/adr/0046-an-attachment-is-content-addressed-under-its-chain-and-written-once-through-a-minted-url.md)
+
+**Confirmed attachment**:
+A hash a local copy has checked against its own chain's store, by HEAD or by
+download, recorded as an empty file `<copy>/confirmed/<h>`. A shared cache entry
+alone never stands in for the chain's word; `verify` and `repair!` cover only the
+confirmed hashes.
+_Avoid_: verified attachment, known hash
 _See_: [ADR-0046](docs/adr/0046-an-attachment-is-content-addressed-under-its-chain-and-written-once-through-a-minted-url.md)
 
 **Transaction record**:
@@ -234,7 +262,8 @@ _See_: [ADR-0010](docs/adr/0010-s3sqlite-owns-its-s3-client-and-its-record-cache
 
 **Object store**:
 The four operations ChainTables needs of a bucket — fetch one object, put one object
-only if its key is absent, stat one key, list a prefix. It is ChainTables's own seam,
+only if its key is absent, stat one key, list a prefix. Attachments add an internal
+streamed put and get beside them, not new operations of the seam (ADR-0046). It is ChainTables's own seam,
 so the real client and the in-process double are interchangeable, and it carries
 no delete.
 Put-if-absent is the load-bearing one: a store that overwrites instead of
@@ -246,8 +275,9 @@ _See_: [ADR-0010](docs/adr/0010-s3sqlite-owns-its-s3-client-and-its-record-cache
 **Gateway**:
 The one function that may fill a slot in a gateway bucket, and does so only
 after checking the author and the caller's right to the chain. It validates and
-never authors, reads no chain content, and is on the path of commits only —
-reads go to the bucket directly. Gatedness belongs to the bucket, never to the
+never authors, and reads no chain content. It is on the path of commits and of
+attachment writes — it mints their URLs and extends their retention, but never
+carries their bytes — and reads go to the bucket directly. Gatedness belongs to the bucket, never to the
 chain: a chain copied to a plain bucket is the same chain.
 _Avoid_: server, proxy, API, write service, gatekeeper, authoriser
 _See_: [ADR-0028](docs/adr/0028-a-gateway-bucket-verifies-the-author-and-nothing-else.md)

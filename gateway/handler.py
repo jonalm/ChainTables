@@ -190,8 +190,9 @@ class Policy:
                    {"prefix": "teams/*",     "writers": ["carol@example.com"]},
                    {"prefix": "",            "writers": ["root-writer"]}]}
 
-    ``prefix`` is a glob matched case-sensitively against the whole chain prefix (the key
-    up to its last ``/``; ``""`` is the bucket root), where ``*`` matches any run of
+    ``prefix`` is a glob matched case-sensitively against the whole chain prefix (``""`` is
+    the bucket root): a slot's key up to its last ``/``, an attachment's part before
+    ``/_attachments/`` (``classify``), where ``*`` matches any run of
     characters including ``/``; ``*`` is the only wildcard, and a prefix holding ``?``,
     ``[`` or ``]`` is refused at load, since no chain prefix contains them (ADR-0034). A caller is allowed when any matching rule admits it:
     the rule lists its name (exactly, case-sensitively) and, where the rule has them, its

@@ -165,8 +165,13 @@ and `If-None-Match: *`; `412` is success. There is no retention to extend.
 The difference is internal dispatch, `put_attachment(store, key, io)`, as for
 `record_author(store)`, together with a streaming GET to a file.
 `Testing.InMemoryObjectStore` gets both. The transport gains a streaming PUT
-from a file and a streaming GET to a file, with timeouts that suit 5 GiB; today
-it holds bodies in memory and times out after 60 s.
+from a file and a streaming GET to a file. Neither holds the body in memory or
+has a total timeout, since how long 5 GiB takes depends on the link: the
+store's `timeout` is libcurl's stall window, seconds in which no byte moves,
+after which the transfer is a `TransportError` with no status. No redirect is
+followed: S3 redirecting a bucket's request means the region or host is wrong,
+which a retry elsewhere would hide. `touch_attachment(store, key)` dispatches
+the same way.
 
 ### Retention
 
@@ -346,8 +351,9 @@ a signed header, which S3 enforces like any other.
   too, by `If-None-Match`, but through a second write path, so
   `put_object_if_absent` is no longer the only write.
 - **ADR-0010 is amended in place**: attachments use internal streaming put and
-  get, not new verbs of the port, and are cached outside the record cache with
-  a first read that asks the store.
+  get, not new verbs of the port, and are cached apart from the records, in
+  `cache_dir/attachments/` beside the stores' namespaces, with a first read
+  that asks the store.
 - **ADR-0011 is amended in place**: `_attachments/<h>` is a reserved name the
   gateway admits.
 - **ADR-0020's table** gains the new types; `WriteRefusedError` and

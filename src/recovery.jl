@@ -84,7 +84,8 @@ end
 """
     verify(copy; full = false) -> nothing
 
-Check the local copy and raise `FingerprintMismatchError` on any failure (ADR-0020:
+Check the local copy and raise on any failure — `FingerprintMismatchError`, or with
+`full = true` `RecordCacheError` or `AttachmentCacheError` for a damaged cache (ADR-0020:
 a `Bool` would be ignorable); `nothing` on success. Local only, no network, and the
 head never moves (ADR-0014).
 

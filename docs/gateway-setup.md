@@ -37,8 +37,10 @@ is git-ignored). It says which caller names may fill slots under which chain pre
            {"prefix": "",            "writers": ["root-writer"]}]}
 ```
 
-- `prefix` is a glob matched case-sensitively against the whole chain prefix, which is the
-  slot key up to its last `/` (`""` is the bucket root). `*` matches any run of characters,
+- `prefix` is a glob matched case-sensitively against the whole chain prefix (`""` is the
+  bucket root). For a slot that is the key up to its last `/`; for an attachment,
+  `<prefix>/_attachments/<hash>`, it is the part before `/_attachments/`, so the rule that
+  lets a caller write a chain lets it write that chain's attachments, and no other's. `*` matches any run of characters,
   `/` included. `*` is the only wildcard: a prefix holding `?`, `[` or `]` is refused when the
   gateway loads the policy.
 - `writers` are caller names (next section), matched exactly and case-sensitively.
@@ -196,8 +198,8 @@ such as a locked bucket's denies (ADR-0037).
 
 The Deny is the guarantee: only the gateway can fill a slot, and an administrator with
 `s3:*` on the account cannot either. `DenyPresignedSlotPuts` keeps the gateway's own presigned
-URLs to attachment keys, so a gateway bug can never mint a working URL for a slot, which
-would bypass the author check (ADR-0046). The pattern cannot spell "64 lowercase hex": a
+URLs to attachment keys, so a gateway bug cannot mint a working URL for a slot, which
+would bypass the author check (ADR-0046), with one exception. The pattern cannot spell "64 lowercase hex": a
 slot under a contrived prefix whose last 64 characters span a `/`, such as
 `p/_attachments/<51 characters>/<12 digits>`, still matches, and only the gateway's own key
 check refuses it. What the policy does **not** prevent: an administrator
