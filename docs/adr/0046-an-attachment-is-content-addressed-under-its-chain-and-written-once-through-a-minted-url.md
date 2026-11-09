@@ -86,8 +86,8 @@ gateway bucket uses it; a locked one adds the KMS and lock headers.
      the global host `<bucket>.s3.amazonaws.com`, which answers a young bucket
      outside us-east-1 with `307`. In us-east-1 virtual addressing alone
      still signs the global host, which the gateway refuses to hand out, so
-     it also sets `us_east_1_regional_endpoint = "regional"`. The reply is `200 minted` with `url`,
-     `expires` and `headers`: a flat JSON object of the lowercase names and
+     it also sets `us_east_1_regional_endpoint = "regional"`. The reply is
+     `200 minted` with `url`, `expires` and `headers`: a flat JSON object of the lowercase names and
      values the URL signs, in botocore's own serialization, `host` excepted.
      The client reads it as it reads every reply, with no JSON parser; every
      value is ASCII with no quote. On a locked bucket it also carries
@@ -100,7 +100,10 @@ gateway bucket uses it; a locked one adds the KMS and lock headers.
    two it did.
 5. Before sending a byte, the client checks the URL: https, host the chain's
    bucket on its **regional** endpoint, path the expected key, method PUT,
-   and a query (the signature). It checks the headers too:
+   and a query (the signature). That holds whatever AWS endpoint or
+   addressing the chain reads with (path-style, FIPS, dual-stack): the
+   upload goes where the gateway signed it. Only a store that is not AWS (a
+   test's loopback) is expected at its own URL. It checks the headers too:
    `x-amz-checksum-sha256` the hash in base64, `if-none-match: *` and
    `content-length` the size. Without them S3 would store bytes no hash
    vouches for, overwrite the key, or take a body of another length.

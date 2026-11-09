@@ -218,6 +218,20 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             store = GWT.Testing.InMemoryObjectStore(), region = "eu-north-1", credentials = creds)
         @test_throws "record_user = false with a gateway: the gateway refuses a record with no author (ADR-0028)" Chain("bkt", "p";
             gateway = url, region = "eu-north-1", credentials = creds, record_user = false)
+        # a minted URL is expected where the gateway presigns: the bucket's regional virtual host
+        # whenever the store is AWS, whatever endpoint or addressing the reads use (ADR-0046)
+        h = "ab"^32
+        regional = "https://bkt.s3.eu-north-1.amazonaws.com/p/_attachments/$h"
+        for (endpoint, path_style) in ((nothing, false), (nothing, true), ("https://s3.eu-north-1.amazonaws.com", true),
+                                       ("https://s3.eu-north-1.amazonaws.com", false), ("https://s3-fips.eu-north-1.amazonaws.com", true),
+                                       ("https://s3.dualstack.eu-north-1.amazonaws.com", false))
+            aws = Chain("bkt", "p"; gateway = url, region = "eu-north-1", credentials = creds, endpoint, path_style).store
+            @test GWT.expected_attachment_url(aws, "p/_attachments/$h") == regional
+        end
+        # a store that is not AWS (a test's loopback) is expected at its own object URL
+        local_store = Chain("bkt", "p"; gateway = url, region = "eu-north-1", credentials = creds,
+                            endpoint = "http://127.0.0.1:9000", path_style = true).store
+        @test GWT.expected_attachment_url(local_store, "p/_attachments/$h") == "http://127.0.0.1:9000/bkt/p/_attachments/$h"
         # the URL is scheme://host[:port] and nothing more
         for bad in ("abc123.lambda-url.eu-north-1.on.aws", url * "/put", url * "?x=1", "ftp://x")
             @test_throws "gateway $(repr(bad)) is not of the form scheme://host[:port]" Chain("bkt", "p";

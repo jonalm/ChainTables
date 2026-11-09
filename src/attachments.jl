@@ -187,11 +187,12 @@ function minted_reply(url, body::Vector{UInt8})
 end
 
 # Where a minted URL must point (ADR-0046, ADR-0029): the chain's bucket on its regional
-# host, virtual-hosted — what the gateway presigns — whatever addressing the reads use;
-# a configured endpoint (a test's loopback) is the S3 half's own object URL.
+# host, virtual-hosted — what the gateway presigns — whatever endpoint or addressing the
+# reads use, so an AWS endpoint (path-style, FIPS, dual-stack) uploads there too; only a
+# store that is not AWS (a test's loopback) is expected at the S3 half's own object URL.
 function expected_attachment_url(store::GatewayObjectStore, key::AbstractString)
     s3 = store.s3
-    s3.endpoint === nothing || return s3.base * object_path(s3, key)
+    is_aws(s3) || return s3.base * object_path(s3, key)
     return "https://$(s3.bucket).s3.$(s3.region).amazonaws.com/" * uri_encode(key; keep_slash = true)
 end
 
