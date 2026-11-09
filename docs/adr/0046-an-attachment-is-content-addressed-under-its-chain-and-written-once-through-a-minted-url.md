@@ -112,7 +112,9 @@ gateway bucket uses it; a locked one adds the KMS and lock headers.
    other `x-amz-*` header: S3 refuses one that is not signed (`403`, "headers
    present in the request which were not signed"). It follows no redirect. A
    `412` means another writer won the race; the client asks the mint route
-   again, which finds it present and extends the retention.
+   again, which finds it present and extends the retention. A second
+   `minted` is `GatewayMismatchError`, as in `touch_attachment`: the gateway
+   checks another bucket than its URLs write.
 7. The client HEADs the key in the chain's bucket. Absent:
    `GatewayMismatchError`, as for a slot (ADR-0029).
 

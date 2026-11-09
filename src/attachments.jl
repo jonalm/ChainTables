@@ -100,7 +100,8 @@ ADR-0046's write on a gateway bucket:
    [`GatewayMismatchError`](@ref), before a byte is sent.
 3. A streamed PUT to it with exactly the reply's headers, following no redirect. `412`:
    another writer stored it first, and the mint is asked again, which must answer
-   `present` and so extends the retention.
+   `present` and so extends the retention — else [`GatewayMismatchError`](@ref), as
+   for `touch_attachment`: the gateway checks another bucket.
 4. A HEAD of the key in this chain's bucket, which must hold it at this size — else
    [`GatewayMismatchError`](@ref): the gateway fills another bucket.
 
@@ -123,9 +124,11 @@ function put_attachment(store::GatewayObjectStore, key::AbstractString, io::IO)
         uploaded = upload_minted(store, key, io, size, reply)
         if !uploaded
             again = mint(store, key, size)
-            again.code == "present" || throw(TransportError("POST $(store.function_url)/mint: S3 refused the upload of " *
-                "$key as present (412), and the gateway's mint then found it absent and answered $(again.code); the " *
-                "gateway and S3 disagree about its own bucket, which a retry cannot settle"; status = 200))
+            again.code == "present" || throw(GatewayMismatchError("gateway mismatch: S3 refused the upload of $key to " *
+                "bucket $(store.s3.bucket) as already present (412), and the gateway at $(store.function_url) then found " *
+                "it absent and minted another URL: the gateway checks another bucket than the one its URLs and this " *
+                "chain write. Pair the bucket with its own gateway — one ChainTables.Bucket value holds both (ADR-0029, " *
+                "ADR-0046)."; key, bucket = store.s3.bucket, gateway = store.function_url))
         end
         confirm_attachment(store, key, size)
         return uploaded

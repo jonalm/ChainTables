@@ -412,6 +412,15 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             nm = count(r -> r.rawpath == "/mint", gw.requests)
             @test !GWT.put_attachment(store, ko, IOBuffer(other))
             @test count(r -> r.rawpath == "/mint", gw.requests) == nm + 2 && s3.objects[ko] == other
+            # S3 refuses the upload as present (412), and the gateway's second mint still finds it absent:
+            # its HEADs go to another bucket than the one its URLs point at — a gateway mismatch
+            double.respond = req -> req.rawpath == "/mint" ? gwtest_minted(s3, ko, 100) : nothing
+            e = try GWT.put_attachment(store, ko, IOBuffer(other)); nothing catch e; e end
+            @test e isa GWT.GatewayMismatchError && e.key == ko && e.bucket == "bkt" && e.gateway == loopback_url(gw)
+            @test sprint(showerror, e) == "GatewayMismatchError: gateway mismatch: S3 refused the upload of $ko to bucket " *
+                "bkt as already present (412), and the gateway at $(loopback_url(gw)) then found it absent and minted " *
+                "another URL: the gateway checks another bucket than the one its URLs and this chain write. Pair the " *
+                "bucket with its own gateway — one ChainTables.Bucket value holds both (ADR-0029, ADR-0046)."
             double.respond = _ -> nothing
             # bytes that do not hash to the key: S3's BadDigest, nothing stored
             bad = "p/_attachments/" * "0"^64
