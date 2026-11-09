@@ -448,8 +448,8 @@ function damaged_entry(chain_id, key, path, recorded, found)
     st = stat(path)
     return AttachmentCacheError("attachment cache: the cached file $path is $(st.size) bytes modified at $(st.mtime) " *
         "and hashes to $found, not to its name; its sidecar $path.meta records $(repr(recorded)). The file was " *
-        "changed: repair!(copy) checks it and fetches it again, and deleting $path and $path.meta is always safe " *
-        "(ADR-0046)."; chain_id, key, path)
+        "changed after it was cached. The cache is damaged, not the chain: deleting $path and $path.meta is always " *
+        "safe, and the next read fetches it again (ADR-0046)."; chain_id, key, path)
 end
 
 # A cache hit whose HEAD gives another size than the cached file's: one side is wrong, and

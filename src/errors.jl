@@ -411,8 +411,9 @@ Raised by `attachment` and `verify(copy; full = true)`: the attachment cache's f
 `path` does not hash to its name — found by `attachment` when the file is not what its
 sidecar records, or a cache hit's HEAD gives another size (ADR-0046). A file that does
 hash to its name has its sidecar rewritten instead.
-The attachment cache is damaged, not the chain. The next move: `repair!(copy)`, which
-checks the file and fetches it again. Deleting the file and its `.meta` is always safe.
+The attachment cache is damaged, not the chain. The next move: delete the file and its
+`.meta`, which is always safe; the next read fetches it again. From `verify`, `repair!(copy)`
+does that for every hash the copy confirmed.
 """
 struct AttachmentCacheError <: ChainTablesError
     msg::String

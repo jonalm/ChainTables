@@ -289,7 +289,10 @@ Each has a message test (ADR-0020); the names are settled with the code.
   `AttachmentDigestError`, never retried.
 - A damaged cache file: `AttachmentCacheError`, from a read or `verify(copy;
   full = true)`, including a cache hit whose HEAD gives another size and whose
-  file does not hash to `<h>`.
+  file does not hash to `<h>`. A read's message says to delete the file and
+  its `.meta` and read again, not `repair!`: `repair!` covers only confirmed
+  hashes, so on a copy that never confirmed `<h>` it would change nothing and
+  the same error would come back.
 - `attachment` on a store that lacks the hash: `AttachmentAbsentError`, whose
   message tells a reader that only someone holding the file can put it again.
 - A gateway with no mint route: `WriteRefusedError` with `reason =

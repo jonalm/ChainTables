@@ -324,9 +324,18 @@ const ATT = ChainTables
             @test e isa ATT.AttachmentCacheError && e.path == path && e.chain_id == copy.head.chain_id
             @test sprint(showerror, e) == "AttachmentCacheError: attachment cache: the cached file $path is $(st.size) " *
                 "bytes modified at $(st.mtime) and hashes to $found, not to its name; its sidecar $path.meta records " *
-                "\"$meta\". The file was changed: repair!(copy) checks it and fetches it again, and deleting $path and " *
-                "$path.meta is always safe (ADR-0046)."
+                "\"$meta\". The file was changed after it was cached. The cache is damaged, not the chain: deleting " *
+                "$path and $path.meta is always safe, and the next read fetches it again (ADR-0046)."
             @test isempty(store.calls)
+            # as the message says, on a copy that never confirmed the hash too: deleted, then fetched again
+            unconfirmed = ATT.open(chain, joinpath(dir, "unconfirmed"))
+            ATT.sync!(unconfirmed)
+            @test_throws ATT.AttachmentCacheError ATT.attachment(unconfirmed, h)
+            chmod(path, 0o644); rm(path); rm(path * ".meta")
+            @test read(ATT.attachment(unconfirmed, h)) == bytes
+            close(unconfirmed)
+            chmod(path, 0o644); write(path, rand(UInt8, 101)); chmod(path, 0o444)
+            empty!(store.calls)
             # a cached file with no sidecar is absent: fetched again over the read-only file
             rm(path * ".meta")
             @test read(ATT.attachment(copy, h)) == bytes && store.calls == [(:fetch_object_to, "p/_attachments/$h")]

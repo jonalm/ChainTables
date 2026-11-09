@@ -32,7 +32,7 @@ function to call, where there is one.
 | `AttachmentURLExpiredError` | put_attachment | the URL the gateway minted expired before the upload began: put the attachment again, which mints a new one; if it recurs, check the clock (ADR-0046) |
 | `AttachmentAbsentError` | touch_attachment, attachment | the chain's store holds no such attachment — never put, or deleted after its retention ended: whoever holds the file puts it again; a reader without it cannot (ADR-0046) |
 | `AttachmentDigestError` | attachment, repair! | the store returned bytes that do not hash to the attachment's key; nothing was cached: stop, the bucket was written from outside the protocol (ADR-0046) |
-| `AttachmentCacheError` | attachment, verify (full) | the attachment cache's file does not hash to its name (a file that does, beside a sidecar that disagrees, has the sidecar rewritten): `repair!(copy)`; deleting the entry is always safe (ADR-0046) |
+| `AttachmentCacheError` | attachment, verify (full) | the attachment cache's file does not hash to its name (a file that does, beside a sidecar that disagrees, has the sidecar rewritten): delete the file and its `.meta`, always safe, and the next read fetches it again; from `verify`, `repair!(copy)` does that for the confirmed hashes (ADR-0046) |
 
 ADR-0023 and ADR-0014 both close by saying each failure must be
 *distinguishable* and that the names were issue #16's. This is that list
