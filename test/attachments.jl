@@ -414,17 +414,20 @@ const ATT = ChainTables
             @test ATT.verify(copy) === nothing                                  # not full: the attachments are not checked
             e = try ATT.verify(copy; full = true); nothing catch e; e end
             @test e isa ATT.AttachmentCacheError && e.chain_id == copy.head.chain_id
-            problems = ["$pa hashes to $found, not its name", "$pb is not in the attachment cache"]
-            ha < hb || reverse!(problems)                                       # in hash order
+            # an entry that is gone is not damage: deleting one is always safe, and the next read fetches it
             @test sprint(showerror, e) == "AttachmentCacheError: verify(copy; full = true): the attachment cache is " *
-                "damaged for attachments this copy confirmed: $(join(problems, "; ")). The cache is damaged, not the " *
-                "chain: repair!(copy) fetches them again (ADR-0046)."
+                "damaged for attachments this copy confirmed: $pa hashes to $found, not its name. The cache is damaged, " *
+                "not the chain: repair!(copy) fetches them again (ADR-0046)."
             # repair!: fetched again from the chain's store
             empty!(store.calls)
             @test ATT.repair!(copy) == (; slot = 0, files_rewritten = 0, attachments_repaired = 2)
             @test read(pa) == a && read(pb) == b && filemode(pa) & 0o222 == 0
             @test sort([c for c in store.calls if c[1] == :fetch_object_to]) == sort([(:fetch_object_to, "p/_attachments/$ha"), (:fetch_object_to, "p/_attachments/$hb")])
             @test ATT.verify(copy; full = true) === nothing
+            # the attachment cache cleared: verify passes, and the next read fetches again
+            rm(joinpath(cache_dir, "attachments"); recursive = true)
+            @test ATT.verify(copy; full = true) === nothing
+            @test read(ATT.attachment(copy, ha)) == a && read(ATT.attachment(copy, hb)) == b
             # a sidecar that disagrees with a file that hashes right: the sidecar is rewritten, nothing fetched
             write(pa * ".meta", "0 0.0")
             @test ATT.verify(copy; full = true) === nothing                    # not damage: the next read heals it

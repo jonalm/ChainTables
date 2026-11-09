@@ -106,9 +106,10 @@ check is local, so a record the cache lacks, or a cached record whose bytes do n
 to what the chain names, stops it with `RecordCacheError` naming the file: the record
 cache is damaged, not the chain, and `repair!(copy)` fetches the record again (ADR-0040).
 Last, on success, every attachment the copy confirmed (`<copy>/confirmed/<h>`) is hashed
-in the attachment cache: one that is missing or does not hash to its name is
-`AttachmentCacheError`, and `repair!(copy)` fetches it again (ADR-0046). One that hashes
-right but differs from its sidecar is sound: the next read rewrites the sidecar.
+in the attachment cache: one that does not hash to its name is `AttachmentCacheError`,
+and `repair!(copy)` fetches it again (ADR-0046). One that hashes right but differs from
+its sidecar is sound: the next read rewrites the sidecar. One that is missing is not
+damage: deleting an entry is always safe, and the next read fetches it again.
 """
 function verify(copy::LocalCopy; full = false)
     check_open(copy)

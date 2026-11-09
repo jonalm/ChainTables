@@ -592,10 +592,12 @@ confirmed_hashes(copy::LocalCopy) = (d = joinpath(copy.path, "confirmed");
     isdir(d) ? sort!(filter(f -> occursin(ATTACHMENT_HASH, f), readdir(d))) : String[])
 
 # What is wrong with the cache entry of `h`, hashing the file, or `nothing`. A file that
-# hashes right is sound whatever its sidecar says: the next read rewrites the sidecar.
+# hashes right is sound whatever its sidecar says: the next read rewrites the sidecar. An
+# entry that is gone is not damage — deleting one is always safe, and the next read
+# fetches it again.
 function attachment_problem(cache::RecordCache, h::String)
     path = attachment_cache_path(cache, h)
-    cache_entry(path) === :absent && return "$path is not in the attachment cache"
+    cache_entry(path) === :absent && return nothing
     found = bytes2hex(hash_file(path))
     found == h || return "$path hashes to $found, not its name"
     return nothing

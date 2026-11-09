@@ -242,7 +242,9 @@ renames in was hashed first, so no race heals a wrong file. A file that does
 not hash to `<h>` is `AttachmentCacheError`, not fetched again in place as a
 record is (ADR-0040): a re-fetch can be 5 GiB inside a read, and the store may
 no longer hold the key. `verify(copy; full = true)` counts a file that hashes
-right as sound whatever its sidecar says, and writes nothing. On Windows,
+right as sound whatever its sidecar says, and an entry that is gone as no
+damage, since deleting one is always safe and the next read fetches it again;
+it writes nothing. On Windows,
 Julia opens a file without delete sharing, so while a heal, a `verify` or a
 reader holds the file open, a concurrent fill's removal of the old file fails
 and that fill raises; running it again settles it.
