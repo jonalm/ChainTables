@@ -374,7 +374,9 @@ AttachmentURLExpiredError(msg; chain_id = nothing, key = nothing, expires = noth
 Raised by `touch_attachment` and `attachment`: the chain's store holds no attachment at
 `key` — it was never put, or its retention ended and it was deleted (ADR-0046). The next
 move: whoever holds the file puts it again with `put_attachment(chain, file)`; a reader
-without it cannot.
+without it cannot. Also raised by `repair!(copy)`, once, after its pass, for every
+confirmed hash the store no longer holds: their markers were removed, and `key` is set
+only when there is one.
 """
 struct AttachmentAbsentError <: ChainTablesError
     msg::String

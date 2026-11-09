@@ -617,9 +617,14 @@ function verify_attachments(copy::LocalCopy, chain::Chain)
 end
 
 # `repair!(copy)`'s pass: an entry whose file hashes right gets its sidecar rewritten;
-# any other is removed and fetched again from the chain's store. Returns the count.
+# any other is removed and fetched again from the chain's store. Returns the count. A hash
+# the store no longer holds cannot be repaired: the pass goes on, then the markers of all
+# such hashes are removed — the copy's word that the chain holds them no longer stands —
+# and one `AttachmentAbsentError` names them, so the next `repair!` and `verify` pass
+# instead of failing on them for ever.
 function repair_attachments!(copy::LocalCopy, chain::Chain)
     repaired = 0
+    gone = String[]
     for h in confirmed_hashes(copy)
         path = attachment_cache_path(chain.cache, h)
         if cache_entry(path) === :ok
@@ -631,9 +636,24 @@ function repair_attachments!(copy::LocalCopy, chain::Chain)
         rm(sidecar_path(path); force = true)
         isfile(path) && (chmod(path, 0o644); rm(path))
         key = attachment_key(chain, h)
-        fill_attachment!(chain, copy.head.chain_id, key, h, path) ||
-            throw(absent_for_reader(chain, copy.head.chain_id, key))
-        repaired += 1
+        if fill_attachment!(chain, copy.head.chain_id, key, h, path)
+            repaired += 1
+        else
+            push!(gone, key)
+            rm(confirmed_path(copy, h))
+        end
     end
+    isempty(gone) || throw(gone_from_store(chain, copy.head.chain_id, gone))
     return repaired
+end
+
+function gone_from_store(chain::Chain, chain_id, keys::Vector{String})
+    one = length(keys) == 1
+    return AttachmentAbsentError("attachment absent: repair!(copy) found that the store of the chain at " *
+        "$(location(chain)) no longer holds $(length(keys)) attachment$(one ? "" : "s") this copy had confirmed: " *
+        "$(join(keys, ", ")). $(one ? "Its retention ended and it was" : "Their retention ended and they were") " *
+        "deleted, or the bucket was written from outside the protocol. $(one ? "Its" : "Their") confirmed " *
+        "marker$(one ? " was" : "s were") removed, so a read of one raises this again and verify no longer covers " *
+        "$(one ? "it" : "them"); the rest of the repair ran. Only someone holding a file can bring it back, with " *
+        "put_attachment(chain, file) (ADR-0046)."; chain_id, key = one ? only(keys) : nothing)
 end

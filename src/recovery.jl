@@ -215,9 +215,10 @@ rather than raising: it succeeded at something the user asked for (ADR-0020).
 
 Then the attachments the copy confirmed (ADR-0046): a cache entry whose file hashes to
 its name but differs from its sidecar has the sidecar rewritten; a missing or damaged one
-is fetched again from the chain's store — `AttachmentAbsentError` if the store lacks it,
-`AttachmentDigestError` if its bytes do not hash right. `attachments_repaired` counts
-both.
+is fetched again from the chain's store — `AttachmentDigestError` if its bytes do not hash
+right. `attachments_repaired` counts both. Hashes the store no longer holds do not stop
+the pass: their `confirmed/<h>` markers are removed, and then one `AttachmentAbsentError`
+names them all, so the next `repair!` and `verify` do not fail on them again.
 
 A copy with no readable head never opens, so it cannot reach here: the error at `open`
 says to delete the directory and sync again. A fresh, unbound copy has nothing to repair.

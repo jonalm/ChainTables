@@ -297,6 +297,10 @@ Each has a message test (ADR-0020); the names are settled with the code.
   the same error would come back.
 - `attachment` on a store that lacks the hash: `AttachmentAbsentError`, whose
   message tells a reader that only someone holding the file can put it again.
+  `repair!` raises it too, once, after finishing its pass, naming every
+  confirmed hash the store no longer holds. It removes their markers first:
+  keeping them would make every later `repair!` raise and stop at the first,
+  and every `verify(copy; full = true)` fail, with nothing the reader can do.
 - A gateway with no mint route: `WriteRefusedError` with `reason =
   "no_mint_route"`, recognised by the old gateway's `400 bad_request` text "is
   not the gateway's one route"; the message says to redeploy it. Any other

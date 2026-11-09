@@ -435,9 +435,34 @@ const ATT = ChainTables
             empty!(store.calls)
             @test ATT.repair!(copy).attachments_repaired == 1
             @test !any(c -> c[1] == :fetch_object_to, store.calls) && ATT.attachment(copy, ha) == pa
-            # gone from the chain's store as well: repair! cannot bring it back
+            # gone from the chain's store as well: repair! cannot bring them back. It finishes the pass —
+            # a damaged entry the store still holds is fetched again — then drops the markers of the
+            # absent ones and raises once, naming each; the next repair! and verify pass
+            c = rand(UInt8, 50); hc = ATT.put_attachment(chain, IOBuffer(c)); pc = ATT.attachment(copy, hc)
+            for h in (ha, hc)
+                delete!(store.objects, "p/_attachments/$h")
+                p = ATT.attachment_cache_path(chain.cache, h); chmod(p, 0o644); rm(p)
+            end
+            chmod(pb, 0o644); write(pb, rand(UInt8, 400)); chmod(pb, 0o444)
+            gone = sort([ha, hc])
+            e = try ATT.repair!(copy); nothing catch e; e end
+            @test e isa ATT.AttachmentAbsentError && e.chain_id == copy.head.chain_id && e.key === nothing
+            @test sprint(showerror, e) == "AttachmentAbsentError: attachment absent: repair!(copy) found that the store " *
+                "of the chain at bkt/p no longer holds 2 attachments this copy had confirmed: " *
+                "$(join(("p/_attachments/" * h for h in gone), ", ")). Their retention ended and they were deleted, or " *
+                "the bucket was written from outside the protocol. Their confirmed markers were removed, so a read of one " *
+                "raises this again and verify no longer covers them; the rest of the repair ran. Only someone holding a " *
+                "file can bring it back, with put_attachment(chain, file) (ADR-0046)."
+            @test read(pb) == b                                                 # the pass went on
+            @test !isfile(joinpath(copy.path, "confirmed", ha)) && !isfile(joinpath(copy.path, "confirmed", hc))
+            @test ATT.repair!(copy).attachments_repaired == 0 && ATT.verify(copy; full = true) === nothing
+            @test_throws ATT.AttachmentAbsentError ATT.attachment(copy, ha)
+            # one alone is named in the error's key
             delete!(store.objects, "p/_attachments/$hb"); chmod(pb, 0o644); rm(pb)
-            @test_throws "attachment absent: the store of the chain at bkt/p holds no attachment p/_attachments/$hb" ATT.repair!(copy)
+            e = try ATT.repair!(copy); nothing catch e; e end
+            @test e isa ATT.AttachmentAbsentError && e.key == "p/_attachments/$hb"
+            @test occursin("no longer holds 1 attachment this copy had confirmed: p/_attachments/$hb. Its retention ended " *
+                           "and it was deleted", sprint(showerror, e))
         end
     end
 end
