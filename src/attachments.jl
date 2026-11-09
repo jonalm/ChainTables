@@ -151,7 +151,7 @@ function mint(store::GatewayObjectStore, key::String, size::Int64)
     end
     if status == 403 || code == "s3_refused"
         reason = something(code, "forbidden")
-        throw(WriteRefusedError(refusal_message(store, key, reason, message); key, caller = store.author, reason))
+        throw(WriteRefusedError(refusal_message(store, key, reason, message; mint = true); key, caller = store.author, reason))
     end
     if status == 400 && code == "bad_request" && message !== nothing && occursin("is not the gateway's one route", message)
         throw(WriteRefusedError("write refused: the gateway at $(store.function_url) has no mint route, so it cannot " *

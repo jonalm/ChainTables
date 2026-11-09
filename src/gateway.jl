@@ -212,10 +212,11 @@ function created_in_our_bucket(store::GatewayObjectStore, key, body)
 end
 
 # The refusal's message (ADR-0020's three parts): what happened, the evidence, the next
-# move — which differs by `reason`, because who must act differs.
-function refusal_message(store::GatewayObjectStore, key, reason, message)
+# move — which differs by `reason`, because who must act differs. `mint`: refused on the
+# mint route, where the gateway's own S3 calls are not a put (ADR-0046).
+function refusal_message(store::GatewayObjectStore, key, reason, message; mint::Bool = false)
     caller = something(store.author, "<unresolved>")
-    where = "the gateway at $(store.function_url) refused to fill $key"
+    where = "the gateway at $(store.function_url) refused to $(mint ? "mint the upload of" : "fill") $key"
     if reason == "forbidden"
         return "write refused: AWS refused the invocation of $(store.function_url) for caller $caller before the gateway ran " *
                "(HTTP 403 with no gateway code)$(message === nothing ? "" : ": " * message). Either the request's " *
@@ -232,6 +233,10 @@ function refusal_message(store::GatewayObjectStore, key, reason, message)
                "$(message === nothing ? "" : ": " * message). client.user was resolved from sts:GetCallerIdentity and " *
                "the gateway saw another caller: a bug, or the credentials changed between the STS call and the put; " *
                "report it (ADR-0028)."
+    elseif reason == "s3_refused" && mint
+        return "write refused: $where — s3_refused$(message === nothing ? "" : ": " * message). S3 refused one of " *
+               "the gateway's own calls for the attachment — its HEAD, GetObjectRetention or PutObjectRetention — so " *
+               "the gateway's deployment is wrong and a retry cannot help: report it to the bucket's operator (ADR-0046)."
     elseif reason == "s3_refused"
         return "write refused: $where — s3_refused$(message === nothing ? "" : ": " * message). S3 refused the " *
                "gateway's own put, so the gateway's deployment is wrong and a retry cannot help: report it to the " *

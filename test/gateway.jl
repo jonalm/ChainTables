@@ -489,7 +489,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             double.caller = "bob@example.com"
             e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
             @test e isa WriteRefusedError && e.reason == "not_allowed" && e.key == kf
-            @test occursin("refused to fill $kf for caller <unresolved> — not_allowed: bob@example.com may not write under p", sprint(showerror, e))
+            @test occursin("refused to mint the upload of $kf for caller <unresolved> — not_allowed: bob@example.com may not write under p", sprint(showerror, e))
             double.caller = "alice@example.com"
             double.respond = req -> gwtest_json(400, "bad_request", "POST /mint is not the gateway's one route, PUT /?key=<slot key>")
             e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
@@ -497,7 +497,12 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             @test occursin("the gateway at $(loopback_url(gw)) has no mint route", sprint(showerror, e))
             @test occursin("ask the bucket's operator to redeploy it (gateway/deploy.sh)", sprint(showerror, e))
             double.respond = req -> gwtest_json(502, "s3_refused", "S3 answered 403 AccessDenied to the HEAD")
-            @test (try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end).reason == "s3_refused"
+            e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
+            @test e.reason == "s3_refused"
+            @test occursin("the gateway at $(loopback_url(gw)) refused to mint the upload of $kf — s3_refused: S3 answered " *
+                           "403 AccessDenied to the HEAD. S3 refused one of the gateway's own calls for the attachment — " *
+                           "its HEAD, GetObjectRetention or PutObjectRetention — so the gateway's deployment is wrong and " *
+                           "a retry cannot help: report it to the bucket's operator (ADR-0046).", sprint(showerror, e))
             for (status, code, retry) in ((503, "session_ending", true), (502, "s3_error", true), (413, "too_large", false), (400, "not_a_slot", false))
                 double.respond = req -> gwtest_json(status, code, "the gateway's word")
                 e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
