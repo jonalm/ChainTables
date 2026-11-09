@@ -84,7 +84,9 @@ gateway bucket uses it; a locked one adds the KMS and lock headers.
      `ContentLength`, ...) and adds no default checksum. The S3 client
      presigns with `addressing_style = "virtual"`: by default botocore signs
      the global host `<bucket>.s3.amazonaws.com`, which answers a young bucket
-     outside us-east-1 with `307`. The reply is `200 minted` with `url`,
+     outside us-east-1 with `307`. In us-east-1 virtual addressing alone
+     still signs the global host, which the gateway refuses to hand out, so
+     it also sets `us_east_1_regional_endpoint = "regional"`. The reply is `200 minted` with `url`,
      `expires` and `headers`: a flat JSON object of the lowercase names and
      values the URL signs, in botocore's own serialization, `host` excepted.
      The client reads it as it reads every reply, with no JSON parser; every

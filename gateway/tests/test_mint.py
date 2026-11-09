@@ -141,10 +141,15 @@ def test_a_global_host_is_a_deployment_bug_not_a_url():
         g.handle(mint_event())
 
 
-def test_the_deployed_client_presigns_on_the_regional_host(monkeypatch):
-    monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-north-1")
+@pytest.mark.parametrize("region", ["eu-north-1", "us-east-1"])
+def test_the_deployed_client_presigns_on_the_regional_host(monkeypatch, region):
+    # us-east-1 is the case that matters: there botocore's default is the global host
+    monkeypatch.setenv("AWS_DEFAULT_REGION", region)
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIATEST")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "secret")
     client = gw._s3_client()
-    assert client.meta.config.s3["addressing_style"] == "virtual"
+    url = client.generate_presigned_url("put_object", Params={"Bucket": "bkt", "Key": KEY}, ExpiresIn=900)
+    assert urlsplit(url).netloc == f"bkt.s3.{region}.amazonaws.com"
 
 
 # --- the URL's lifetime and its cap ---------------------------------------------------------

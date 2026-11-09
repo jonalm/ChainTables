@@ -5,7 +5,7 @@ import boto3, botocore
 from botocore.config import Config
 
 INIT = time.time()
-s3 = boto3.client("s3", config=Config(s3={"addressing_style": "virtual"}))  # regional host: the default global one 307s
+s3 = boto3.client("s3", config=Config(s3={"addressing_style": "virtual", "us_east_1_regional_endpoint": "regional"}))  # regional host, as the gateway's
 
 
 def handler(event, context):

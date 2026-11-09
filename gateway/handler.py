@@ -688,8 +688,9 @@ def _s3_client():
     import boto3  # imported here so the tests, which inject a client, never build one
     from botocore.config import Config
 
-    # virtual addressing presigns the bucket's regional host; the default global one 307s (ADR-0046)
-    return boto3.client("s3", config=Config(s3={"addressing_style": "virtual"}))
+    # virtual addressing presigns the bucket's regional host; the default global one 307s (ADR-0046).
+    # In us-east-1 botocore's default host is the global one, so ask for the regional one there too.
+    return boto3.client("s3", config=Config(s3={"addressing_style": "virtual", "us_east_1_regional_endpoint": "regional"}))
 
 
 def configure(environ=os.environ, s3=None) -> Gateway:
