@@ -13,10 +13,11 @@ import pytest
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def print_policies(*extra):
+def print_policies(*extra, retention_days="7"):
     out = subprocess.run(
         ["bash", os.path.join(HERE, "setup-locked-bucket.sh"), "--print-policies", "--account", "111122223333",
-         "--region", "eu-north-1", "--bucket", "bkt", "--role", "gw-role", "--alias", "alias/chaintables", *extra],
+         "--region", "eu-north-1", "--bucket", "bkt", "--role", "gw-role", "--alias", "alias/chaintables",
+         "--retention-days", retention_days, *extra],
         check=True, capture_output=True, text=True,
     ).stdout
     sections, title, lines = {}, None, []
@@ -64,7 +65,7 @@ def test_role_policy_grants_retention_on_the_bucket(policies):
 def test_bucket_policy_refuses_every_put_but_the_gateways_locked_kms_put(policies):
     s = by_sid(policies["bucket policy (bkt), merged onto what gateway/deploy.sh writes"])
     assert set(s) == {"GatewayPuts", "OnlyTheGatewayPuts", "DenyInsecureTransport", "DenyPresignedSlotPuts",
-                      "DenyNotKms", "DenyNoSseHeader", "DenyWrongKey", "DenyNoKeyHeader", "DenyNoRetainUntil", "DenyNotCompliance", "DenyNoLockMode",
+                      "DenyGatewayPresignedNonPuts", "DenyLongRetention", "DenyNotKms", "DenyNoSseHeader", "DenyWrongKey", "DenyNoKeyHeader", "DenyNoRetainUntil", "DenyNotCompliance", "DenyNoLockMode",
                       "DenyDeleteMarkers", "DenyLifecycleChanges"}
     assert s["GatewayPuts"]["Principal"]["AWS"] == "arn:aws:iam::111122223333:role/gw-role"
     assert s["OnlyTheGatewayPuts"]["Condition"] == {"ArnNotEquals": {"aws:PrincipalArn": "arn:aws:iam::111122223333:role/gw-role"}}
@@ -82,14 +83,42 @@ def test_bucket_policy_refuses_every_put_but_the_gateways_locked_kms_put(policie
 # An attachment key, as an IAM resource pattern: `?` is one character, so the hash is 64 of
 # them, and a slot (12 digits) never matches (ADR-0046).
 ATTACHMENTS = ["arn:aws:s3:::bkt/_attachments/" + "?" * 64, "arn:aws:s3:::bkt/*/_attachments/" + "?" * 64]
-DEPLOY_SIDS = {"GatewayPuts", "OnlyTheGatewayPuts", "DenyInsecureTransport", "DenyPresignedSlotPuts"}
-PRESIGNED_DENY = {"Sid": "DenyPresignedSlotPuts", "Effect": "Deny", "Principal": "*", "Action": "s3:PutObject",
-                  "NotResource": ATTACHMENTS, "Condition": {"StringEquals": {"s3:authType": "REST-QUERY-STRING"}}}
+DEPLOY_SIDS = {"GatewayPuts", "OnlyTheGatewayPuts", "DenyInsecureTransport", "DenyPresignedSlotPuts",
+               "DenyGatewayPresignedNonPuts"}
+# A presigned PUT also needs s3:PutObjectTagging (its signed tag) and, locked, s3:PutObjectRetention
+# (its lock headers), so both denies leave the three to the attachment keys (#92). Not REST-HEADER
+# covers a presigned URL (REST-QUERY-STRING) and a browser-form POST (POST).
+PUT_ACTIONS = ["s3:PutObject", "s3:PutObjectRetention", "s3:PutObjectTagging"]
+NOT_HEADER = {"StringNotEquals": {"s3:authType": "REST-HEADER"}}
+PRESIGNED_DENY = {"Sid": "DenyPresignedSlotPuts", "Effect": "Deny", "Principal": "*", "Action": PUT_ACTIONS,
+                  "NotResource": ATTACHMENTS, "Condition": NOT_HEADER}
+ROLE_PRESIGNED_DENY = {"Sid": "DenyGatewayPresignedNonPuts", "Effect": "Deny", "Principal": "*",
+                       "NotAction": PUT_ACTIONS, "Resource": ["arn:aws:s3:::bkt", "arn:aws:s3:::bkt/*"],
+                       "Condition": {"ArnEquals": {"aws:PrincipalArn": "arn:aws:iam::111122223333:role/gw-role"},
+                                     **NOT_HEADER}}
+
+
+def cap_statement(days):
+    return {"Sid": "DenyLongRetention", "Effect": "Deny", "Principal": "*",
+            "Action": ["s3:PutObject", "s3:PutObjectRetention"], "Resource": "arn:aws:s3:::bkt/*",
+            "Condition": {"NumericGreaterThan": {"s3:object-lock-remaining-retention-days": str(days)}}}
 
 
 def test_bucket_policy_denies_a_presigned_put_to_anything_but_an_attachment(policies):
     s = by_sid(policies["bucket policy (bkt), merged onto what gateway/deploy.sh writes"])
     assert s["DenyPresignedSlotPuts"] == PRESIGNED_DENY
+
+
+def test_bucket_policy_denies_the_gateway_role_every_presigned_action_but_a_put(policies):
+    s = by_sid(policies["bucket policy (bkt), merged onto what gateway/deploy.sh writes"])
+    assert s["DenyGatewayPresignedNonPuts"] == ROLE_PRESIGNED_DENY
+
+
+@pytest.mark.parametrize("days, cap", [("1", 4), ("30", 33)])
+def test_bucket_policy_caps_any_retention_at_the_retention_days_plus_3(days, cap):
+    # the gateway's latest date is N + about 1.5 d; COMPLIANCE cannot be undone, so nothing may go further
+    s = by_sid(print_policies(retention_days=days)["bucket policy (bkt), merged onto what gateway/deploy.sh writes"])
+    assert s["DenyLongRetention"] == cap_statement(cap)
 
 
 def test_role_policy_lets_the_gateway_read_an_attachments_retention(policies):
@@ -308,6 +337,17 @@ def test_deploy_denies_presigned_puts_outside_attachments(tmp_path):
     r, calls = run_deploy(tmp_path)
     assert r.returncode == 0, r.stderr
     assert by_sid(put_policy(calls))["DenyPresignedSlotPuts"] == PRESIGNED_DENY
+    assert by_sid(put_policy(calls))["DenyGatewayPresignedNonPuts"] == ROLE_PRESIGNED_DENY
+
+
+def test_deploy_and_print_policies_write_the_same_statements_from_one_generator(tmp_path):
+    import policies
+    r, calls = run_deploy(tmp_path, "--reader", W1)
+    assert r.returncode == 0, r.stderr
+    assert role_policy(calls, "chaintables-gateway-put") == policies.gateway_put("arn:aws:s3:::bkt")
+    deployed = by_sid(put_policy(calls))
+    printed = by_sid(print_policies("--reader", W1)["bucket policy (bkt), merged onto what gateway/deploy.sh writes"])
+    assert {sid: printed[sid] for sid in deployed} == deployed
 
 
 def test_deploy_smoke_proves_both_routes_are_in_the_deployed_zip(tmp_path):
@@ -430,7 +470,7 @@ def test_deploy_keeps_every_statement_it_does_not_own(tmp_path):
     assert r.returncode == 0, r.stderr
     after = by_sid(put_policy(calls))
     lock_denies = {sid: st for sid, st in by_sid(before).items() if sid.startswith("Deny") and sid not in DEPLOY_SIDS}
-    assert len(lock_denies) == 9
+    assert len(lock_denies) == 10
     for sid, st in lock_denies.items():
         assert after[sid] == st
     # its own statements are rewritten from the arguments: the stale Read3 is gone
@@ -522,7 +562,7 @@ def run_setup(tmp_path, *args, lock="Enabled", bucket_policy="", lambda_policy="
     env, log = fake_aws(tmp_path, lock, bucket_policy, lambda_policy)
     gw = tmp_path / "gw"
     gw.mkdir()
-    for name in ("setup-locked-bucket.sh", "deploy.sh", "handler.py"):
+    for name in ("setup-locked-bucket.sh", "deploy.sh", "handler.py", "policies.py"):
         shutil.copy(os.path.join(HERE, name), gw / name)
     (gw / "build.sh").write_text(BUILD_STUB)
     (gw / "build.sh").chmod(0o755)
@@ -547,7 +587,7 @@ def test_setup_on_a_fresh_locked_bucket_passes_its_own_verification(tmp_path):
     assert r.returncode == 0, r.stderr
     assert "ok: public access, ownership, versioning, Object Lock, SSE-KMS, bucket policy, lifecycle" in r.stdout
     assert set(by_sid(held)) == {"GatewayPuts", "OnlyTheGatewayPuts", "DenyInsecureTransport", "DenyPresignedSlotPuts",
-                                 "DenyNotKms",
+                                 "DenyGatewayPresignedNonPuts", "DenyLongRetention", "DenyNotKms",
                                  "DenyNoSseHeader", "DenyWrongKey", "DenyNoKeyHeader", "DenyNoRetainUntil",
                                  "DenyNotCompliance", "DenyNoLockMode", "DenyDeleteMarkers", "DenyLifecycleChanges"}
     # the lifecycle probe changes nothing even if it were let through: one disabled rule
@@ -609,15 +649,71 @@ def test_setup_grants_the_role_attachment_retention_and_verifies_its_policies(tm
     assert "ok: execution role policies" in r.stdout
 
 
+def held_gateway_put(tmp_path, doc):
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state" / "role-policy-chaintables-gateway-put").write_text(json.dumps(doc))
+
+
 def test_setup_fails_when_a_role_policy_drifts(tmp_path):
     # --skip-gateway: deploy.sh does not run, so the put policy the fake holds is whatever was there
-    (tmp_path / "state").mkdir()
-    (tmp_path / "state" / "role-policy-chaintables-gateway-put").write_text(json.dumps(
-        {"Version": "2012-10-17", "Statement": [{"Sid": "PutSlots", "Effect": "Allow", "Action": "s3:PutObject",
-                                                 "Resource": "arn:aws:s3:::bkt/*"}]}))
+    held_gateway_put(tmp_path, {"Version": "2012-10-17", "Statement": [
+        {"Sid": "PutSlots", "Effect": "Allow", "Action": "s3:PutObject", "Resource": "arn:aws:s3:::bkt/*"}]})
     r, calls, held = run_setup(tmp_path, "--skip-gateway")
     assert r.returncode != 0
     assert "execution role policy chaintables-gateway-put" in r.stderr and "HeadAttachments" in r.stderr
+
+
+def test_setup_fails_when_the_gateway_put_policy_has_every_sid_but_a_wider_resource(tmp_path):
+    import policies
+    doc = policies.gateway_put("arn:aws:s3:::bkt")
+    doc["Statement"][1]["Resource"] = "arn:aws:s3:::bkt/*"  # HeadAttachments on every key
+    held_gateway_put(tmp_path, doc)
+    r, calls, held = run_setup(tmp_path, "--skip-gateway", bucket_policy=json.dumps(locked_policy()))
+    assert r.returncode != 0
+    assert "execution role policy chaintables-gateway-put" in r.stderr and "redeploy" in r.stderr
+
+
+def test_setup_passes_with_the_generated_gateway_put_policy_in_place(tmp_path):
+    import policies
+    held_gateway_put(tmp_path, policies.gateway_put("arn:aws:s3:::bkt"))
+    r, calls, held = run_setup(tmp_path, "--skip-gateway", bucket_policy=json.dumps(locked_policy()))
+    assert r.returncode == 0, r.stderr
+
+
+# The retention cap follows --retention-days, and never drops below what a running gateway
+# writes: a cap raised for a longer N is put before the new gateway is deployed, a cap lowered
+# for a shorter N only after.
+
+def bucket_policy_puts(calls):
+    """(index, cap) of every put-bucket-policy, and the index of the function code update."""
+    puts = []
+    for i, c in enumerate(calls):
+        if c[:2] == ["s3api", "put-bucket-policy"]:
+            st = by_sid(json.loads(c[c.index("--policy") + 1])).get("DenyLongRetention")
+            cap = None if st is None else st["Condition"]["NumericGreaterThan"]["s3:object-lock-remaining-retention-days"]
+            puts.append((i, cap))
+    (code,) = [i for i, c in enumerate(calls) if c[:2] == ["lambda", "update-function-code"]]
+    return puts, code
+
+
+def test_setup_raises_the_retention_cap_before_it_deploys_a_gateway_with_more_days(tmp_path):
+    before = locked_policy()
+    assert by_sid(before)["DenyLongRetention"] == cap_statement(10)
+    r, calls, held = run_setup(tmp_path, "--retention-days", "30", bucket_policy=json.dumps(before))
+    assert r.returncode == 0, r.stderr
+    puts, code = bucket_policy_puts(calls)
+    assert [cap for i, cap in puts if i < code][0] == "33"
+    assert all(cap == "33" for i, cap in puts)
+    assert by_sid(held)["DenyLongRetention"] == cap_statement(33)
+
+
+def test_setup_lowers_the_retention_cap_only_after_it_deploys_a_gateway_with_fewer_days(tmp_path):
+    r, calls, held = run_setup(tmp_path, bucket_policy=json.dumps(locked_policy()))  # 7 days to 1
+    assert r.returncode == 0, r.stderr
+    puts, code = bucket_policy_puts(calls)
+    assert {cap for i, cap in puts if i < code} <= {"10"}
+    assert puts[-1][1] == "4" and puts[-1][0] > code
+    assert by_sid(held)["DenyLongRetention"] == cap_statement(4)
 
 
 def test_setup_fails_when_a_lifecycle_change_is_not_denied(tmp_path):

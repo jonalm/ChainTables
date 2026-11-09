@@ -17,8 +17,9 @@ the checks and status codes are listed at the top of [`handler.py`](handler.py).
 | `pyproject.toml`, `uv.lock` | dependencies, pinned exactly (`cbor2`, `boto3`) |
 | `build.sh` | produces the deployment zip |
 | `deploy.sh` | creates or updates the bucket, execution role, function, URL and bucket policy |
+| `policies.py` | the execution role's `chaintables-gateway-put` and `deploy.sh`'s bucket-policy statements, generated once for both scripts |
 | `setup-locked-bucket.sh` | a locked bucket around `build.sh` + `deploy.sh`: KMS key, Object Lock, the deny statements, the role's extra grants |
-| `probe/attachment_probe.py` | ADR-0046's live probe of presigned attachment PUTs on a locked bucket; signs in a throwaway Lambda under the gateway role |
+| `probe/attachment_probe.py` | ADR-0046's and #92's live probe of presigned requests on a locked bucket; signs in a throwaway Lambda under the gateway role, deleted when each command ends |
 
 ## Tests
 

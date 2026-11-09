@@ -156,11 +156,17 @@ gateway role, so `OnlyTheGatewayPuts` and the lock-header denies hold
 unchanged. The gateway checks no author and reads no content; attribution comes
 from the record whose row holds the hash.
 
-**The bucket policy denies a presigned PUT** (`s3:authType` =
-`REST-QUERY-STRING`) to any key outside `_attachments/<64 × ?>` and
-`*/_attachments/<64 × ?>` (`DenyPresignedSlotPuts`, written by `deploy.sh`;
-`?` is one character in an IAM resource pattern). A gateway bug can then never
-mint a working URL for a slot, which would bypass the author check. The
+**The bucket policy denies a presigned PUT** (any `s3:authType` but
+`REST-HEADER`: a presigned URL or a browser-form POST) to any key outside
+`_attachments/<64 × ?>` and `*/_attachments/<64 × ?>` (`DenyPresignedSlotPuts`,
+written by `deploy.sh`; `?` is one character in an IAM resource pattern). A
+gateway bug can then never mint a working URL for a slot, which would bypass the
+author check. It names `s3:PutObjectRetention` and `s3:PutObjectTagging` as well
+as `s3:PutObject`, since S3 authorizes those too for a put carrying lock headers
+or a tag. The role is denied every other action not signed in a header
+(`DenyGatewayPresignedNonPuts`), and a locked bucket caps every retention at
+N + 3 days (`DenyLongRetention`), so whatever signs as the role cannot lock an
+object for longer (#92). The
 pattern cannot spell "lowercase hex": a slot under a contrived prefix whose last
 64 characters span a `/` (`p/_attachments/<51 characters>/<12 digits>`) still
 matches, and only the gateway's key check refuses it. The role's
@@ -407,7 +413,9 @@ a signed header, which S3 enforces like any other.
 
   `test/live/attachments.jl` (`run.sh attachments`) proves all but the slot
   item, which no gateway mints a URL for: `gateway/probe/attachment_probe.py
-  slot` proves it with a URL signed under the gateway role.
+  slot` proves it with a URL signed under the gateway role. `attachment_probe.py
+  policy` proves #92's statements: the retention cap, a presigned retention
+  call, a presigned GET and a form POST, each signed under the gateway role.
 - **Probed on 2026-10-28** (`gateway/probe/attachment_probe.py`, a locked
   bucket, URLs signed in Lambda under the gateway role, botocore 1.43.93):
   - a correct PUT is stored with COMPLIANCE, the key, the Bucket Key and the

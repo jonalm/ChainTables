@@ -1,18 +1,21 @@
 """ADR-0046 live probe: presigned attachment PUTs on a locked gateway bucket.
 
     cd gateway && uv run python probe/attachment_probe.py <command> ...
-      deploy   --role R --function F --region X   # throwaway signer Lambda under the gateway role R
-      run      --bucket B --function F --state S.json   # the cases below
+      run      --bucket B --role R --function F --state S.json  # the ADR-0046 cases below
       poll     --state S.json                     # session-lifetime canary; repeat until it changes
-      slot     --bucket B --function F            # DenyPresignedSlotPuts: a role-signed URL for a slot is denied
-      teardown --function F --region X
+      slot     --bucket B --role R --function F   # DenyPresignedSlotPuts: a role-signed URL for a slot is denied
+      policy   --bucket B --role R --function F --retention-days N  # #92's bucket-policy statements
+      teardown --function F --region X            # only if a command died before its own teardown
 
-Credentials: the ambient AWS profile (an administrator: lambda create, iam:PassRole, s3 head).
-URLs are signed inside Lambda under the gateway role, since OnlyTheGatewayPuts denies every
-other principal. Every key is under attachment-probe/<run>/_attachments/; a PUT that succeeds
-leaves a COMPLIANCE object retained one day (bucket policy needs a retain-until, not a minimum).
+Credentials: the ambient AWS profile (an administrator: lambda create/delete, iam:PassRole, s3
+head). URLs are signed inside a throwaway Lambda F running as the gateway role R, since
+OnlyTheGatewayPuts denies every other principal. run, slot and policy each deploy F and delete
+it when they end, whatever the outcome: while it exists, any admin who invokes it signs as the
+gateway. Every key is under attachment-probe/<run>/. What a PUT stores is COMPLIANCE-retained
+and cannot be deleted until it expires: one day, except where a case below says otherwise.
 Fail-fast: any unexpected AWS error in setup aborts; each case reports what S3 answered.
 """
+import contextlib
 import argparse, base64, hashlib, http.client, io, json, os, secrets, sys, time, urllib.parse, zipfile
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
@@ -37,23 +40,43 @@ def build_zip() -> bytes:
     return buf.getvalue()
 
 
-def deploy(a):
-    sess = boto3.Session(region_name=a.region)
-    account = sess.client("sts").get_caller_identity()["Account"]
-    lam = sess.client("lambda")
-    role_arn = f"arn:aws:iam::{account}:role/{a.role}"
+@contextlib.contextmanager
+def signer(role, function, region):
+    """The signer Lambda, running as the gateway role, deleted on the way out whatever happens."""
+    lam = boto3.client("lambda", region_name=region)
+    account = boto3.client("sts", region_name=region).get_caller_identity()["Account"]
+    role_arn = f"arn:aws:iam::{account}:role/{role}"
     code = build_zip()
     try:
-        lam.get_function(FunctionName=a.function)
-        lam.update_function_code(FunctionName=a.function, ZipFile=code)
+        lam.get_function(FunctionName=function)
+        sys.exit(f"function {function} already exists: pick another --function, or run teardown if it is a "
+                 "probe signer left by a crash")
     except lam.exceptions.ResourceNotFoundException:
-        lam.create_function(FunctionName=a.function, Runtime="python3.13", Role=role_arn,
+        pass
+    try:
+        lam.create_function(FunctionName=function, Runtime="python3.13", Role=role_arn,
                             Handler="attachment_probe_lambda.handler", Code={"ZipFile": code},
                             Architectures=["arm64"], Timeout=30, MemorySize=256,
-                            Description="ChainTables ADR-0046 probe; delete after use")
-    lam.get_waiter("function_active_v2").wait(FunctionName=a.function)
-    lam.get_waiter("function_updated_v2").wait(FunctionName=a.function)
-    print(f"deployed {a.function} as {role_arn} in {a.region}")
+                            Description="ChainTables ADR-0046 probe signer; deleted when the probe ends")
+        lam.get_waiter("function_active_v2").wait(FunctionName=function)
+        print(f"deployed signer {function} as {role_arn} in {region}")
+        yield lam
+    finally:
+        try:
+            lam.delete_function(FunctionName=function)
+            print(f"deleted signer {function}")
+        except lam.exceptions.ResourceNotFoundException:
+            pass
+
+
+def bucket_session(bucket):
+    """The bucket's region, an S3 client there, and its SSE-KMS key ARN."""
+    region = boto3.client("s3").get_bucket_location(Bucket=bucket)["LocationConstraint"] or "us-east-1"
+    s3 = boto3.client("s3", region_name=region)
+    key_arn = s3.get_bucket_encryption(Bucket=bucket)["ServerSideEncryptionConfiguration"]["Rules"][0][
+        "ApplyServerSideEncryptionByDefault"]["KMSMasterKeyID"]
+    assert key_arn.startswith("arn:aws:kms:"), key_arn
+    return region, s3, key_arn
 
 
 def teardown(a):
@@ -72,7 +95,7 @@ def mint(lam, function, specs):
 def call(method, url, body=b"", headers=None):
     u = urllib.parse.urlsplit(url)
     c = http.client.HTTPSConnection(u.netloc, timeout=60)
-    c.request(method, f"{u.path}?{u.query}", body=body, headers=headers or {})
+    c.request(method, f"{u.path}?{u.query}" if u.query else u.path or "/", body=body, headers=headers or {})
     r = c.getresponse()
     data = r.read()
     code = msg = None
@@ -87,14 +110,12 @@ def signed_headers(url):
 
 
 def run(a):
-    sess = boto3.Session()
-    s3 = sess.client("s3")
-    region = s3.get_bucket_location(Bucket=a.bucket)["LocationConstraint"] or "us-east-1"
-    s3 = sess.client("s3", region_name=region)
-    lam = sess.client("lambda", region_name=region)
-    enc = s3.get_bucket_encryption(Bucket=a.bucket)["ServerSideEncryptionConfiguration"]["Rules"][0]
-    key_arn = enc["ApplyServerSideEncryptionByDefault"]["KMSMasterKeyID"]
-    assert key_arn.startswith("arn:aws:kms:"), key_arn
+    region, s3, key_arn = bucket_session(a.bucket)
+    with signer(a.role, a.function, region) as lam:
+        run_cases(a, s3, lam, region, key_arn)
+
+
+def run_cases(a, s3, lam, region, key_arn):
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(3)
     base = f"attachment-probe/{run_id}/_attachments/"
     retain = (datetime.now(timezone.utc) + timedelta(days=1)).replace(microsecond=0)
@@ -203,13 +224,12 @@ def slot(a):
     stored) and a slot key in the same run. A slot PUT that is stored instead leaves a COMPLIANCE
     object at attachment-probe/<run>/000000000000 for a day. Exits non-zero unless the control is
     200 and the slot 403 AccessDenied with nothing stored."""
-    sess = boto3.Session()
-    region = sess.client("s3").get_bucket_location(Bucket=a.bucket)["LocationConstraint"] or "us-east-1"
-    s3 = sess.client("s3", region_name=region)
-    lam = sess.client("lambda", region_name=region)
-    key_arn = s3.get_bucket_encryption(Bucket=a.bucket)["ServerSideEncryptionConfiguration"]["Rules"][0][
-        "ApplyServerSideEncryptionByDefault"]["KMSMasterKeyID"]
-    assert key_arn.startswith("arn:aws:kms:"), key_arn
+    region, s3, key_arn = bucket_session(a.bucket)
+    with signer(a.role, a.function, region) as lam:
+        slot_cases(a, s3, lam, region, key_arn)
+
+
+def slot_cases(a, s3, lam, region, key_arn):
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(3)
     retain_iso = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
     body = secrets.token_bytes(64)
@@ -229,13 +249,7 @@ def slot(a):
                                   for k in (control_key, slot_key)])["urls"]
 
     def stored(key):
-        try:
-            s3.head_object(Bucket=a.bucket, Key=key)
-            return True
-        except s3.exceptions.ClientError as e:
-            if e.response["ResponseMetadata"]["HTTPStatusCode"] != 404:
-                raise
-            return False
+        return is_stored(s3, a.bucket, key)
 
     control = call("PUT", urls[0], body, sent)
     denied = call("PUT", urls[1], body, sent)
@@ -245,6 +259,165 @@ def slot(a):
     print(f"[slot key]                {denied} stored={stored(slot_key)} {'ok' if slot_ok else 'UNEXPECTED'}")
     if not (control_ok and slot_ok):
         sys.exit("slot probe: not the expected outcome (control 200 and stored; slot 403 AccessDenied, not stored)")
+
+
+def is_stored(s3, bucket, key):
+    try:
+        s3.head_object(Bucket=bucket, Key=key)
+        return True
+    except s3.exceptions.ClientError as e:
+        if e.response["ResponseMetadata"]["HTTPStatusCode"] != 404:
+            raise
+        return False
+
+
+def iso(t):
+    return t.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def form_post(url, fields, body):
+    """A browser-form POST of `fields` and the file `body` (multipart/form-data, the file last)."""
+    boundary = "chaintables" + secrets.token_hex(8)
+    parts = [f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode()
+             for k, v in fields.items()]
+    parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="probe"\r\n'
+                 "Content-Type: application/octet-stream\r\n\r\n".encode() + body + f"\r\n--{boundary}--\r\n".encode())
+    return call("POST", url, b"".join(parts), {"Content-Type": f"multipart/form-data; boundary={boundary}"})
+
+
+def policy(a):
+    """#92's bucket-policy statements, live, with URLs and forms signed under the gateway role.
+
+    Required (exit non-zero otherwise):
+      - the bucket policy's DenyLongRetention caps retention at --retention-days + 3 (N + 3);
+      - PUT to an attachment key retained 1 day: stored (the control);
+      - PUT to an attachment key retained N + 2 days: stored (under the cap);
+      - PUT to an attachment key retained N + 4 days: 403 AccessDenied, nothing stored (the cap);
+      - PUT to a slot key: 403 AccessDenied, nothing stored (DenyPresignedSlotPuts);
+      - presigned PutObjectRetention moving the control to N + 4 days: 403 AccessDenied (the cap);
+      - presigned PutObjectRetention on an absent slot key: 403 AccessDenied, not 404 NoSuchKey
+        (DenyPresignedSlotPuts, before S3 looks for the key);
+      - presigned GetObject of the control: 403 AccessDenied, not 200, though the role holds
+        s3:GetObject on attachment keys (DenyGatewayPresignedNonPuts);
+      - form POST to a slot key: 403 AccessDenied, nothing stored (DenyPresignedSlotPuts, POST).
+    Reported only:
+      - PUT retained N + 3 days + 1 hour: how S3 rounds the remaining days, which AWS does not
+        document (ceiling: denied; floor: stored);
+      - form POST to an attachment key, the POST case's control.
+    A required case that fails open leaves its object retained as long as it asked: N + 4 days
+    at most. Everything stored is retained at least a day and cannot be deleted before.
+    """
+    region, s3, key_arn = bucket_session(a.bucket)
+    n = a.retention_days
+    held = json.loads(s3.get_bucket_policy(Bucket=a.bucket)["Policy"])
+    caps = [st for st in held["Statement"] if st.get("Sid") == "DenyLongRetention"]
+    cap = caps[0].get("Condition", {}).get("NumericGreaterThan", {}).get("s3:object-lock-remaining-retention-days") \
+        if caps else None
+    if cap != str(n + 3):
+        sys.exit(f"the bucket policy's DenyLongRetention caps at {cap!r} days, not {n + 3}: run setup-locked-bucket.sh "
+                 f"with --retention-days {n} first, or pass the bucket's own --retention-days")
+    with signer(a.role, a.function, region) as lam:
+        policy_cases(a, s3, lam, region, key_arn, n)
+
+
+def policy_cases(a, s3, lam, region, key_arn, n):
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(3)
+    base = f"attachment-probe/{run_id}/"
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    days = {"control": timedelta(days=1), "under": timedelta(days=n + 2), "over": timedelta(days=n + 4),
+            "edge": timedelta(days=n + 3, hours=1), "slot": timedelta(days=1)}
+    bodies = {name: secrets.token_bytes(64) for name in (*days, "post", "post-slot")}
+    digest = {name: hashlib.sha256(b).digest() for name, b in bodies.items()}
+    keys = {name: base + f"_attachments/{digest[name].hex()}" for name in bodies}
+    keys["slot"], keys["post-slot"], keys["absent-slot"] = base + "000000000000", base + "000000000001", base + "000000000002"
+    print(f"bucket {a.bucket} ({region}), run {run_id}, retention days {n}, cap {n + 3}")
+
+    def lock(until):
+        return {"ServerSideEncryption": "aws:kms", "SSEKMSKeyId": key_arn, "BucketKeyEnabled": True,
+                "ObjectLockMode": "COMPLIANCE", "ObjectLockRetainUntilDate": iso(until)}
+
+    def put_spec(name):
+        return {"method": "put_object", "expires": 900, "params": {
+            "Bucket": a.bucket, "Key": keys[name], "ChecksumSHA256": base64.b64encode(digest[name]).decode(),
+            "IfNoneMatch": "*", "ContentType": "application/octet-stream", **lock(now + days[name])}}
+
+    def put_headers(name):
+        return {"x-amz-checksum-sha256": base64.b64encode(digest[name]).decode(), "If-None-Match": "*",
+                "Content-Type": "application/octet-stream", "x-amz-server-side-encryption": "aws:kms",
+                "x-amz-server-side-encryption-aws-kms-key-id": key_arn,
+                "x-amz-server-side-encryption-bucket-key-enabled": "true", "x-amz-object-lock-mode": "COMPLIANCE",
+                "x-amz-object-lock-retain-until-date": iso(now + days[name])}
+
+    def retention_spec(key, until):
+        return {"method": "put_object_retention", "expires": 900, "params": {
+            "Bucket": a.bucket, "Key": key, "Retention": {"Mode": "COMPLIANCE", "RetainUntilDate": iso(until)}}}
+
+    def retention_body(until):
+        xml = (f'<Retention xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Mode>COMPLIANCE</Mode>'
+               f"<RetainUntilDate>{iso(until)}</RetainUntilDate></Retention>").encode()
+        return xml, {"Content-MD5": base64.b64encode(hashlib.md5(xml).digest()).decode(), "Content-Type": "application/xml"}
+
+    def post_spec(name):
+        fields = {"Content-Type": "application/octet-stream", "x-amz-server-side-encryption": "aws:kms",
+                  "x-amz-server-side-encryption-aws-kms-key-id": key_arn,
+                  "x-amz-server-side-encryption-bucket-key-enabled": "true", "x-amz-object-lock-mode": "COMPLIANCE",
+                  "x-amz-object-lock-retain-until-date": iso(now + timedelta(days=1)),
+                  "x-amz-checksum-algorithm": "SHA256", "x-amz-checksum-sha256": base64.b64encode(digest[name]).decode()}
+        return {"method": "post", "bucket": a.bucket, "key": keys[name], "fields": fields, "expires": 900}
+
+    over_cap = now + timedelta(days=n + 4)
+    names = ["control", "under", "over", "edge", "slot"]
+    specs = [put_spec(x) for x in names] + [
+        retention_spec(keys["control"], over_cap),
+        retention_spec(keys["absent-slot"], now + timedelta(days=1)),
+        {"method": "get_object", "expires": 900, "params": {"Bucket": a.bucket, "Key": keys["control"]}},
+        post_spec("post"), post_spec("post-slot")]
+    signed = mint(lam, a.function, specs)["urls"]
+    put_url = dict(zip(names, signed))
+    retention_url, absent_retention_url, get_url, post, post_slot = signed[5:]
+
+    failures = []
+
+    def check(case, got, ok, required=True):
+        print(f"[{case}] {got} {'ok' if ok else ('UNEXPECTED' if required else '(reported)')}")
+        if required and not ok:
+            failures.append(case)
+
+    def put(name):
+        got = call("PUT", put_url[name], bodies[name], put_headers(name))
+        return got, is_stored(s3, a.bucket, keys[name])
+
+    def denied(got):
+        return got[0] == 403 and got[1] == "AccessDenied"
+
+    got, st = put("control")
+    check("PUT attachment, 1 day (control)", (got, f"stored={st}"), got[0] == 200 and st)
+    got, st = put("under")
+    check(f"PUT attachment, {n + 2} days (under the cap)", (got, f"stored={st}"), got[0] == 200 and st)
+    got, st = put("over")
+    check(f"PUT attachment, {n + 4} days (over the cap)", (got, f"stored={st}"), denied(got) and not st)
+    got, st = put("edge")
+    check(f"PUT attachment, {n + 3} days + 1 h (rounding)", (got, f"stored={st}"), denied(got) and not st,
+          required=False)
+    got, st = put("slot")
+    check("PUT slot key", (got, f"stored={st}"), denied(got) and not st)
+    xml, h = retention_body(over_cap)
+    got = call("PUT", retention_url, xml, h)
+    check(f"presigned PutObjectRetention of the control to {n + 4} days", got, denied(got))
+    xml, h = retention_body(now + timedelta(days=1))
+    got = call("PUT", absent_retention_url, xml, h)
+    check("presigned PutObjectRetention on an absent slot key", got, denied(got))
+    got = call("GET", get_url)
+    check("presigned GetObject of the control", got, denied(got))
+    got = form_post(post["url"], {**post["fields"]}, bodies["post"])
+    st = is_stored(s3, a.bucket, keys["post"])
+    check("form POST attachment (control)", (got, f"stored={st}"), got[0] in (200, 204) and st, required=False)
+    got = form_post(post_slot["url"], {**post_slot["fields"]}, bodies["post-slot"])
+    st = is_stored(s3, a.bucket, keys["post-slot"])
+    check("form POST slot key", (got, f"stored={st}"), denied(got) and not st)
+    if failures:
+        sys.exit(f"policy probe: {len(failures)} case(s) not as required: {failures}")
+    print("policy probe: every required case as expected")
 
 
 def poll(a):
@@ -261,15 +434,18 @@ def poll(a):
 def main():
     p = argparse.ArgumentParser()
     sp = p.add_subparsers(dest="cmd", required=True)
-    d = sp.add_parser("deploy"); d.add_argument("--role", required=True)
-    d.add_argument("--function", required=True); d.add_argument("--region", required=True)
-    r = sp.add_parser("run"); r.add_argument("--bucket", required=True); r.add_argument("--function", required=True)
-    r.add_argument("--state", required=True)
+    for name in ("run", "slot", "policy"):
+        c = sp.add_parser(name)
+        for arg in ("--bucket", "--role", "--function"):
+            c.add_argument(arg, required=True)
+        if name == "run":
+            c.add_argument("--state", required=True)
+        if name == "policy":
+            c.add_argument("--retention-days", type=int, required=True)
     q = sp.add_parser("poll"); q.add_argument("--state", required=True)
-    s = sp.add_parser("slot"); s.add_argument("--bucket", required=True); s.add_argument("--function", required=True)
     t = sp.add_parser("teardown"); t.add_argument("--function", required=True); t.add_argument("--region", required=True)
     a = p.parse_args()
-    {"deploy": deploy, "run": run, "poll": poll, "slot": slot, "teardown": teardown}[a.cmd](a)
+    {"run": run, "poll": poll, "slot": slot, "policy": policy, "teardown": teardown}[a.cmd](a)
 
 
 if __name__ == "__main__":

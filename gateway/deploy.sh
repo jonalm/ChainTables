@@ -17,7 +17,7 @@
 #
 # What it does, in order (docs/gateway-setup.md has the IAM contract this establishes):
 #   1. bucket: create if absent, block all public access;
-#   2. execution role: trust lambda.amazonaws.com; inline s3:PutObject on the bucket's keys,
+#   2. execution role: trust lambda.amazonaws.com; inline (policies.py) s3:PutObject on the bucket's keys,
 #      s3:GetObject and s3:PutObjectTagging on its attachment keys and s3:ListBucket on the
 #      bucket (the mint route HEADs an attachment, and an absent key must be 404, not 403;
 #      ADR-0046), and nothing else on S3; inline logs on its own log group;
@@ -32,14 +32,15 @@
 #      function URL (lambda:InvokedViaFunctionUrl), so a writer cannot call the Invoke API with
 #      a hand-built event that names another caller (ADR-0036); a same-account writer whose
 #      permission set already grants both needs no --writer; a cross-account one does;
-#   5. bucket policy: the execution role may PutObject; every other principal is denied
-#      PutObject; a presigned PutObject is denied outside the attachment keys
-#      (DenyPresignedSlotPuts: a gateway bug can never mint a working URL for a slot, which
-#      would bypass the author check, ADR-0046); each --reader and --writer may GetObject and
-#      ListBucket; every request without TLS is denied (DenyInsecureTransport, the same
-#      statement a locked bucket has). Merged by Sid: the script owns GatewayPuts,
-#      OnlyTheGatewayPuts, DenyInsecureTransport, DenyPresignedSlotPuts and Read<n>, and keeps
-#      every other statement, such as a locked bucket's denies (ADR-0037);
+#   5. bucket policy (policies.py): the execution role may PutObject; every other principal is
+#      denied PutObject; a request not signed in a header (a presigned URL or a browser-form
+#      POST) is denied PutObject, PutObjectRetention and PutObjectTagging outside the attachment
+#      keys (DenyPresignedSlotPuts: a gateway bug can never mint a working URL for a slot, which
+#      would bypass the author check, ADR-0046), and the execution role is denied every other
+#      action so signed (DenyGatewayPresignedNonPuts, #92); each --reader and --writer may
+#      GetObject and ListBucket; every request without TLS is denied (DenyInsecureTransport,
+#      the same statement a locked bucket has). Merged by Sid: the script owns its statements
+#      and Read<n>, and keeps every other statement, such as a locked bucket's denies (ADR-0037);
 #   6. log retention, then two smoke invocations that prove the zip runs in the Lambda runtime
 #      (the handler boots, loads its policy, and refuses an unauthenticated PUT / and
 #      POST /mint as 403 not_allowed; a gateway without the mint route answers 400).
@@ -65,7 +66,7 @@ while [ $# -gt 0 ]; do
         --reserved-concurrency) concurrency="$2"; shift 2 ;;
         --no-smoke) smoke=0; shift ;;
         --revoke-unlisted) revoke_unlisted=1; shift ;;
-        -h|--help) sed -n '2,45p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,46p' "$0"; exit 0 ;;
         *) echo "deploy.sh: unknown argument $1" >&2; exit 2 ;;
     esac
 done
@@ -107,13 +108,11 @@ export AWS_DEFAULT_REGION="$region" AWS_PAGER=""
 account="$(aws sts get-caller-identity --query Account --output text)"
 say "deploying as $(aws sts get-caller-identity --query Arn --output text) into account $account, region $region"
 
-# JSON helpers: a JSON array of the given strings, and a statement per principal.
 json_array() { python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "$@"; }
+# The role's chaintables-gateway-put and this script's bucket-policy statements come from
+# policies.py, which setup-locked-bucket.sh prints and verifies against (#92).
+[ -f "$here/policies.py" ] || die "policies.py is missing beside deploy.sh"
 bucket_arn="arn:aws:s3:::$bucket"
-# The attachment keys, <prefix>/_attachments/<h> and _attachments/<h> at the root, as IAM
-# resource patterns: '?' is one character, so <h> is 64 of them and a slot never ends one.
-hash_pattern="$(python3 -c 'print("?" * 64)')"
-attachments="$(json_array "$bucket_arn/_attachments/$hash_pattern" "$bucket_arn/*/_attachments/$hash_pattern")"
 role_arn="arn:aws:iam::$account:role/$role"
 function_arn="arn:aws:lambda:$region:$account:function:$function"
 log_group="/aws/lambda/$function"
@@ -206,16 +205,7 @@ else
         --description "ChainTables gateway execution role for bucket $bucket" >/dev/null
 fi
 aws iam put-role-policy --role-name "$role" --policy-name chaintables-gateway-put --policy-document \
-    "$(python3 - "$bucket_arn" "$attachments" <<'EOF'
-import json, sys
-bucket_arn, attachments = sys.argv[1], json.loads(sys.argv[2])
-print(json.dumps({"Version": "2012-10-17", "Statement": [
-    {"Sid": "PutSlots", "Effect": "Allow", "Action": "s3:PutObject", "Resource": f"{bucket_arn}/*"},
-    {"Sid": "HeadAttachments", "Effect": "Allow", "Action": "s3:GetObject", "Resource": attachments},
-    {"Sid": "ListBucket", "Effect": "Allow", "Action": "s3:ListBucket", "Resource": bucket_arn},
-    {"Sid": "TagAttachments", "Effect": "Allow", "Action": "s3:PutObjectTagging", "Resource": attachments}]}))
-EOF
-)"
+    "$(python3 "$here/policies.py" gateway-put "$bucket_arn")"
 aws iam put-role-policy --role-name "$role" --policy-name chaintables-gateway-logs --policy-document \
     "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"OwnLogs\",\"Effect\":\"Allow\",\"Action\":[\"logs:CreateLogGroup\",\"logs:CreateLogStream\",\"logs:PutLogEvents\"],\"Resource\":\"arn:aws:logs:$region:$account:log-group:$log_group:*\"}]}"
 
@@ -289,35 +279,19 @@ for sid in $granted; do
 done
 
 # 5. bucket policy, merged by Sid onto the one read before any change
-say "putting bucket policy: PutObject for $role only, presigned only to attachments; reads for ${#readers[@]} reader(s) and ${#writers[@]} writer(s); TLS only; other statements kept"
-policy="$(python3 - "$bucket_arn" "$role_arn" "$(json_array ${readers[@]+"${readers[@]}"} ${writers[@]+"${writers[@]}"})" "$existing_policy" "$attachments" <<'EOF'
+say "putting bucket policy: PutObject for $role only, presigned only puts to attachments; reads for ${#readers[@]} reader(s) and ${#writers[@]} writer(s); TLS only; other statements kept"
+statements="$(python3 "$here/policies.py" deploy-statements "$bucket_arn" "$role_arn" \
+    "$(json_array ${readers[@]+"${readers[@]}"} ${writers[@]+"${writers[@]}"})")"
+policy="$(python3 - "$statements" "$existing_policy" <<'EOF'
 import json, re, sys
-bucket_arn, role_arn, principals, existing = sys.argv[1], sys.argv[2], json.loads(sys.argv[3]), json.loads(sys.argv[4])
-attachments = json.loads(sys.argv[5])
-statements = [
-    {"Sid": "GatewayPuts", "Effect": "Allow", "Principal": {"AWS": role_arn},
-     "Action": "s3:PutObject", "Resource": f"{bucket_arn}/*"},
-    {"Sid": "OnlyTheGatewayPuts", "Effect": "Deny", "Principal": "*",
-     "Action": "s3:PutObject", "Resource": f"{bucket_arn}/*",
-     "Condition": {"ArnNotEquals": {"aws:PrincipalArn": role_arn}}},
-    {"Sid": "DenyInsecureTransport", "Effect": "Deny", "Principal": "*",
-     "Action": "s3:*", "Resource": [bucket_arn, f"{bucket_arn}/*"],
-     "Condition": {"Bool": {"aws:SecureTransport": "false"}}},
-    {"Sid": "DenyPresignedSlotPuts", "Effect": "Deny", "Principal": "*",
-     "Action": "s3:PutObject", "NotResource": attachments,
-     "Condition": {"StringEquals": {"s3:authType": "REST-QUERY-STRING"}}},
-]
-for n, arn in enumerate(principals, 1):
-    statements.append({"Sid": f"Read{n}", "Effect": "Allow", "Principal": {"AWS": arn},
-                       "Action": ["s3:GetObject", "s3:ListBucket"],
-                       "Resource": [bucket_arn, f"{bucket_arn}/*"]})
+statements, existing = json.loads(sys.argv[1]), json.loads(sys.argv[2])
 # The statements of this script are replaced, Read<n> included so a dropped reader loses its grant;
 # every other statement (the denies of a locked bucket, a hand-added grant) is kept as it is.
 kept = existing.get("Statement", [])
 kept = [kept] if isinstance(kept, dict) else kept
 if any("Sid" not in s for s in kept):
     sys.exit("deploy.sh: the bucket policy in place has a statement without a Sid, which cannot be merged; give it a Sid or remove it")
-ours = {"GatewayPuts", "OnlyTheGatewayPuts", "DenyInsecureTransport", "DenyPresignedSlotPuts"}
+ours = {s["Sid"] for s in statements}
 kept = [s for s in kept if s["Sid"] not in ours and not re.fullmatch(r"Read[0-9]+", s["Sid"])]
 print(json.dumps({"Version": "2012-10-17", "Statement": statements + kept}))
 EOF
