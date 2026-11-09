@@ -506,7 +506,7 @@ class Gateway:
         is moved to now + N + margin unless it is already later. The margin is uncapped here,
         since no URL is minted."""
         if self.lock is None:
-            log.info("present %s by %s", key, name)
+            log.info("present %s by %s (%d bytes)", key, name, size)
             return response(200, "present", f"attachment {key!r} is already stored; upload nothing")
         if not version:
             raise Refusal(502, "s3_refused", f"S3 gave no version id for {key!r}: a locked bucket is versioned, so "
@@ -532,7 +532,7 @@ class Gateway:
             except (ClientError, BotoCoreError) as e:
                 raise s3_failure(e, f"PutObjectRetention of {key!r}")
             until, how = target, "extended"
-        log.info("present %s by %s (retain-until %s, %s)", key, name, iso_z(until), how)
+        log.info("present %s by %s (%d bytes, retain-until %s, %s)", key, name, size, iso_z(until), how)
         return response(200, "present", f"attachment {key!r} is already stored and retained until {iso_z(until)}; "
                                          "upload nothing", retain_until=iso_z(until))
 

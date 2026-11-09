@@ -199,7 +199,7 @@ def test_present_attachment_on_a_plain_bucket_mints_nothing(plain, s3, caplog):
     status, out = parse(plain.handle(mint_event()))
     assert (status, out["code"]) == (200, "present")
     assert not {"url", "headers", "retain_until"} & set(out)
-    assert f"present {KEY} by alice@example.com" in caplog.messages
+    assert f"present {KEY} by alice@example.com (5 bytes)" in caplog.messages
 
 
 def present_target(size=5):
@@ -213,7 +213,7 @@ def test_present_attachment_whose_retention_is_earlier_is_extended(locked, s3, c
     status, out = parse(locked.handle(mint_event()))
     assert (status, out["code"]) == (200, "present")
     assert out["retain_until"] == iso(present_target())
-    assert f"present {KEY} by alice@example.com (retain-until {iso(present_target())}, extended)" in caplog.messages
+    assert f"present {KEY} by alice@example.com (5 bytes, retain-until {iso(present_target())}, extended)" in caplog.messages
 
 
 def test_present_attachment_whose_retention_is_later_is_left_alone(locked, s3, caplog):
@@ -223,7 +223,7 @@ def test_present_attachment_whose_retention_is_later_is_left_alone(locked, s3, c
     status, out = parse(locked.handle(mint_event()))
     assert (status, out["code"]) == (200, "present")
     assert out["retain_until"] == iso(later)
-    assert f"present {KEY} by alice@example.com (retain-until {iso(later)}, already later)" in caplog.messages
+    assert f"present {KEY} by alice@example.com (5 bytes, retain-until {iso(later)}, already later)" in caplog.messages
 
 
 def test_the_present_path_is_not_capped_by_the_session(s3):
