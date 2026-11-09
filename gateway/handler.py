@@ -31,7 +31,7 @@ an empty body, the first failure winning:
 1. method, path, ``key`` and ``size`` present, no body, else ``400 bad_request``;
 2. the policy on the attachment's ``<prefix>``, else ``403 not_allowed``;
 3. an attachment key with a prefix a client accepts, else ``400 not_a_slot``;
-4. ``size`` a decimal count, else ``400 bad_request``; at most 5 GiB, else ``413 too_large``;
+4. ``size`` a decimal count of at most 11 digits, else ``400 bad_request``; at most 5 GiB, else ``413 too_large``;
 5. HEAD the key (S3 failures mapped as for the put: ``502 s3_refused`` / ``502 s3_error``).
    Present → ``200 present``; on a locked bucket the version's COMPLIANCE retain-until is
    read and moved to now + N + margin unless later, and the reply carries ``retain_until``.
@@ -104,6 +104,7 @@ ENVIRONMENT_START = datetime.now(timezone.utc)
 # lifetime plus a day between upload and commit.
 MAX_ATTACHMENT_BYTES = 5 * 1024 ** 3
 MIN_URL_SECONDS = 15 * 60
+MAX_SIZE_DIGITS = 11
 URL_BYTES_PER_SECOND = 1024 * 1024
 SESSION_SECONDS = 12 * 3600
 SESSION_SLACK_SECONDS = 3600
@@ -484,6 +485,11 @@ class Gateway:
                           "client refuses such a prefix, so the gateway never writes under it")
         if DECIMAL.fullmatch(size_text) is None:
             raise Refusal(400, "bad_request", f"size {size_text!r} is not a decimal count of bytes")
+        # refused before int(), which raises past Python's integer-string limit (~4300 digits); 5 GiB has 10
+        # digits, and 11 leaves room for a leading zero
+        if len(size_text) > MAX_SIZE_DIGITS:
+            raise Refusal(400, "bad_request", f"size has {len(size_text)} digits; a declared size has at most "
+                                              f"{MAX_SIZE_DIGITS} digits")
         size = int(size_text)
         if size > MAX_ATTACHMENT_BYTES:
             raise Refusal(413, "too_large", f"the attachment is declared {size} bytes; S3 takes at most "

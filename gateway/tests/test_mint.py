@@ -321,6 +321,21 @@ def test_a_size_that_is_not_a_decimal_count_is_bad_request(plain, size):
     assert "size" in out["message"]
 
 
+@pytest.mark.parametrize("size", ["9" * 5000, "0" * 12, "1" + "0" * 11], ids=["5000 nines", "12 zeros", "1e11"])
+def test_a_size_of_more_than_11_digits_is_bad_request_before_it_is_parsed(plain, size):
+    # past ~4300 digits int() raises ValueError (Python's integer-string limit), which would be a function error
+    status, out = parse(plain.handle(mint_event(size=size)))
+    assert (status, out["code"]) == (400, "bad_request")
+    assert "11 digits" in out["message"]
+
+
+def test_a_size_of_11_digits_with_leading_zeros_is_read(plain, s3):
+    s3.head_absent(KEY)
+    status, out = parse(plain.handle(mint_event(size="00000000005")))
+    assert (status, out["code"]) == (200, "minted")
+    assert out["headers"]["content-length"] == "5"
+
+
 def test_a_size_over_5_gib_is_too_large(plain):
     status, out = parse(plain.handle(mint_event(size=str(GIB5 + 1))))
     assert (status, out["code"]) == (413, "too_large")

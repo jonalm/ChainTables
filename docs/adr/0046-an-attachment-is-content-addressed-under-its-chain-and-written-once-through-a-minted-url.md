@@ -62,7 +62,10 @@ gateway bucket uses it; a locked one adds the KMS and lock headers.
    3. the key is an attachment key with a prefix `prefix_problem` passes
       → else `400 not_a_slot`, which now means "neither a slot nor an
       attachment";
-   4. the declared size is a decimal count → else `400 bad_request`, and at
+   4. the declared size is a decimal count of at most 11 digits (5 GiB has
+      10; a leading zero is allowed) → else `400 bad_request`, refused before
+      it is parsed, since Python's `int()` raises past about 4300 digits
+      (#92); and at
       most 5 GiB, 5,368,709,120 bytes, S3's limit for one PUT → else
       `413 too_large`. A size of 0 is allowed.
 3. The gateway HEADs the key.
