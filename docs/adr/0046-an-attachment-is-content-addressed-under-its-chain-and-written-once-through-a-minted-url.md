@@ -97,8 +97,12 @@ gateway bucket uses it; a locked one adds the KMS and lock headers.
 4. The gateway logs the caller, the key, the declared size and which of the
    two it did.
 5. Before sending a byte, the client checks the URL: https, host the chain's
-   bucket on its **regional** endpoint, path the expected key, method PUT.
-   Otherwise `GatewayMismatchError`.
+   bucket on its **regional** endpoint, path the expected key, method PUT,
+   and a query (the signature). It checks the headers too:
+   `x-amz-checksum-sha256` the hash in base64, `if-none-match: *` and
+   `content-length` the size. Without them S3 would store bytes no hash
+   vouches for, overwrite the key, or take a body of another length.
+   Otherwise `GatewayMismatchError`, and nothing is sent.
 6. The client PUTs the bytes from the file with the reply's headers and no
    other `x-amz-*` header: S3 refuses one that is not signed (`403`, "headers
    present in the request which were not signed"). It follows no redirect. A

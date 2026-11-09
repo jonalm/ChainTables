@@ -157,14 +157,14 @@ function gwtest_mint(g::GatewayDouble, req)
     return gwtest_minted(g.s3, key, parse(Int, q["size"]))
 end
 
-function gwtest_minted(s3::S3TestServer, key, size; seconds = 900, url = nothing)
+function gwtest_minted(s3::S3TestServer, key, size; seconds = 900, url = nothing, edit = identity, query = true)
     signature = bytes2hex(rand(UInt8, 32))
-    headers = ["content-length" => string(size), "content-type" => "application/octet-stream", "if-none-match" => "*",
-               "x-amz-checksum-sha256" => GWT.Base64.base64encode(hex2bytes(key[end-63:end])),
-               "x-amz-tagging" => "chaintables=attachment"]
+    headers = edit(["content-length" => string(size), "content-type" => "application/octet-stream", "if-none-match" => "*",
+                    "x-amz-checksum-sha256" => GWT.Base64.base64encode(hex2bytes(key[end-63:end])),
+                    "x-amz-tagging" => "chaintables=attachment"])
     s3.presigned[signature] = (; key, headers = Dict(headers), expires = time() + seconds)
     url = something(url, s3test_endpoint(s3) * "/$(s3.bucket)/" * GWT.uri_encode(key; keep_slash = true)) *
-          "?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Expires=$seconds&X-Amz-SignedHeaders=host&X-Amz-Signature=$signature"
+          (query ? "?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Expires=$seconds&X-Amz-SignedHeaders=host&X-Amz-Signature=$signature" : "")
     object = join(("\"$k\": \"$v\"" for (k, v) in headers), ", ")
     body = "{\"code\": \"minted\", \"message\": \"PUT the attachment's $size bytes\", \"url\": \"$url\", " *
            "\"expires\": \"2026-11-06T12:00:00Z\", \"headers\": {$object}}"
@@ -420,6 +420,32 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                 @test e isa GWT.GatewayMismatchError && e.key == kf && e.bucket == "bkt"
                 @test occursin("minted a URL for $kf at $url, not at $(s3test_endpoint(s3))/bkt/$kf", sprint(showerror, e))
                 @test occursin("Nothing was sent.", sprint(showerror, e))
+            end
+            @test length(s3.requests) == n
+            # a URL with no query, or an empty one, carries no signature: refused before a byte is sent
+            for (url, query) in ((nothing, false), ("$(s3test_endpoint(s3))/bkt/$kf?", false))
+                double.respond = req -> req.rawpath == "/mint" ? gwtest_minted(s3, kf, 10; url, query) : nothing
+                @test_throws GWT.GatewayMismatchError GWT.put_attachment(store, kf, IOBuffer(fresh))
+            end
+            @test length(s3.requests) == n
+            # the headers that make S3 check the hash, refuse an overwrite and bound the body must
+            # be minted as the key and size require: else nothing is sent (ADR-0046)
+            checksum = GWT.Base64.base64encode(sha256(fresh))
+            without(name) = hs -> filter(kv -> first(kv) != name, hs)
+            setting(name, value) = hs -> [first(kv) == name ? name => value : kv for kv in hs]
+            for (edit, problem) in (
+                    (without("x-amz-checksum-sha256"), "no x-amz-checksum-sha256 header, where $(repr(checksum))"),
+                    (setting("x-amz-checksum-sha256", GWT.Base64.base64encode(zeros(UInt8, 32))),
+                     "x-amz-checksum-sha256 $(repr(GWT.Base64.base64encode(zeros(UInt8, 32)))), where $(repr(checksum))"),
+                    (without("if-none-match"), "no if-none-match header, where \"*\""),
+                    (setting("if-none-match", "abc"), "if-none-match \"abc\", where \"*\""),
+                    (without("content-length"), "no content-length header, where \"10\""),
+                    (setting("content-length", "11"), "content-length \"11\", where \"10\""))
+                double.respond = req -> req.rawpath == "/mint" ? gwtest_minted(s3, kf, 10; edit) : nothing
+                e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
+                @test e isa GWT.GatewayMismatchError && e.key == kf && e.bucket == "bkt"
+                @test occursin("gateway mismatch: the gateway at $(loopback_url(gw)) minted the upload of $kf with $problem. " *
+                               "Nothing was sent.", sprint(showerror, e))
             end
             @test length(s3.requests) == n
             # a gateway that stored it elsewhere: our bucket lacks the key after the gateway's word

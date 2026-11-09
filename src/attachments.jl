@@ -94,8 +94,10 @@ ADR-0046's write on a gateway bucket:
 1. `POST /mint?key=<key>&size=<bytes>` to the function URL, signed for `lambda`, empty
    body. `present`: nothing is uploaded (the gateway extended a locked bucket's
    retention), go to 4.
-2. `minted`: the URL must be the chain's bucket on its regional host and the key's path —
-   else [`GatewayMismatchError`](@ref), before a byte is sent.
+2. `minted`: the URL must be the chain's bucket on its regional host and the key's path,
+   with a query, and the headers must carry the hash (`x-amz-checksum-sha256`),
+   `if-none-match: *` and the size (`content-length`) — else
+   [`GatewayMismatchError`](@ref), before a byte is sent.
 3. A streamed PUT to it with exactly the reply's headers, following no redirect. `412`:
    another writer stored it first, and the mint is asked again, which must answer
    `present` and so extends the retention.
@@ -118,7 +120,7 @@ function put_attachment(store::GatewayObjectStore, key::AbstractString, io::IO)
     size = stream_size(io)
     reply = mint(store, key, size)
     if reply.code == "minted"
-        uploaded = upload_minted(store, key, io, reply)
+        uploaded = upload_minted(store, key, io, size, reply)
         if !uploaded
             again = mint(store, key, size)
             again.code == "present" || throw(TransportError("POST $(store.function_url)/mint: S3 refused the upload of " *
@@ -196,15 +198,37 @@ end
 # The URL with its query — the signature, a bearer credential until it expires — left out.
 bare_url(url::AbstractString) = first(split(url, '?'; limit = 2))
 
+# The minted headers that make S3 check the bytes against the hash, refuse to overwrite the
+# key and bound the body (ADR-0046): a gateway that mints them otherwise — a bug, or one
+# that predates them — is refused before a byte is sent, since an upload without them
+# could store bytes no hash vouches for, or replace the key.
+function check_minted_headers(store::GatewayObjectStore, key::String, headers, size::Int64)
+    wanted = (("x-amz-checksum-sha256", checksum_sha256(key[end-63:end]), "check the bytes against the hash"),
+              ("if-none-match", "*", "refuse to overwrite the key"),
+              ("content-length", string(size), "bound the upload to the attachment's size"))
+    for (name, value, guards) in wanted
+        i = findfirst(kv -> first(kv) == name, headers)
+        got = i === nothing ? nothing : last(headers[i])
+        got == value && continue
+        found = got === nothing ? "no $name header" : "$name $(repr(got))"
+        throw(GatewayMismatchError("gateway mismatch: the gateway at $(store.function_url) minted the upload of $key " *
+            "with $found, where $(repr(value)). Nothing was sent. Without it S3 would not $guards: this gateway is not " *
+            "the one ADR-0046 specifies; ask the bucket's operator to redeploy it (gateway/deploy.sh)."; key,
+            bucket = store.s3.bucket, gateway = store.function_url))
+    end
+    return nothing
+end
+
 # The streamed PUT to a minted URL: `true` when stored, `false` on `412`.
-function upload_minted(store::GatewayObjectStore, key::String, io::IO, reply)
+function upload_minted(store::GatewayObjectStore, key::String, io::IO, size::Int64, reply)
     expected = expected_attachment_url(store, key)
     where = bare_url(reply.url)
-    (where == expected && length(reply.url) > length(where)) || throw(GatewayMismatchError("gateway mismatch: the gateway " *
+    (where == expected && length(reply.url) > length(where) + 1) || throw(GatewayMismatchError("gateway mismatch: the gateway " *
         "at $(store.function_url) minted a URL for $key at $where, not at $expected, the attachment's place in bucket " *
         "$(store.s3.bucket) on its regional host. Nothing was sent. This gateway fronts another bucket or region than " *
         "the one this chain reads: pair the bucket with its own gateway, as one ChainTables.Bucket value (ADR-0029, " *
         "ADR-0046)."; key, bucket = store.s3.bucket, gateway = store.function_url))
+    check_minted_headers(store, key, reply.headers, size)
     output = IOBuffer()
     response = http_stream(reply.url, "PUT", reply.headers; input = io, output, stall = store.timeout)
     response.status == 200 && return true
