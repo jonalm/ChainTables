@@ -297,7 +297,8 @@ def segment_problem(s: str) -> str | None:
 
 
 def prefix_problem(prefix: str) -> str | None:
-    """Why a Julia client refuses `prefix` as a chain prefix, or None if it accepts it."""
+    """Why a Julia client refuses `prefix` as a chain prefix, or None if it accepts it: too
+    long, a segment not portable, or a segment `_attachments` (ADR-0046, #92)."""
     if prefix == "":
         return None
     if len(prefix) > MAX_PREFIX_LENGTH:
@@ -306,6 +307,9 @@ def prefix_problem(prefix: str) -> str | None:
         problem = segment_problem(s)
         if problem is not None:
             return f"has the segment {s!r}, which {problem}"
+        # a chain under it would be a "directory" of another chain's attachment keys (#92)
+        if s == "_attachments":
+            return f"has the segment {s!r}, which is reserved for a chain's attachments (ADR-0046)"
     return None
 
 

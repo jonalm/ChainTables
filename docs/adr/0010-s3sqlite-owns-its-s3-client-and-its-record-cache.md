@@ -124,7 +124,10 @@ Two properties are load-bearing and are recorded as such:
   record for all time, so a key's bytes are immutable by protocol. Any object
   whose key-to-bytes mapping could change must never be read through this cache.
   (*Amended by ADR-0046*: attachments are cached apart from records, shared by
-  every chain, and the first read through a copy asks the chain's store.)
+  every chain, and the first read through a copy asks the chain's store.
+  *Amended by #92*: no chain prefix has a segment `_attachments`, so a chain's
+  record-cache directories never mirror one, and a chain's prefix is never the
+  key of another chain's attachment.)
 - **Absence is never memoized.** A client polling a slot that is still empty must
   see the transaction record the moment it lands.
 

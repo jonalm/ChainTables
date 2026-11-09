@@ -35,7 +35,8 @@ Opaque text — it may contain `/`, and the slashes mean nothing; ChainTables re
 structure into it. Prefixes may nest; the chains are unrelated. Empty is the one
 chain at the bucket root. It may not begin or end with `/`, and each `/`-separated
 segment must be portable to every filesystem (lowercase `a-z`, `0-9`, `.`, `_`, `-`;
-at most 100 characters in all; see ADR-0034), since slot keys map to record-cache paths. Where, not which: see *chain id*.
+at most 100 characters in all; see ADR-0034), since slot keys map to record-cache paths.
+No segment may be `_attachments`, which holds a chain's attachments (ADR-0046). Where, not which: see *chain id*.
 _Avoid_: chain name, path, folder, directory
 
 **Slot**:

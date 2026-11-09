@@ -308,6 +308,17 @@ def test_a_key_that_is_not_an_attachment_is_not_a_slot(plain, key):
     assert "neither a slot nor an attachment" in out["message"]
 
 
+@pytest.mark.parametrize("key", [
+    f"teams/alpha/_attachments/{H}/_attachments/{H}",     # the chain teams/alpha/_attachments/<h>
+    f"teams/alpha/_attachments/_attachments/{H}",         # the chain teams/alpha/_attachments
+], ids=["under an attachment", "under _attachments"])
+def test_an_attachment_of_a_chain_under_an_attachments_segment_is_not_a_slot(plain, key):
+    # such a chain's key is also a "directory" of another chain's attachments (#92)
+    status, out = parse(plain.handle(mint_event(key=key, user_arn=arn("carol@example.com"))))
+    assert (status, out["code"]) == (400, "not_a_slot")
+    assert "'_attachments', which is reserved for a chain's attachments" in out["message"]
+
+
 def test_an_attachment_under_a_prefix_a_client_refuses_is_not_a_slot(plain):
     status, out = parse(plain.handle(mint_event(key=f"teams/X/_attachments/{H}", user_arn=arn("carol@example.com"))))
     assert (status, out["code"]) == (400, "not_a_slot")

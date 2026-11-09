@@ -55,8 +55,9 @@ the slot key is `<prefix>/<12 digits>` (ADR-0011); an empty prefix puts the slot
 bucket root. Each `/`-separated segment of the prefix, and the bucket name, is a
 record-cache directory, so it must be portable to every filesystem: lowercase `a-z`,
 `0-9`, `.`, `_`, `-`; not `.` or `..`; not ending in `.`; not a Windows device name such
-as `con` or `nul`. The prefix is at most 100 characters, and the longest record-cache path
-for the chain, `cache_dir` included, at most 259: Windows' `MAX_PATH` (ADR-0034).
+as `con` or `nul`. No segment may be `_attachments`, where a chain's attachments live
+(ADR-0046). The prefix is at most 100 characters, and the longest record-cache path for
+the chain, `cache_dir` included, at most 259: Windows' `MAX_PATH` (ADR-0034).
 """
 struct Chain{S<:AbstractObjectStore}
     bucket::String
@@ -123,6 +124,8 @@ end
 # The gateway mirrors these rules (`prefix_problem` in gateway/handler.py, ADR-0035): change both together.
 const MAX_PREFIX_LENGTH = 100
 
+const ATTACHMENTS_SEGMENT = "_attachments"
+
 function check_prefix(prefix::AbstractString)
     (startswith(prefix, "/") || endswith(prefix, "/")) && throw(ArgumentError(
         "Chain: prefix $(repr(prefix)) begins or ends with '/'; a slot key is <prefix>/<12 digits>, so give the prefix without them"))
@@ -135,6 +138,9 @@ function check_prefix(prefix::AbstractString)
         problem === nothing || throw(ArgumentError("Chain: prefix $(repr(prefix)) has the segment $(repr(s)), which " *
             "$problem; each '/'-separated segment of a slot key is a record-cache directory, and must be portable to " *
             "every filesystem (ADR-0034)"))
+        # A chain under it would be a "directory" of another chain's attachment keys (#92).
+        s == ATTACHMENTS_SEGMENT && throw(ArgumentError("Chain: prefix $(repr(prefix)) has the segment $(repr(s)), " *
+            "which is reserved for a chain's attachments (ADR-0046); a chain may not live under one"))
     end
     return nothing
 end

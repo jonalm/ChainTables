@@ -86,6 +86,11 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
         segment_error(prefix, seg, why) =
             "Chain: prefix $(repr(prefix)) has the segment $(repr(seg)), which $why; each '/'-separated segment"
         @test_throws segment_error("a//b", "", "is empty") Chain("bkt", "a//b"; store)
+        # a chain under an `_attachments` segment would be a "directory" of another chain's attachments (#92)
+        for bad in ("_attachments", "x/_attachments", "_attachments/y", "x/_attachments/y")
+            @test_throws "Chain: prefix $(repr(bad)) has the segment \"_attachments\", which is reserved for a chain's attachments (ADR-0046); a chain may not live under one" Chain("bkt", bad; store)
+        end
+        @test Chain("bkt", "x/_attachments2/x_attachments"; store).prefix == "x/_attachments2/x_attachments"
         for bad in (".", "..", "a/./b", "a/../b")
             seg = only(filter(in((".", "..")), split(bad, '/')))
             @test_throws segment_error(bad, seg, "names a directory relative to its parent") Chain("bkt", bad; store)

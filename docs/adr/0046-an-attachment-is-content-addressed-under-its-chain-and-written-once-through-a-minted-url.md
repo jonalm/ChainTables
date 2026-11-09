@@ -33,10 +33,20 @@ up.
 ### The key
 
 A key is an **attachment key** if it matches
-`^(<prefix>/)?_attachments/[0-9a-f]{64}$`. A chain at a prefix like
-`x/_attachments` stays legal: its slots (12 digits) cannot collide with an
-attachment of chain `x` (64 hex). The client refuses any hash that is not 64
-lowercase hex.
+`^(<prefix>/)?_attachments/[0-9a-f]{64}$`. The client refuses any hash that is
+not 64 lowercase hex.
+
+*Amended by #92*: **no chain prefix may have a segment `_attachments`.** The
+client's `check_prefix` and the gateway's `prefix_problem` both refuse one; this
+reverses the first version of this ADR, which let a chain at `x/_attachments`
+stand because its slots (12 digits) cannot collide with an attachment of chain
+`x` (64 hex). They cannot, but such a chain makes a key both an object and a
+"directory" (`x/_attachments/<h>/_attachments/<h2>`), and it opened a gap in the
+bucket policy: a slot key like `p/_attachments/<51 characters>/<12 digits>`
+matches the attachment pattern `*/_attachments/<64 × ?>`, so
+`DenyPresignedSlotPuts` misses it. With the segment refused, every key that
+matches the pattern is under a prefix no client or gateway accepts. No chain had
+such a prefix when it was refused.
 
 The gateway classifies the key **before** the policy check, and checks an
 attachment key against its `<prefix>`, to which `prefix_problem` also applies.
@@ -169,7 +179,8 @@ N + 3 days (`DenyLongRetention`), so whatever signs as the role cannot lock an
 object for longer (#92). The
 pattern cannot spell "lowercase hex": a slot under a contrived prefix whose last
 64 characters span a `/` (`p/_attachments/<51 characters>/<12 digits>`) still
-matches, and only the gateway's key check refuses it. The role's
+matches. Such a prefix has the segment `_attachments`, which no client accepts
+and the gateway refuses (#92, above), so no chain's slot is ever such a key. The role's
 `s3:GetObject`, `s3:PutObjectTagging` and, on a locked bucket,
 `s3:GetObjectRetention` are scoped to the same patterns; `s3:ListBucket`, so that
 an absent key HEADs 404, is on the bucket.

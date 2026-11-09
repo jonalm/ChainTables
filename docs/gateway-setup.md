@@ -208,7 +208,7 @@ The Deny is the guarantee: only the gateway can fill a slot, and an administrato
 `s3:*` on the account cannot either. `DenyPresignedSlotPuts` keeps every request not signed
 in a header, a presigned URL (`REST-QUERY-STRING`) or a browser-form POST (`POST`), to
 attachment keys, so a gateway bug cannot mint a working URL or form for a slot, which would
-bypass the author check (ADR-0046), with one exception below. It names
+bypass the author check (ADR-0046). It names
 `s3:PutObjectRetention` and `s3:PutObjectTagging` too, since S3 also authorizes those for a put
 that carries lock headers or a tag (AWS, "Required permissions for Amazon S3 API
 operations"). `DenyGatewayPresignedNonPuts` refuses the execution role every other action so
@@ -217,8 +217,9 @@ nothing but a put (#92). Those three actions cannot be denied it, or every minte
 would be refused; on an attachment key a role-signed URL can still change the tags or, within
 a locked bucket's cap, the retention. The pattern cannot spell "64 lowercase hex": a
 slot under a contrived prefix whose last 64 characters span a `/`, such as
-`p/_attachments/<51 characters>/<12 digits>`, still matches, and only the gateway's own key
-check refuses it. What the policy does **not** prevent: an administrator
+`p/_attachments/<51 characters>/<12 digits>`, still matches. Every such key has a prefix
+segment `_attachments`, which neither a client nor the gateway accepts (#92), so it is never
+a slot of any chain. What the policy does **not** prevent: an administrator
 can still delete objects, and can rewrite this policy. And an administrator whose policy
 grants `lambda:InvokeFunction` without the `InvokedViaFunctionUrl` condition can have the
 gateway fill a slot under any listed name (ADR-0036). The trust boundary is one fact wide, that

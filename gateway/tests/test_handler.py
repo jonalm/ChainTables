@@ -61,11 +61,20 @@ CAROL_ARN = f"arn:aws:sts::{ACCOUNT}:assumed-role/AWSReservedSSO_chaintables-wri
     ("teams/nul.txt/000000000000", "is a Windows device name"),
     ("teams/" + "x" * 95 + "/000000000000", "over 100"),
     ("teams/" + "x" * 1100 + "/000000000000", "over 100"),   # S3 would refuse the key, not the deployment
+    ("teams/_attachments/000000000000", "'_attachments', which is reserved for a chain's attachments"),
+    ("teams/_attachments/x/000000000000", "'_attachments', which is reserved for a chain's attachments"),
 ])
 def test_prefix_a_client_refuses_is_not_a_slot(gateway, key, problem):
     status, body = parse(gateway.handle(event(key=key, user_arn=CAROL_ARN)))
     assert (status, body["code"]) == (400, "not_a_slot")
     assert problem in body["message"]
+
+
+def test_a_segment_that_only_contains_attachments_passes_the_slot_check(gateway):
+    # past check 2: the record names alice, so check 5 refuses carol
+    for key in ("teams/x_attachments/000000000000", "teams/_attachments2/000000000000"):
+        status, body = parse(gateway.handle(event(key=key, user_arn=CAROL_ARN)))
+        assert (status, body["code"]) == (403, "author_mismatch")
 
 
 def test_portable_prefix_passes_the_slot_check(gateway):
