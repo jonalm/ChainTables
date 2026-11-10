@@ -465,4 +465,36 @@ const ATT = ChainTables
                            "and it was deleted", sprint(showerror, e))
         end
     end
+
+    @testset "repair!(copy) removes no confirmed marker when the pass raises before its end" begin
+        mktempdir() do dir
+            store = InMemoryObjectStore()
+            chain = Chain("bkt", "p"; store, cache_dir = joinpath(dir, "cache"), record_host = false, record_user = false)
+            ATT.create_chain(chain)
+            copy = ATT.open(chain, joinpath(dir, "one"))
+            ATT.sync!(copy)
+            x, y = rand(UInt8, 30), rand(UInt8, 40)
+            hx, hy = bytes2hex(sha256(x)), bytes2hex(sha256(y))
+            # confirmed_hashes sorts: the one gone from the store comes first
+            (gone, hgone), (bad, hbad) = hx < hy ? ((x, hx), (y, hy)) : ((y, hy), (x, hx))
+            @test ATT.put_attachment(chain, IOBuffer(gone)) == hgone && ATT.put_attachment(chain, IOBuffer(bad)) == hbad
+            pgone, pbad = ATT.attachment(copy, hgone), ATT.attachment(copy, hbad)
+            kgone, kbad = "p/_attachments/$hgone", "p/_attachments/$hbad"
+            delete!(store.objects, kgone); chmod(pgone, 0o644); rm(pgone)
+            chmod(pbad, 0o644); rm(pbad)
+            wrong = rand(UInt8, 40); found = bytes2hex(sha256(wrong))
+            store.objects[kbad] = wrong
+            e = try ATT.repair!(copy); nothing catch e; e end
+            @test e isa ATT.AttachmentDigestError
+            @test sprint(showerror, e) == "AttachmentDigestError: attachment digest: the store of the chain at bkt/p " *
+                "returned 40 bytes for $kbad, which hash to $found, not to the key's hash. Nothing was cached. S3 checked " *
+                "the hash when the attachment was stored, so the bucket was written from outside the protocol: stop and " *
+                "report it (ADR-0046)."
+            @test isfile(joinpath(copy.path, "confirmed", hgone))              # not removed, so reported next time
+            store.objects[kbad] = bad
+            e = try ATT.repair!(copy); nothing catch e; e end
+            @test e isa ATT.AttachmentAbsentError && e.key == kgone
+            @test !isfile(joinpath(copy.path, "confirmed", hgone)) && read(pbad) == bad
+        end
+    end
 end

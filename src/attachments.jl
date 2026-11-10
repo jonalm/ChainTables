@@ -621,10 +621,11 @@ end
 
 # `repair!(copy)`'s pass: an entry whose file hashes right gets its sidecar rewritten;
 # any other is removed and fetched again from the chain's store. Returns the count. A hash
-# the store no longer holds cannot be repaired: the pass goes on, then the markers of all
-# such hashes are removed — the copy's word that the chain holds them no longer stands —
-# and one `AttachmentAbsentError` names them, so the next `repair!` and `verify` pass
-# instead of failing on them for ever.
+# the store no longer holds cannot be repaired: the pass goes on, then, once it has run to
+# its end, the markers of all such hashes are removed — the copy's word that the chain holds
+# them no longer stands — and one `AttachmentAbsentError` names them, so the next `repair!`
+# and `verify` pass instead of failing on them for ever. A pass that raises before its end
+# has removed no marker, so the next `repair!` names them again.
 function repair_attachments!(copy::LocalCopy, chain::Chain)
     repaired = 0
     gone = String[]
@@ -642,12 +643,12 @@ function repair_attachments!(copy::LocalCopy, chain::Chain)
         if fill_attachment!(chain, copy.head.chain_id, key, h, path)
             repaired += 1
         else
-            push!(gone, key)
-            rm(confirmed_path(copy, h))
+            push!(gone, h)
         end
     end
-    isempty(gone) || throw(gone_from_store(chain, copy.head.chain_id, gone))
-    return repaired
+    isempty(gone) && return repaired
+    foreach(h -> rm(confirmed_path(copy, h)), gone)
+    throw(gone_from_store(chain, copy.head.chain_id, [attachment_key(chain, h) for h in gone]))
 end
 
 function gone_from_store(chain::Chain, chain_id, keys::Vector{String})
