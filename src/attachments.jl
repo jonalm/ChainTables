@@ -203,7 +203,7 @@ end
 bare_url(url::AbstractString) = first(split(url, '?'; limit = 2))
 
 # The minted headers that make S3 check the bytes against the hash, refuse to overwrite the
-# key and bound the body (ADR-0046): a gateway that mints them otherwise — a bug, or one
+# key and bound the body (ADR-0046), each exactly once: a gateway that mints them otherwise — a bug, or one
 # that predates them — is refused before a byte is sent, since an upload without them
 # could store bytes no hash vouches for, or replace the key.
 function check_minted_headers(store::GatewayObjectStore, key::String, headers, size::Int64)
@@ -211,14 +211,20 @@ function check_minted_headers(store::GatewayObjectStore, key::String, headers, s
               ("if-none-match", "*", "refuse to overwrite the key"),
               ("content-length", string(size), "bound the upload to the attachment's size"))
     for (name, value, guards) in wanted
-        i = findfirst(kv -> first(kv) == name, headers)
-        got = i === nothing ? nothing : last(headers[i])
-        got == value && continue
-        found = got === nothing ? "no $name header" : "$name $(repr(got))"
+        got = [last(kv) for kv in headers if first(kv) == name]
+        length(got) == 1 && only(got) == value && continue
+        problem = if isempty(got)
+            "no $name header, where $(repr(value)). Nothing was sent. Without it S3 would not $guards"
+        elseif length(got) == 1
+            "$name $(repr(only(got))), where $(repr(value)). Nothing was sent. Without it S3 would not $guards"
+        else
+            "$name $(length(got) == 2 ? "twice" : "$(length(got)) times") ($(join(repr.(got), ", "))), where once, " *
+            "$(repr(value)). Nothing was sent. A header minted more than once leaves it to S3 which one counts, so it " *
+            "might not $guards"
+        end
         throw(GatewayMismatchError("gateway mismatch: the gateway at $(store.function_url) minted the upload of $key " *
-            "with $found, where $(repr(value)). Nothing was sent. Without it S3 would not $guards: this gateway is not " *
-            "the one ADR-0046 specifies; ask the bucket's operator to redeploy it (gateway/deploy.sh)."; key,
-            bucket = store.s3.bucket, gateway = store.function_url))
+            "with $problem: this gateway is not the one ADR-0046 specifies; ask the bucket's operator to redeploy it " *
+            "(gateway/deploy.sh)."; key, bucket = store.s3.bucket, gateway = store.function_url))
     end
     return nothing
 end

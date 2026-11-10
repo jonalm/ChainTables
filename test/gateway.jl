@@ -474,6 +474,18 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                 @test occursin("gateway mismatch: the gateway at $(loopback_url(gw)) minted the upload of $kf with $problem. " *
                                "Nothing was sent.", sprint(showerror, e))
             end
+            # each exactly once: a duplicate is refused even when it agrees
+            for (twice, values) in ((hs -> [hs; "content-length" => "11"], "(\"10\", \"11\")"),
+                                    (hs -> [hs; "content-length" => "10"], "(\"10\", \"10\")"))
+                double.respond = req -> req.rawpath == "/mint" ? gwtest_minted(s3, kf, 10; edit = twice) : nothing
+                e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
+                @test e isa GWT.GatewayMismatchError && e.key == kf && e.bucket == "bkt" && e.gateway == loopback_url(gw)
+                @test sprint(showerror, e) == "GatewayMismatchError: gateway mismatch: the gateway at $(loopback_url(gw)) " *
+                    "minted the upload of $kf with content-length twice $values, where once, \"10\". Nothing was sent. A " *
+                    "header minted more than once leaves it to S3 which one counts, so it might not bound the upload to the " *
+                    "attachment's size: this gateway is not the one ADR-0046 specifies; ask the bucket's operator to " *
+                    "redeploy it (gateway/deploy.sh)."
+            end
             @test length(s3.requests) == n
             # a gateway that stored it elsewhere: our bucket lacks the key after the gateway's word
             double.respond = req -> req.rawpath == "/mint" ? gwtest_json(200, "present", "already stored") : nothing
