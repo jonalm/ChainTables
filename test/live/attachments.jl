@@ -87,6 +87,10 @@ random_hash() = bytes2hex(rand(UInt8, 32))
             reply = GWT.mint(store, key, Int64(length(body)))
             @test reply.code == "minted"
             @test startswith(reply.url, "https://$(config.bucket).s3.$(config.region).amazonaws.com/$key?")
+            # the deployed gateway's lifetime: 15 min plus the size at 256 KiB/s (an upload must end before its URL
+            # expires, ADR-0046), as the reply says and the URL signs; a fresh environment is not capped at this size
+            @test (reply.seconds, reply.capped) == (900 + cld(length(body), 256 * 1024), false)
+            @test occursin("X-Amz-Expires=$(reply.seconds)&", reply.url * "&")
             names = Set(first.(reply.headers))
             @test names == Set(["content-type", "content-length", "if-none-match", "x-amz-checksum-sha256", "x-amz-tagging",
                                 "x-amz-server-side-encryption", "x-amz-server-side-encryption-aws-kms-key-id",
