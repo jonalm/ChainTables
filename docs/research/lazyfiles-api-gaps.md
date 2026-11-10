@@ -11,7 +11,7 @@ Research for [#5](https://github.com/jonalm/ChainTables/issues/5), part of the
 **Question**: what does LazyFiles.jl already give an S3-backed hash-chain design,
 and what is missing?
 
-**Primary source**: the local clone at `/Users/jonalmeriksen/biome/LazyFiles.jl`,
+**Primary source**: a local clone of `jonalm/LazyFiles.jl`,
 version `0.4.1`, commit `4f3f312` (clean tree). Every line reference below is to
 `src/LazyFiles.jl` or `test/runtests.jl` at that commit. This is a code-reading
 result, not a web-search one; nothing here is inferred from documentation that

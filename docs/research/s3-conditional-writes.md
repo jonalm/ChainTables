@@ -468,7 +468,7 @@ This is the finding with the most immediate consequence, and it is about *our* s
 not S3.
 
 `LazyFiles.jl` does not speak S3 over HTTP. It shells out to **rclone**
-(`/Users/jonalmeriksen/biome/LazyFiles.jl`, `src/LazyFiles.jl`):
+(`jonalm/LazyFiles.jl`, `src/LazyFiles.jl`):
 
 ```julia
 r = _with_rclone(config) do make_cmd
