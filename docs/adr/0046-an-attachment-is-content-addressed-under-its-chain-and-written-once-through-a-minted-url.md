@@ -513,3 +513,8 @@ a signed header, which S3 enforces like any other.
   and first byte went 60 s before the expiry, one byte every 3 s, the last 60 s
   after it: `403 AccessDenied` "Request has expired", nothing stored. An upload
   that begins before its URL expires does not survive the expiry.
+- **Proved on 2026-11-10**, after redeploying the gateway with the 256 KiB/s
+  lifetime (00f66a9) and the client that stops an upload at its URL's end
+  (8705e71): `run.sh attachments` passed, 55 of 55, the deployed gateway's
+  minted reply giving `seconds` = 15 min plus the size at 256 KiB/s, not
+  `capped`, and the URL signing that lifetime.
