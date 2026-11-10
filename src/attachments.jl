@@ -427,10 +427,11 @@ end
 # hashed, and when it hashes to `h` its sidecar is rewritten from it — `:ok`. Two fills of
 # one hash at once can pair one's sidecar with the other's file, and both files hashed
 # right. The hash and the sidecar's size and mtime come from one open file, so a file
-# renamed in meanwhile only leaves another mismatch, healed by the next read; a file
-# changed while it was hashed is not healed. `:absent` when the file is gone, else the
-# hash the file has.
-function heal_entry(path::AbstractString, h::AbstractString)
+# renamed in meanwhile only leaves another mismatch, healed by the next read. A file whose
+# size or mtime changed while it was hashed is `:changed`, whatever it hashed to: something
+# other than ChainTables writes the read-only cache. `:absent` when the file is gone, else
+# the hash the file has. `hasher` is for the tests.
+function heal_entry(path::AbstractString, h::AbstractString; hasher = hash_file)
     io = try
         Base.open(path)
     catch e
@@ -438,11 +439,12 @@ function heal_entry(path::AbstractString, h::AbstractString)
         rethrow()
     end
     st, found, after = try
-        (stat(io), bytes2hex(hash_file(io)), stat(io))
+        (stat(io), bytes2hex(hasher(io)), stat(io))
     finally
         close(io)
     end
-    (found == h && sidecar_text(st) == sidecar_text(after)) || return found
+    sidecar_text(st) == sidecar_text(after) || return :changed
+    found == h || return found
     write_sidecar(path, st)
     return :ok
 end
@@ -453,6 +455,13 @@ function damaged_entry(chain_id, key, path, recorded, found)
         "and hashes to $found, not to its name; its sidecar $path.meta records $(repr(recorded)). The file was " *
         "changed after it was cached. The cache is damaged, not the chain: deleting $path and $path.meta is always " *
         "safe, and the next read fetches it again (ADR-0046)."; chain_id, key, path)
+end
+
+function changed_entry(chain_id, key, path)
+    return AttachmentCacheError("attachment cache: the cached file $path changed while it was being hashed, so " *
+        "something other than ChainTables writes to this cache, which ChainTables keeps read-only: stop it. The cache " *
+        "is damaged, not the chain: deleting $path and $path.meta is always safe, and the next read fetches it again " *
+        "(ADR-0046)."; chain_id, key, path)
 end
 
 # A cache hit whose HEAD gives another size than the cached file's: one side is wrong, and
@@ -556,11 +565,14 @@ Raises [`AttachmentAbsentError`](@ref) when the chain's store lacks it,
 [`AttachmentDigestError`](@ref) when the store's bytes do not hash to it — or, on a hit,
 the store's size differs from a cached file that does — and
 [`AttachmentCacheError`](@ref) when the cached file differs from its sidecar and does
-not hash to its name, or, on a hit, differs in size from the store's and does not hash
+not hash to its name, or changes while it is hashed, or, on a hit, differs in size from the store's and does not hash
 to its name; an
 `ArgumentError` for a copy with no head yet, or a hash that is not 64 lowercase hex.
 """
-function attachment(copy::LocalCopy, h::AbstractString)
+attachment(copy::LocalCopy, h::AbstractString) = read_attachment(copy, h)
+
+# `attachment`'s body; `hasher` is for the tests.
+function read_attachment(copy::LocalCopy, h::AbstractString; hasher = hash_file)
     check_open(copy)
     copy.head === nothing && throw(ArgumentError("attachment(copy, hash): the local copy at $(copy.path) has no head " *
         "yet, so it belongs to no chain whose attachment it could read; sync!(copy) binds it"))
@@ -571,7 +583,8 @@ function attachment(copy::LocalCopy, h::AbstractString)
     path = attachment_cache_path(chain.cache, h)
     entry = cache_entry(path)
     if entry isa String
-        healed = heal_entry(path, h)
+        healed = heal_entry(path, h; hasher)
+        healed === :changed && throw(changed_entry(chain_id, key, path))
         healed isa String && throw(damaged_entry(chain_id, key, path, entry, healed))
         entry = healed
     end
@@ -620,20 +633,21 @@ function verify_attachments(copy::LocalCopy, chain::Chain)
 end
 
 # `repair!(copy)`'s pass: an entry whose file hashes right gets its sidecar rewritten;
-# any other is removed and fetched again from the chain's store. Returns the count. A hash
+# any other — one that changed while it was hashed too — is removed and fetched again
+# from the chain's store. Returns the count. A hash
 # the store no longer holds cannot be repaired: the pass goes on, then, once it has run to
 # its end, the markers of all such hashes are removed — the copy's word that the chain holds
 # them no longer stands — and one `AttachmentAbsentError` names them, so the next `repair!`
 # and `verify` pass instead of failing on them for ever. A pass that raises before its end
 # has removed no marker, so the next `repair!` names them again.
-function repair_attachments!(copy::LocalCopy, chain::Chain)
+function repair_attachments!(copy::LocalCopy, chain::Chain; hasher = hash_file)
     repaired = 0
     gone = String[]
     for h in confirmed_hashes(copy)
         path = attachment_cache_path(chain.cache, h)
         if cache_entry(path) === :ok
             bytes2hex(hash_file(path)) == h && continue
-        elseif heal_entry(path, h) === :ok
+        elseif heal_entry(path, h; hasher) === :ok
             repaired += 1
             continue
         end

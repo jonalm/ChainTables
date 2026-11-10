@@ -497,4 +497,50 @@ const ATT = ChainTables
             @test !isfile(joinpath(copy.path, "confirmed", hgone)) && read(pbad) == bad
         end
     end
+
+    @testset "heal_entry: a file changed while it is hashed is :changed; one renamed onto its path keeps the hashed file's stat" begin
+        mktempdir() do dir
+            store = InMemoryObjectStore()
+            chain = Chain("bkt", "p"; store, cache_dir = joinpath(dir, "cache"), record_host = false, record_user = false)
+            ATT.create_chain(chain)
+            copy = ATT.open(chain, joinpath(dir, "one"))
+            ATT.sync!(copy)
+            bytes = rand(UInt8, 100)
+            h = ATT.put_attachment(chain, IOBuffer(bytes))
+            path = ATT.attachment(copy, h)
+            function reset!()
+                chmod(path, 0o644); write(path, bytes); chmod(path, 0o444)
+                write(path * ".meta", "100 0.0")
+            end
+            # hashed right, then a byte appended before the stat after: not healed
+            grow = io -> (d = ATT.hash_file(io); chmod(path, 0o644); Base.open(f -> write(f, 0x00), path, "a"); d)
+            reset!()
+            @test ATT.heal_entry(path, h; hasher = grow) === :changed
+            @test read(path * ".meta", String) == "100 0.0"
+            # another file with the same bytes renamed onto the path mid-hash: the sidecar records
+            # the file that was hashed, not the one now at the path — the next read heals that
+            swap = io -> (d = ATT.hash_file(io); write(path * ".other", bytes); ATT.replace_file(path * ".other", path); d)
+            reset!()
+            hashed = ATT.sidecar_text(stat(path))
+            @test ATT.heal_entry(path, h; hasher = swap) === :ok
+            @test read(path * ".meta", String) == hashed != ATT.sidecar_text(stat(path))
+            # through attachment(copy, hash): raised, nothing fetched
+            reset!()
+            empty!(store.calls)
+            e = try ATT.read_attachment(copy, h; hasher = grow); nothing catch e; e end
+            @test e isa ATT.AttachmentCacheError && e.path == path && e.key == "p/_attachments/$h"
+            @test e.chain_id == copy.head.chain_id
+            @test sprint(showerror, e) == "AttachmentCacheError: attachment cache: the cached file $path changed while it " *
+                "was being hashed, so something other than ChainTables writes to this cache, which ChainTables keeps " *
+                "read-only: stop it. The cache is damaged, not the chain: deleting $path and $path.meta is always safe, " *
+                "and the next read fetches it again (ADR-0046)."
+            @test isempty(store.calls)
+            # repair!: removed and fetched again
+            reset!()
+            empty!(store.calls)
+            @test ATT.repair_attachments!(copy, chain; hasher = grow) == 1
+            @test store.calls == [(:fetch_object_to, "p/_attachments/$h")] && read(path) == bytes
+            @test read(path * ".meta", String) == ATT.sidecar_text(stat(path))
+        end
+    end
 end
