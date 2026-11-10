@@ -227,11 +227,15 @@ end
 function upload_minted(store::GatewayObjectStore, key::String, io::IO, size::Int64, reply)
     expected = expected_attachment_url(store, key)
     where = bare_url(reply.url)
-    (where == expected && length(reply.url) > length(where) + 1) || throw(GatewayMismatchError("gateway mismatch: the gateway " *
+    where == expected || throw(GatewayMismatchError("gateway mismatch: the gateway " *
         "at $(store.function_url) minted a URL for $key at $where, not at $expected, the attachment's place in bucket " *
         "$(store.s3.bucket) on its regional host. Nothing was sent. This gateway fronts another bucket or region than " *
         "the one this chain reads: pair the bucket with its own gateway, as one ChainTables.Bucket value (ADR-0029, " *
         "ADR-0046)."; key, bucket = store.s3.bucket, gateway = store.function_url))
+    length(reply.url) > length(where) + 1 || throw(GatewayMismatchError("gateway mismatch: the gateway at " *
+        "$(store.function_url) minted a URL for $key with no query, so no signature. Nothing was sent. This gateway's " *
+        "mint is broken: ask the bucket's operator to redeploy it (gateway/deploy.sh) (ADR-0046)."; key,
+        bucket = store.s3.bucket, gateway = store.function_url))
     check_minted_headers(store, key, reply.headers, size)
     output = IOBuffer()
     response = http_stream(reply.url, "PUT", reply.headers; input = io, output, stall = store.timeout)

@@ -448,7 +448,11 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             # a URL with no query, or an empty one, carries no signature: refused before a byte is sent
             for (url, query) in ((nothing, false), ("$(s3test_endpoint(s3))/bkt/$kf?", false))
                 double.respond = req -> req.rawpath == "/mint" ? gwtest_minted(s3, kf, 10; url, query) : nothing
-                @test_throws GWT.GatewayMismatchError GWT.put_attachment(store, kf, IOBuffer(fresh))
+                e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
+                @test e isa GWT.GatewayMismatchError && e.key == kf && e.bucket == "bkt" && e.gateway == loopback_url(gw)
+                @test sprint(showerror, e) == "GatewayMismatchError: gateway mismatch: the gateway at $(loopback_url(gw)) " *
+                    "minted a URL for $kf with no query, so no signature. Nothing was sent. This gateway's mint is broken: " *
+                    "ask the bucket's operator to redeploy it (gateway/deploy.sh) (ADR-0046)."
             end
             @test length(s3.requests) == n
             # the headers that make S3 check the hash, refuse an overwrite and bound the body must
