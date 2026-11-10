@@ -7,8 +7,7 @@ status: accepted
 A client that edits tables wants to show who changed them lately: slot, author,
 time and comment of the newest records. All four are in every record
 (ADR-0006), but the only way to them was the internal `Ops.decode_record` over
-bytes the caller fetched. BioMeCore's `LabTables.recent_commits` needs a public
-read (Bio-Me/BioMeCore.jl#18).
+bytes the caller fetched. Such a client needs a public read.
 
 ## Decision
 

@@ -10,7 +10,7 @@ are spent, the read-back itself fails, the call is interrupted, or the record la
 and the local copy's head is not written. The caller then sees an error and cannot
 tell whether the commit happened. A client that retries its edits after such an
 error writes them twice when the first record had landed, and its rebase sees its
-own record as another client's (Bio-Me/BioMeCore.jl#26). The record carries the
+own record as another client's. The record carries the
 time it was built, so the caller cannot recompute its hash; only `commit!` holds it.
 
 ## Decision
