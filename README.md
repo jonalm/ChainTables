@@ -189,4 +189,7 @@ that does not hash to `<h>` raises `AttachmentDigestError`. A cache hit's first
 read through a copy HEADs the key: a size other than the cached file's raises
 `AttachmentDigestError` when the cached file hashes to `<h>`, and
 `AttachmentCacheError` when it does not. Deleting any cache entry is always
-safe.
+safe. A cached file whose size or mtime disagrees with its sidecar is hashed on
+that read; when it hashes to `<h>` the sidecar is rewritten and the read goes
+on. `verify(copy; full = true)` skips an entry that is missing: the next read
+fetches it.

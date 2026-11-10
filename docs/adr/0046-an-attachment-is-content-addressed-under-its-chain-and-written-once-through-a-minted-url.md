@@ -122,11 +122,19 @@ gateway bucket uses it; a locked one adds the KMS and lock headers.
    and a query (the signature). That holds whatever AWS endpoint or
    addressing the chain reads with (path-style, FIPS, dual-stack): the
    upload goes where the gateway signed it. Only a store that is not AWS (a
-   test's loopback) is expected at its own URL. It checks the headers too:
-   `x-amz-checksum-sha256` the hash in base64, `if-none-match: *` and
-   `content-length` the size. Without them S3 would store bytes no hash
-   vouches for, overwrite the key, or take a body of another length.
-   Otherwise `GatewayMismatchError`, and nothing is sent.
+   test's loopback) is expected at its own URL. It checks the headers too,
+   each exactly once: `x-amz-checksum-sha256` the hash in base64,
+   `if-none-match: *` and `content-length` the size. Without them S3 would
+   store bytes no hash vouches for, overwrite the key, or take a body of
+   another length; a header minted twice leaves it to S3 which one counts.
+   Otherwise `GatewayMismatchError`, and nothing is sent. A URL elsewhere
+   means the gateway fronts another bucket or region: pair the bucket with its
+   own gateway. A URL with no query, or headers missing, wrong or repeated,
+   mean the gateway's mint is broken: redeploy it. China regions (`cn-*`) are
+   not supported: `is_aws` accepts `.amazonaws.com.cn`, but the expected host
+   is `<bucket>.s3.<region>.amazonaws.com`, so every upload there is refused
+   with `GatewayMismatchError` before a byte is sent. Supporting them cannot
+   be tested live.
 6. The client PUTs the bytes from the file with the reply's headers and no
    other `x-amz-*` header: S3 refuses one that is not signed (`403`, "headers
    present in the request which were not signed"). It follows no redirect. A
@@ -270,9 +278,11 @@ rename, and the read goes on. Raising instead wedged the entry: every read in
 every copy raised, and `verify` with them, until `repair!` or a delete. The hash
 and the sidecar's size and mtime come from one open file, stat before and after
 the hash, so a file renamed in meanwhile leaves only another mismatch, healed by
-the next read, and a file changed while hashed is not healed. Every file a fill
-renames in was hashed first, so no race heals a wrong file. A file that does
-not hash to `<h>` is `AttachmentCacheError`, not fetched again in place as a
+the next read. A file whose size or mtime changed while it was hashed is not
+healed: a read raises `AttachmentCacheError`, since something other than
+ChainTables writes the read-only cache, and `repair!` fetches it again. Every
+file a fill renames in was hashed first, so no race heals a wrong file. A file
+that does not hash to `<h>` is `AttachmentCacheError`, not fetched again in place as a
 record is (ADR-0040): a re-fetch can be 5 GiB inside a read, and the store may
 no longer hold the key. `verify(copy; full = true)` counts a file that hashes
 right as sound whatever its sidecar says, and an entry that is gone as no
@@ -314,8 +324,12 @@ is known only by reading the chain, which a write does not need.
   plain bucket's signed PUT.
 - A mint refused: `WriteRefusedError`, now also raised by `put_attachment` and
   `touch_attachment`.
-- A bad URL, a key absent after the upload, or a touch whose mint finds absent
-  what the chain's bucket holds: `GatewayMismatchError`.
+- A URL elsewhere or with no signature, minted headers missing, wrong or
+  repeated, a key absent after the upload, a `412` whose second mint does not
+  answer `present`, or a touch whose mint finds absent what the chain's bucket
+  holds: `GatewayMismatchError`. The message says to redeploy the gateway for
+  a URL with no signature or bad headers, else to pair the bucket with its own
+  gateway.
 - A URL that expired before the upload started: `AttachmentURLExpiredError`,
   carrying the gateway's `expires`; the message says to put the attachment
   again. The client does not mint again by itself: a fresh URL lives at least
@@ -327,14 +341,17 @@ is known only by reading the chain, which a write does not need.
   `AttachmentDigestError`, never retried.
 - A damaged cache file: `AttachmentCacheError`, from a read or `verify(copy;
   full = true)`, including a cache hit whose HEAD gives another size and whose
-  file does not hash to `<h>`. A read's message says to delete the file and
+  file does not hash to `<h>`, and a file that changed while a read hashed it.
+  A read's message says to delete the file and
   its `.meta` and read again, not `repair!`: `repair!` covers only confirmed
   hashes, so on a copy that never confirmed `<h>` it would change nothing and
   the same error would come back.
 - `attachment` on a store that lacks the hash: `AttachmentAbsentError`, whose
   message tells a reader that only someone holding the file can put it again.
   `repair!` raises it too, once, after finishing its pass, naming every
-  confirmed hash the store no longer holds. It removes their markers first:
+  confirmed hash the store no longer holds. It removes their markers once the
+  pass has run to its end — a pass that raises before has removed none, so the
+  next `repair!` names them again:
   keeping them would make every later `repair!` raise and stop at the first,
   and every `verify(copy; full = true)` fail, with nothing the reader can do.
 - A gateway with no mint route: `WriteRefusedError` with `reason =
