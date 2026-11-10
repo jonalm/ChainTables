@@ -254,7 +254,8 @@ def slot_cases(a, s3, lam, region, key_arn):
     control = call("PUT", urls[0], body, sent)
     denied = call("PUT", urls[1], body, sent)
     control_ok = control[0] == 200 and stored(control_key)
-    slot_ok = denied[0] == 403 and denied[1] == "AccessDenied" and not stored(slot_key)
+    slot_ok = denied[0] == 403 and denied[1] == "AccessDenied" and "explicit deny in a resource-based policy" in (denied[2] or "") \
+        and not stored(slot_key)
     print(f"[control: attachment key] {control} stored={stored(control_key)} {'ok' if control_ok else 'UNEXPECTED'}")
     print(f"[slot key]                {denied} stored={stored(slot_key)} {'ok' if slot_ok else 'UNEXPECTED'}")
     if not (control_ok and slot_ok):
@@ -288,20 +289,24 @@ def form_post(url, fields, body):
 def policy(a):
     """#92's bucket-policy statements, live, with URLs and forms signed under the gateway role.
 
-    Required (exit non-zero otherwise):
+    Required (exit non-zero otherwise); every "403 AccessDenied" below must say "explicit deny in a
+    resource-based policy", since S3 also answers 403 AccessDenied to an unsigned header or a bad form:
       - the bucket policy's DenyLongRetention caps retention at --retention-days + 3 (N + 3);
       - PUT to an attachment key retained 1 day: stored (the control);
       - PUT to an attachment key retained N + 2 days: stored (under the cap);
       - PUT to an attachment key retained N + 4 days: 403 AccessDenied, nothing stored (the cap);
       - PUT to a slot key: 403 AccessDenied, nothing stored (DenyPresignedSlotPuts);
       - presigned PutObjectRetention moving the control to N + 4 days: 403 AccessDenied (the cap);
-      - presigned PutObjectRetention on an absent slot key: 403 AccessDenied, not 404 NoSuchKey
-        (DenyPresignedSlotPuts, before S3 looks for the key);
+      - presigned PutObjectRetention on an absent slot key: 403 AccessDenied, not 404 NoSuchKey.
+        Probed 2026-11-10: S3 looks the key up first and the 403 is the role's denied
+        s3:ListBucket (DenyGatewayPresignedNonPuts), so the key's absence does not leak; the
+        slot PUT's deny, on s3:PutObjectRetention, is what shows DenyPresignedSlotPuts;
       - presigned GetObject of the control: 403 AccessDenied, not 200, though the role holds
         s3:GetObject on attachment keys (DenyGatewayPresignedNonPuts);
       - form POST to a slot key: 403 AccessDenied, nothing stored (DenyPresignedSlotPuts, POST).
     Reported only:
-      - PUT retained N + 3 days + 1 hour: how S3 rounds the remaining days, which AWS does not
+      - PUT retained N + 3 days + 1 hour: how S3 rounds the remaining days (probed 2026-11-10:
+        down, stored, so the effective cap is just under N + 4 days), which AWS does not
         document (ceiling: denied; floor: stored);
       - form POST to an attachment key, the POST case's control.
     A required case that fails open leaves its object retained as long as it asked: N + 4 days
@@ -349,7 +354,7 @@ def policy_cases(a, s3, lam, region, key_arn, n):
                 "x-amz-object-lock-retain-until-date": iso(now + days[name])}
 
     def retention_spec(key, until):
-        return {"method": "put_object_retention", "expires": 900, "params": {
+        return {"method": "put_object_retention", "expires": 900, "headers": retention_body(until)[1], "params": {
             "Bucket": a.bucket, "Key": key, "Retention": {"Mode": "COMPLIANCE", "RetainUntilDate": iso(until)}}}
 
     def retention_body(until):
@@ -387,8 +392,8 @@ def policy_cases(a, s3, lam, region, key_arn, n):
         got = call("PUT", put_url[name], bodies[name], put_headers(name))
         return got, is_stored(s3, a.bucket, keys[name])
 
-    def denied(got):
-        return got[0] == 403 and got[1] == "AccessDenied"
+    def denied(got):  # by the bucket policy: a 403 for a bad signature or form proves nothing
+        return got[0] == 403 and got[1] == "AccessDenied" and "explicit deny in a resource-based policy" in (got[2] or "")
 
     got, st = put("control")
     check("PUT attachment, 1 day (control)", (got, f"stored={st}"), got[0] == 200 and st)
