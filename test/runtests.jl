@@ -40,5 +40,6 @@ import ChainTables
     include("Testing.jl")
     include("readme.jl")
     include("tracked_values.jl")
+    include("live_calls.jl")      # the live suite still calls what exists
     include("aqua.jl")
 end
