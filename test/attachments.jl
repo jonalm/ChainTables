@@ -132,7 +132,11 @@ const ATT = ChainTables
                 # absent from our bucket: no mint
                 absent = bytes2hex(sha256(b"absent"))
                 empty!(gw.requests)
-                @test_throws ATT.AttachmentAbsentError ATT.touch_attachment(chain, absent)
+                e = try ATT.touch_attachment(chain, absent); nothing catch e; e end
+                @test e isa ATT.AttachmentAbsentError && e.key == "p/_attachments/$absent"
+                @test sprint(showerror, e) == "AttachmentAbsentError: attachment absent: the store of the chain at bkt/p " *
+                    "holds no attachment p/_attachments/$absent — it was never put, or its retention ended and it was " *
+                    "deleted. A row cannot refer to it until it is put again: put_attachment(chain, file) (ADR-0046)."
                 @test isempty(gw.requests)
                 # the gateway finds it absent where our bucket holds it: it fronts another bucket
                 double.respond = req -> req.rawpath == "/mint" ? gwtest_minted(s3, key, length(bytes)) : nothing
@@ -330,7 +334,12 @@ const ATT = ChainTables
             # as the message says, on a copy that never confirmed the hash too: deleted, then fetched again
             unconfirmed = ATT.open(chain, joinpath(dir, "unconfirmed"))
             ATT.sync!(unconfirmed)
-            @test_throws ATT.AttachmentCacheError ATT.attachment(unconfirmed, h)
+            e = try ATT.attachment(unconfirmed, h); nothing catch e; e end
+            @test e isa ATT.AttachmentCacheError && e.path == path && e.chain_id == unconfirmed.head.chain_id
+            @test sprint(showerror, e) == "AttachmentCacheError: attachment cache: the cached file $path is $(st.size) " *
+                "bytes modified at $(st.mtime) and hashes to $found, not to its name; its sidecar $path.meta records " *
+                "\"$meta\". The file was changed after it was cached. The cache is damaged, not the chain: deleting " *
+                "$path and $path.meta is always safe, and the next read fetches it again (ADR-0046)."
             chmod(path, 0o644); rm(path); rm(path * ".meta")
             @test read(ATT.attachment(unconfirmed, h)) == bytes
             close(unconfirmed)
@@ -456,7 +465,12 @@ const ATT = ChainTables
             @test read(pb) == b                                                 # the pass went on
             @test !isfile(joinpath(copy.path, "confirmed", ha)) && !isfile(joinpath(copy.path, "confirmed", hc))
             @test ATT.repair!(copy).attachments_repaired == 0 && ATT.verify(copy; full = true) === nothing
-            @test_throws ATT.AttachmentAbsentError ATT.attachment(copy, ha)
+            e = try ATT.attachment(copy, ha); nothing catch e; e end
+            @test e isa ATT.AttachmentAbsentError && e.key == "p/_attachments/$ha" && e.chain_id == copy.head.chain_id
+            @test sprint(showerror, e) == "AttachmentAbsentError: attachment absent: the store of the chain at bkt/p holds " *
+                "no attachment p/_attachments/$ha — it was never put to this chain, or its retention ended and it was " *
+                "deleted — so attachment(copy, hash) has nothing to serve, whatever this machine has cached. Only someone " *
+                "holding the file can bring it back, with put_attachment(chain, file) (ADR-0046)."
             # one alone is named in the error's key
             delete!(store.objects, "p/_attachments/$hb"); chmod(pb, 0o644); rm(pb)
             e = try ATT.repair!(copy); nothing catch e; e end
