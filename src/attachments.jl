@@ -95,10 +95,12 @@ ADR-0046's write on a gateway bucket:
    body. `present`: nothing is uploaded (the gateway extended a locked bucket's
    retention), go to 4.
 2. `minted`: the URL must be the chain's bucket on its regional host and the key's path,
-   with a query, and the headers must carry the hash (`x-amz-checksum-sha256`),
-   `if-none-match: *` and the size (`content-length`) — else
-   [`GatewayMismatchError`](@ref), before a byte is sent.
-3. A streamed PUT to it with exactly the reply's headers, following no redirect. `412`:
+   with a query, the headers must carry the hash (`x-amz-checksum-sha256`),
+   `if-none-match: *` and the size (`content-length`), and the reply must give the URL's
+   lifetime (`seconds`, `capped`) — else [`GatewayMismatchError`](@ref), before a byte is
+   sent.
+3. A streamed PUT to it with exactly the reply's headers, following no redirect, stopped
+   at the URL's end, since S3 refuses an upload still running then. `412`:
    another writer stored it first, and the mint is asked again, which must answer
    `present` and so extends the retention — else [`GatewayMismatchError`](@ref), as
    for `touch_attachment`: the gateway checks another bucket.
@@ -112,7 +114,7 @@ ADR-0046's write on a gateway bucket:
 | mint `400`, `413` | `TransportError`, not retried |
 | mint `409`, `429`, `5xx` (`503 session_ending` among them) | `TransportError`, retryable |
 | upload `400 BadDigest` | [`AttachmentChangedError`](@ref) |
-| upload `403` "Request has expired" | [`AttachmentURLExpiredError`](@ref) |
+| upload `403` "Request has expired", or still running at the URL's end | [`AttachmentURLExpiredError`](@ref), not retried |
 | any other upload status | `TransportError` carrying S3's code, the URL's signature left out |
 """
 function put_attachment(store::GatewayObjectStore, key::AbstractString, io::IO)
@@ -171,9 +173,13 @@ end
 const MINTED_HEADER = r"\"([a-z0-9-]+)\"\s*:\s*\"([\x20\x21\x23-\x5b\x5d-\x7e]*)\""
 const MINTED_HEADERS = Regex("\\A\\s*(?:" * MINTED_HEADER.pattern * "\\s*(?:,\\s*(?=\")|\\z))*\\z")
 
-# `url`, `expires` and the flat `headers` object of a `minted` reply, read without a JSON
-# parser (ADR-0027) and strictly: a reply this cannot read is refused, never guessed at.
+# `url`, `expires`, `seconds`, `capped` and the flat `headers` object of a `minted` reply,
+# read without a JSON parser (ADR-0027) and strictly: a reply this cannot read is refused,
+# never guessed at. A reply with neither `seconds` nor `capped` is from a gateway older than
+# them, which `upload_minted` refuses. `received` is when the reply arrived (`time_ns`): the
+# URL was signed before, so it expires no later than `received` plus `seconds`.
 function minted_reply(url, body::Vector{UInt8})
+    received = Int64(time_ns())
     text = String(copy(body))
     unreadable(what) = TransportError("POST $url: the gateway's minted reply has $what: $(first(text, 500))"; status = 200)
     field(name) = (m = match(Regex("\"$name\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\""), text);
@@ -186,7 +192,18 @@ function minted_reply(url, body::Vector{UInt8})
         throw(unreadable("a \"headers\" object that is not a flat map of lowercase names to plain ASCII strings"))
     headers = Pair{String,String}[String(m.captures[1]) => String(m.captures[2]) for m in eachmatch(MINTED_HEADER, inner)]
     isempty(headers) && throw(unreadable("an empty \"headers\" object"))
-    return (; code = "minted", url = minted_url, expires, headers)
+    has(name) = occursin(Regex("\"$name\"\\s*:"), text)
+    seconds = capped = nothing
+    if has("seconds") || has("capped")
+        has("capped") || throw(unreadable("\"seconds\" without \"capped\""))
+        has("seconds") || throw(unreadable("\"capped\" without \"seconds\""))
+        s = match(r"\"seconds\"\s*:\s*(-?[0-9]{1,9})\s*[,}]", text)
+        s === nothing && throw(unreadable("a \"seconds\" that is not a whole number"))
+        c = match(r"\"capped\"\s*:\s*(true|false)\s*[,}]", text)
+        c === nothing && throw(unreadable("a \"capped\" that is not true or false"))
+        seconds, capped = parse(Int64, s.captures[1]), c.captures[1] == "true"
+    end
+    return (; code = "minted", url = minted_url, expires, seconds, capped, headers, received)
 end
 
 # Where a minted URL must point (ADR-0046, ADR-0029): the chain's bucket on its regional
@@ -229,6 +246,21 @@ function check_minted_headers(store::GatewayObjectStore, key::String, headers, s
     return nothing
 end
 
+whole_seconds(ns) = max(0, round(Int64, ns / 1e9))
+
+# An upload still running at its URL's end (ADR-0046). The rate is what the size needs in
+# the URL's life, so the advice is concrete; a capped URL may be longer from another
+# gateway environment.
+function outlasted(key, size, reply, started)
+    rate = cld(size, 1024 * max(reply.seconds, 1))
+    return AttachmentURLExpiredError("attachment URL expired: the upload of $key ran " *
+        "$(whole_seconds(Int64(time_ns()) - started)) s, past the $(reply.seconds) s life of the URL the gateway minted " *
+        "(until $(reply.expires)), and S3 refuses an upload still running when its URL expires. Nothing was stored. " *
+        "Its $size bytes need $(max(rate, 1)) KiB/s or more. Put the attachment again over a faster link (ADR-0046)." *
+        (reply.capped ? " The gateway's AWS session shortened this URL (capped): another put may reach a younger " *
+                        "gateway environment, which mints a longer one." : ""); key, expires = reply.expires)
+end
+
 # The streamed PUT to a minted URL: `true` when stored, `false` on `412`.
 function upload_minted(store::GatewayObjectStore, key::String, io::IO, size::Int64, reply)
     expected = expected_attachment_url(store, key)
@@ -243,17 +275,37 @@ function upload_minted(store::GatewayObjectStore, key::String, io::IO, size::Int
         "mint is broken: ask the bucket's operator to redeploy it (gateway/deploy.sh) (ADR-0046)."; key,
         bucket = store.s3.bucket, gateway = store.function_url))
     check_minted_headers(store, key, reply.headers, size)
+    reply.seconds === nothing && throw(GatewayMismatchError("gateway mismatch: the gateway at $(store.function_url) " *
+        "minted a URL for $key without its lifetime (\"seconds\", \"capped\"), which it gives since S3 was found to " *
+        "refuse an upload still running when its URL expires. Nothing was sent. Ask the bucket's operator to redeploy " *
+        "it (gateway/deploy.sh) (ADR-0046)."; key, bucket = store.s3.bucket, gateway = store.function_url))
+    # S3 refuses an upload still running when its URL expires (ADR-0046), so the PUT stops at
+    # the URL's end: `deadline`, on this process's monotonic clock, is no earlier than S3's.
+    deadline = reply.received + reply.seconds * 1_000_000_000
+    started = Int64(time_ns())
+    started < deadline || throw(AttachmentURLExpiredError("attachment URL expired: the URL the gateway at " *
+        "$(store.function_url) minted for $key lived $(reply.seconds) s (until $(reply.expires)), and this process " *
+        "waited $(whole_seconds(started - reply.received)) s after the mint before uploading. Nothing was sent. Put " *
+        "the attachment again, which mints a new URL (ADR-0046)."; key, expires = reply.expires))
     output = IOBuffer()
-    response = http_stream(reply.url, "PUT", reply.headers; input = io, output, stall = store.timeout)
+    response = try
+        http_stream(reply.url, "PUT", reply.headers; input = io, output, stall = store.timeout,
+                    deadline = (deadline - started) / 1e9)
+    catch e
+        e isa TransportError && Int64(time_ns()) >= deadline || rethrow()
+        throw(outlasted(key, size, reply, started))
+    end
     response.status == 200 && return true
     response.status == 412 && return false
     body = take!(output)
     bad_digest(response.status, body) && throw(changed(key, where))
     if response.status == 403 && occursin("Request has expired", String(copy(body)))
-        throw(AttachmentURLExpiredError("attachment URL expired: S3 refused the upload of $key to $where because the " *
-            "URL the gateway minted had expired (it gave $(reply.expires)) before the upload began. Nothing was stored. " *
-            "Put the attachment again, which mints a new URL; if this recurs, check this machine's clock (ADR-0046).";
-            key, expires = reply.expires))
+        ran = Int64(time_ns()) - started
+        ran + 1_000_000_000 >= deadline - started && throw(outlasted(key, size, reply, started))
+        throw(AttachmentURLExpiredError("attachment URL expired: S3 refused the upload of $key as expired after " *
+            "$(whole_seconds(ran)) s, though the gateway gave its URL $(reply.seconds) s (until $(reply.expires)): the " *
+            "gateway's clock is off, or S3's. Nothing was stored. Put the attachment again; if this recurs, report it " *
+            "to the bucket's operator (ADR-0046)."; key, expires = reply.expires))
     end
     throw(failure("PUT", where, (; response.status, body)))
 end

@@ -600,35 +600,41 @@ end
 
 # One `Downloader` per transfer, since its hook is where libcurl's options are set and
 # the stall differs by store; connection reuse matters little at these sizes.
-function stream_downloader(stall::Real)
+function stream_downloader(stall::Real, deadline)
     seconds = ceil(Int, stall)               # libcurl counts the low-speed window in whole seconds
     downloader = Downloads.Downloader(; grace = 0)
     downloader.easy_hook = (easy, info) -> begin
         Downloads.Curl.setopt(easy, Downloads.Curl.CURLOPT_FOLLOWLOCATION, false)
         Downloads.Curl.setopt(easy, Downloads.Curl.CURLOPT_LOW_SPEED_LIMIT, 1)
         Downloads.Curl.setopt(easy, Downloads.Curl.CURLOPT_LOW_SPEED_TIME, seconds)
+        deadline === nothing ||
+            Downloads.Curl.setopt(easy, Downloads.Curl.CURLOPT_TIMEOUT_MS, max(1, ceil(Int, deadline * 1000)))
     end
     return downloader
 end
 
 """
-    http_stream(url, method, headers; input = nothing, output = nothing, stall) -> (; status, headers)
+    http_stream(url, method, headers; input = nothing, output = nothing, stall, deadline = nothing) -> (; status, headers)
 
 One streamed request over stdlib `Downloads`, no retry inside (ADR-0010, ADR-0046): the
 body is read from `input`, an IO at its start, and the response's body written to
 `output`. The response is returned whatever its status — a `3xx` among them, since no
 redirect is followed — and no response at all, a stall of `stall` seconds included, is a
-`TransportError` with no status. A `PUT` must carry a `content-length` header, else
+`TransportError` with no status, as is a transfer still running `deadline` seconds after it
+began, when one is given: a presigned URL's end (ADR-0046). A `PUT` must carry a `content-length` header, else
 libcurl would send a chunked body, which S3 refuses. A failure's message leaves out the
 URL's query, which for a presigned URL is a credential.
 """
-function http_stream(url::AbstractString, method::AbstractString, headers; input = nothing, output = nothing, stall::Real)
+function http_stream(url::AbstractString, method::AbstractString, headers; input = nothing, output = nothing, stall::Real,
+                     deadline::Union{Nothing,Real} = nothing)
     stall > 0 || throw(ArgumentError("http_stream: stall is $stall seconds; it must be positive"))
+    deadline === nothing || deadline > 0 ||
+        throw(ArgumentError("http_stream: deadline is $deadline seconds; it must be positive"))
     method == "PUT" && !any(kv -> lowercase(first(kv)) == "content-length", headers) &&
         throw(ArgumentError("http_stream: a streamed PUT needs a content-length header; without one libcurl sends a " *
                             "chunked body, which S3 refuses"))
     response = Downloads.request(url; method, headers, input, output = something(output, devnull),
-                                 throw = false, downloader = stream_downloader(stall))
+                                 throw = false, downloader = stream_downloader(stall, deadline))
     response isa Downloads.RequestError &&
         throw(TransportError("$method $(bare_url(url)): no response — $(response.message)"))
     return (; status = response.status, headers = response.headers)

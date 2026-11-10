@@ -355,10 +355,12 @@ AttachmentChangedError(msg; chain_id = nothing, key = nothing) = AttachmentChang
     AttachmentURLExpiredError(msg; chain_id, key, expires)
 
 Raised by `put_attachment` on a gateway bucket: S3 refused the upload because the URL the
-gateway minted had expired, "Request has expired", before the upload began (ADR-0046).
+gateway minted had expired (ADR-0046), and the message says which way: the upload ran past
+the URL's life (S3 refuses an upload still running then, and the client stops it there),
+this process waited past its life before uploading, or S3 called it expired well inside it.
 `expires` is the time the gateway gave, ISO 8601 in UTC. Nothing was stored. The next
-move: put the attachment again, which mints a new URL; if it recurs, check this machine's
-clock. `chain_id` is always `nothing`, as for [`AttachmentChangedError`](@ref).
+move: put the attachment again, which mints a new URL — over a faster link, if the upload
+outlasted the URL. `chain_id` is always `nothing`, as for [`AttachmentChangedError`](@ref).
 """
 struct AttachmentURLExpiredError <: ChainTablesError
     msg::String

@@ -177,7 +177,10 @@ SignatureDoesNotMatch`), so the 5 GiB check at mint binds the upload.
 `If-None-Match` refuses every write after the first (`412`), so a URL used
 again, as AWS allows until it expires, stores nothing more. An expired URL is
 `403` "Request has expired", raised as `AttachmentURLExpiredError`: putting the
-attachment again mints a new URL. The request runs as the
+attachment again mints a new URL. Since S3 refuses an upload still running at
+its URL's end, the client stops the PUT there, at the mint reply's arrival plus
+`seconds` on its monotonic clock, which is no earlier than S3's expiry, so it
+sends no more of a body S3 would refuse. The request runs as the
 gateway role, so `OnlyTheGatewayPuts` and the lock-header denies hold
 unchanged. The gateway checks no author and reads no content; attribution comes
 from the record whose row holds the hash.
@@ -339,10 +342,16 @@ is known only by reading the chain, which a write does not need.
   holds: `GatewayMismatchError`. The message says to redeploy the gateway for
   a URL with no signature or bad headers, else to pair the bucket with its own
   gateway.
-- A URL that expired before the upload started: `AttachmentURLExpiredError`,
-  carrying the gateway's `expires`; the message says to put the attachment
-  again. The client does not mint again by itself: a fresh URL lives at least
-  15 minutes, so an expiry means a stalled caller or a wrong clock.
+- An expired URL: `AttachmentURLExpiredError`, carrying the gateway's
+  `expires`, not retried. The message gives the cause the client measured: the
+  upload outlasted the URL (it gives the rate the size needs, says to put again
+  over a faster link, and that another put may get a longer URL if this one was
+  `capped`); the process waited past the URL's life before uploading; or S3
+  called it expired well inside its life (a clock off at the gateway or S3).
+  The client does not mint again by itself: a slow link would send the file
+  again only to fail again. The client's own clock plays no part: S3 judges the
+  expiry from the URL's signed date and lifetime. A minted reply without
+  `seconds` is from a gateway older than this: `GatewayMismatchError`, redeploy.
 - The attachment is absent from the chain's store, which is common once a
   retention ends: `AttachmentAbsentError`.
 - A download that does not hash to `<h>`, or a cache hit whose HEAD gives a

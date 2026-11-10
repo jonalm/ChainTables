@@ -157,7 +157,10 @@ function gwtest_mint(g::GatewayDouble, req)
     return gwtest_minted(g.s3, key, parse(Int, q["size"]))
 end
 
-function gwtest_minted(s3::S3TestServer, key, size; seconds = 900, url = nothing, edit = identity, query = true)
+# `seconds` is the URL's life at the S3 double, `lifetime` the one the reply gives (`nothing`: no
+# `seconds` or `capped` in it, as from a gateway older than 2026-11-10).
+function gwtest_minted(s3::S3TestServer, key, size; seconds = 900, lifetime = seconds, capped = false, url = nothing,
+                       edit = identity, query = true)
     signature = bytes2hex(rand(UInt8, 32))
     headers = edit(["content-length" => string(size), "content-type" => "application/octet-stream", "if-none-match" => "*",
                     "x-amz-checksum-sha256" => GWT.Base64.base64encode(hex2bytes(key[end-63:end])),
@@ -167,7 +170,8 @@ function gwtest_minted(s3::S3TestServer, key, size; seconds = 900, url = nothing
           (query ? "?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Expires=$seconds&X-Amz-SignedHeaders=host&X-Amz-Signature=$signature" : "")
     object = join(("\"$k\": \"$v\"" for (k, v) in headers), ", ")
     body = "{\"code\": \"minted\", \"message\": \"PUT the attachment's $size bytes\", \"url\": \"$url\", " *
-           "\"expires\": \"2026-11-06T12:00:00Z\", \"headers\": {$object}}"
+           "\"expires\": \"2026-11-06T12:00:00Z\", " *
+           (lifetime === nothing ? "" : "\"seconds\": $lifetime, \"capped\": $capped, ") * "\"headers\": {$object}}"
     return (200, ["content-type" => "application/json"], Vector{UInt8}(body))
 end
 
@@ -427,14 +431,55 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             e = try put(bad); nothing catch e; e end
             @test e isa GWT.AttachmentChangedError && e.key == bad && !haskey(s3.objects, bad)
             @test startswith(sprint(showerror, e), "AttachmentChangedError: attachment changed: the upload of $bad to $(s3test_endpoint(s3))/bkt/$bad was refused as BadDigest")
-            # an expired URL: refused by S3, and the message says to put it again
+            # an expired URL, two ways (ADR-0046: S3 refuses an upload still running when its URL expires).
+            # The caller waited past the URL's life before uploading: nothing is sent.
             fresh = rand(UInt8, 10); kf = "p/_attachments/" * bytes2hex(sha256(fresh))
-            double.respond = req -> req.rawpath == "/mint" ? gwtest_minted(s3, kf, 10; seconds = -1) : nothing
+            double.respond = req -> req.rawpath == "/mint" ? gwtest_minted(s3, kf, 10; seconds = 1) : nothing
+            reply = GWT.mint(store, kf, Int64(10))
+            sleep(1.2)
+            n = length(s3.requests)
+            e = try GWT.upload_minted(store, kf, IOBuffer(fresh), Int64(10), reply); nothing catch e; e end
+            @test e isa GWT.AttachmentURLExpiredError && e.key == kf && e.expires == "2026-11-06T12:00:00Z" && !GWT.retryable(e)
+            @test length(s3.requests) == n
+            @test sprint(showerror, e) == "AttachmentURLExpiredError: attachment URL expired: the URL the gateway at " *
+                "$(loopback_url(gw)) minted for $kf lived 1 s (until 2026-11-06T12:00:00Z), and this process waited 1 s " *
+                "after the mint before uploading. Nothing was sent. Put the attachment again, which mints a new URL (ADR-0046)."
+            # The upload outlasted the URL: still sending at its end, the client stops there rather than
+            # send the rest for S3 to refuse, and does not retry; a capped URL says so.
+            s3.respond = req -> req.method == "PUT" ? (sleep(4); nothing) : nothing
+            for (capped, coda) in ((false, ""), (true, " The gateway's AWS session shortened this URL (capped): another put " *
+                                   "may reach a younger gateway environment, which mints a longer one."))
+                double.respond = req -> req.rawpath == "/mint" ? gwtest_minted(s3, kf, 10; seconds = 1, capped) : nothing
+                t = @elapsed (e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end)
+                @test e isa GWT.AttachmentURLExpiredError && e.key == kf && !GWT.retryable(e) && t < 3.5
+                @test !haskey(s3.objects, kf)
+                head, tail = "AttachmentURLExpiredError: attachment URL expired: the upload of $kf ran ",
+                    " s, past the 1 s life of the URL the gateway minted (until 2026-11-06T12:00:00Z), and S3 refuses an " *
+                    "upload still running when its URL expires. Nothing was stored. Its 10 bytes need 1 KiB/s or more. " *
+                    "Put the attachment again over a faster link (ADR-0046)." * coda
+                msg = sprint(showerror, e)
+                @test startswith(msg, head) && endswith(msg, tail) && chopsuffix(chopprefix(msg, head), tail) in ("1", "2")
+                @test !occursin("X-Amz-Signature", sprint(showerror, e)) && !occursin("clock", sprint(showerror, e))
+            end
+            # S3 says expired well before the URL's life is out: said as such, not blamed on the link
+            s3.respond = req -> req.method == "PUT" ? (403, [], s3test_error("AccessDenied", "Request has expired")) : nothing
+            double.respond = req -> req.rawpath == "/mint" ? gwtest_minted(s3, kf, 10) : nothing
             e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
-            @test e isa GWT.AttachmentURLExpiredError && e.key == kf && e.expires == "2026-11-06T12:00:00Z"
-            @test occursin("the URL the gateway minted had expired (it gave 2026-11-06T12:00:00Z) before the upload began", sprint(showerror, e))
-            @test occursin("Put the attachment again, which mints a new URL", sprint(showerror, e))
-            @test !occursin("X-Amz-Signature", sprint(showerror, e))
+            @test e isa GWT.AttachmentURLExpiredError && !haskey(s3.objects, kf)
+            @test sprint(showerror, e) == "AttachmentURLExpiredError: attachment URL expired: S3 refused the upload of " *
+                "$kf as expired after 0 s, though the gateway gave its URL 900 s (until 2026-11-06T12:00:00Z): the gateway's " *
+                "clock is off, or S3's. Nothing was stored. Put the attachment again; if this recurs, report it to the " *
+                "bucket's operator (ADR-0046)."
+            s3.respond = _ -> nothing
+            # a gateway older than the lifetime in its reply: refused before a byte is sent
+            double.respond = req -> req.rawpath == "/mint" ? gwtest_minted(s3, kf, 10; lifetime = nothing) : nothing
+            n = length(s3.requests)
+            e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
+            @test e isa GWT.GatewayMismatchError && e.key == kf && length(s3.requests) == n
+            @test sprint(showerror, e) == "GatewayMismatchError: gateway mismatch: the gateway at $(loopback_url(gw)) " *
+                "minted a URL for $kf without its lifetime (\"seconds\", \"capped\"), which it gives since S3 was found " *
+                "to refuse an upload still running when its URL expires. Nothing was sent. Ask the bucket's operator " *
+                "to redeploy it (gateway/deploy.sh) (ADR-0046)."
             # a URL anywhere but the attachment's place in our bucket: refused before a byte is sent
             n = length(s3.requests)
             for url in ("$(s3test_endpoint(s3))/other/$kf", "$(s3test_endpoint(s3))/bkt/p/_attachments/" * "1"^64, "https://evil.example/bkt/$kf")
@@ -504,6 +549,10 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                                  ("{\"code\": \"minted\", \"url\": \"x\", \"expires\": \"y\", \"headers\": {\"a\": \"b\" \"c\": \"d\"}}", "not a flat map"),
                                  ("{\"code\": \"minted\", \"url\": \"x\", \"expires\": \"y\", \"headers\": {\"A\": \"b\"}}", "not a flat map"),
                                  ("{\"code\": \"minted\", \"url\": \"x\", \"expires\": \"y\", \"headers\": {}}", "an empty \"headers\" object"),
+                                 ("{\"code\": \"minted\", \"url\": \"x\", \"expires\": \"y\", \"seconds\": \"9\", \"capped\": false, \"headers\": {\"a\": \"b\"}}", "a \"seconds\" that is not a whole number"),
+                                 ("{\"code\": \"minted\", \"url\": \"x\", \"expires\": \"y\", \"seconds\": 9, \"headers\": {\"a\": \"b\"}}", "\"seconds\" without \"capped\""),
+                                 ("{\"code\": \"minted\", \"url\": \"x\", \"expires\": \"y\", \"seconds\": 9, \"capped\": 1, \"headers\": {\"a\": \"b\"}}", "a \"capped\" that is not true or false"),
+                                 ("{\"code\": \"minted\", \"url\": \"x\", \"expires\": \"y\", \"capped\": 1, \"headers\": {\"a\": \"b\"}}", "\"capped\" without \"seconds\""),
                                  ("{\"code\": \"stored\"}", "with code \"stored\", neither present nor minted"))
                 double.respond = req -> (200, [], Vector{UInt8}(body))
                 e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
