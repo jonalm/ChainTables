@@ -5,18 +5,19 @@
       poll     --state S.json                     # session-lifetime canary; repeat until it changes
       slot     --bucket B --role R --function F   # DenyPresignedSlotPuts: a role-signed URL for a slot is denied
       policy   --bucket B --role R --function F --retention-days N  # #92's bucket-policy statements
+      expiry   --bucket B --role R --function F   # does an upload begun before its URL expires survive it?
       teardown --function F --region X            # only if a command died before its own teardown
 
 Credentials: the ambient AWS profile (an administrator: lambda create/delete, iam:PassRole, s3
 head). URLs are signed inside a throwaway Lambda F running as the gateway role R, since
-OnlyTheGatewayPuts denies every other principal. run, slot and policy each deploy F and delete
+OnlyTheGatewayPuts denies every other principal. run, slot, policy and expiry each deploy F and delete
 it when they end, whatever the outcome: while it exists, any admin who invokes it signs as the
 gateway. Every key is under attachment-probe/<run>/. What a PUT stores is COMPLIANCE-retained
 and cannot be deleted until it expires: one day, except where a case below says otherwise.
 Fail-fast: any unexpected AWS error in setup aborts; each case reports what S3 answered.
 """
 import contextlib
-import argparse, base64, hashlib, http.client, io, json, os, secrets, sys, time, urllib.parse, zipfile
+import argparse, base64, hashlib, http.client, io, json, math, os, secrets, sys, time, urllib.parse, zipfile
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 
@@ -262,6 +263,75 @@ def slot_cases(a, s3, lam, region, key_arn):
         sys.exit("slot probe: not the expected outcome (control 200 and stored; slot 403 AccessDenied, not stored)")
 
 
+def expiry(a):
+    """ADR-0046's open question: does an upload that starts before its URL expires survive the
+    expiry? A URL signed under the gateway role, as the gateway signs (every lock, KMS and checksum
+    header, the length), that lives --lifetime seconds; the PUT's headers and first byte go at once,
+    then one byte every --gap seconds until --past seconds after the expiry (a trickle, so S3 does
+    not close the connection as idle), then the response. Reports, and exits zero, either way:
+      survives        200, stored;
+      does not        403 AccessDenied "Request has expired", nothing stored.
+    Exits non-zero on anything else (e.g. RequestTimeout: --gap too long), or if the upload did
+    not start well before the expiry or end past it. The stored object is retained one day."""
+    region, s3, key_arn = bucket_session(a.bucket)
+    with signer(a.role, a.function, region) as lam:
+        expiry_case(a, s3, lam, region, key_arn)
+
+
+def expiry_case(a, s3, lam, region, key_arn):
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(3)
+    retain_iso = iso(datetime.now(timezone.utc) + timedelta(days=1))
+    n_bytes = 1 + math.ceil((a.lifetime + a.past) / a.gap)
+    body = secrets.token_bytes(n_bytes)
+    digest = hashlib.sha256(body).digest()
+    b64 = base64.b64encode(digest).decode()
+    key = f"attachment-probe/{run_id}/_attachments/{digest.hex()}"
+    params = {"Bucket": a.bucket, "Key": key, "ContentLength": n_bytes, "ChecksumSHA256": b64, "IfNoneMatch": "*",
+              "ContentType": "application/octet-stream", "ServerSideEncryption": "aws:kms", "SSEKMSKeyId": key_arn,
+              "BucketKeyEnabled": True, "ObjectLockMode": "COMPLIANCE", "ObjectLockRetainUntilDate": retain_iso}
+    sent = {"Content-Length": str(n_bytes), "x-amz-checksum-sha256": b64, "If-None-Match": "*",
+            "Content-Type": "application/octet-stream", "x-amz-server-side-encryption": "aws:kms",
+            "x-amz-server-side-encryption-aws-kms-key-id": key_arn,
+            "x-amz-server-side-encryption-bucket-key-enabled": "true", "x-amz-object-lock-mode": "COMPLIANCE",
+            "x-amz-object-lock-retain-until-date": retain_iso}
+    print(f"bucket {a.bucket} ({region}), run {run_id}: a URL living {a.lifetime} s, {n_bytes} bytes, "
+          f"one every {a.gap} s, ending about {a.past} s past the expiry")
+    (url,) = mint(lam, a.function, [{"method": "put_object", "params": params, "expires": a.lifetime}])["urls"]
+    signed_at = time.time()
+    expires_at = signed_at + a.lifetime
+    u = urllib.parse.urlsplit(url)
+    c = http.client.HTTPSConnection(u.netloc, timeout=a.gap * 10 + 60)
+    c.putrequest("PUT", f"{u.path}?{u.query}", skip_accept_encoding=True)
+    for k, v in sent.items():
+        c.putheader(k, v)
+    c.endheaders()
+    started = time.time()
+    if started > expires_at - a.lifetime / 2:
+        sys.exit(f"expiry probe: the upload started {started - signed_at:.0f} s after signing, too near the expiry")
+    for i in range(n_bytes):
+        if i:
+            time.sleep(a.gap)
+        c.send(body[i:i + 1])
+    ended = time.time()
+    r = c.getresponse()
+    data = r.read()
+    code = msg = None
+    if data.startswith(b"<?xml") or data.startswith(b"<Error"):
+        e = ET.fromstring(data)
+        code, msg = e.findtext("Code"), e.findtext("Message")
+    st = is_stored(s3, a.bucket, key)
+    print(f"upload started {expires_at - started:.0f} s before the expiry, last byte {ended - expires_at:.0f} s after it")
+    print(f"answer: {(r.status, code, msg)} stored={st}")
+    if ended < expires_at + a.past / 2:
+        sys.exit("expiry probe: the last byte went too soon after the expiry to tell")
+    if r.status == 200 and st:
+        print("expiry probe: an upload started before its URL expires SURVIVES the expiry")
+    elif r.status == 403 and code == "AccessDenied" and "expired" in (msg or "") and not st:
+        print("expiry probe: an upload started before its URL expires DOES NOT survive the expiry")
+    else:
+        sys.exit("expiry probe: neither outcome: see the answer above")
+
+
 def is_stored(s3, bucket, key):
     try:
         s3.head_object(Bucket=bucket, Key=key)
@@ -439,7 +509,7 @@ def poll(a):
 def main():
     p = argparse.ArgumentParser()
     sp = p.add_subparsers(dest="cmd", required=True)
-    for name in ("run", "slot", "policy"):
+    for name in ("run", "slot", "policy", "expiry"):
         c = sp.add_parser(name)
         for arg in ("--bucket", "--role", "--function"):
             c.add_argument(arg, required=True)
@@ -447,10 +517,14 @@ def main():
             c.add_argument("--state", required=True)
         if name == "policy":
             c.add_argument("--retention-days", type=int, required=True)
+        if name == "expiry":
+            c.add_argument("--lifetime", type=int, default=60, help="the URL's lifetime, seconds")
+            c.add_argument("--gap", type=float, default=3, help="seconds between bytes")
+            c.add_argument("--past", type=int, default=60, help="seconds the upload runs past the expiry")
     q = sp.add_parser("poll"); q.add_argument("--state", required=True)
     t = sp.add_parser("teardown"); t.add_argument("--function", required=True); t.add_argument("--region", required=True)
     a = p.parse_args()
-    {"run": run, "poll": poll, "slot": slot, "policy": policy, "teardown": teardown}[a.cmd](a)
+    {"run": run, "poll": poll, "slot": slot, "policy": policy, "expiry": expiry, "teardown": teardown}[a.cmd](a)
 
 
 if __name__ == "__main__":
