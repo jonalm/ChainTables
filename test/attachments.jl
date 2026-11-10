@@ -104,7 +104,7 @@ const ATT = ChainTables
         end
     end
 
-    @testset "through a gateway: put retries session_ending; touch HEADs, then mints with the size, which must be present" begin
+    @testset "through a gateway: put stops at session_ending; touch HEADs, then mints with the size, which must be present" begin
         s3 = S3TestServer(; bucket = "bkt", credentials = GWTEST_CREDS)
         double = GatewayDouble(s3, GWTEST_CREDS, "eu-north-1", "alice@example.com", ["p" => ["alice@example.com"]], _ -> nothing)
         gw = LoopbackServer(double)
@@ -117,10 +117,20 @@ const ATT = ChainTables
                 bytes = rand(UInt8, 3000)
                 h = bytes2hex(sha256(bytes))
                 key = "p/_attachments/$h"
-                # 503 session_ending once: minted again, by another environment
-                ending = Ref(true)
-                double.respond = req -> req.rawpath == "/mint" && ending[] ?
-                    (ending[] = false; gwtest_json(503, "session_ending", "this environment's session ends too soon")) : nothing
+                # 503 session_ending: not retried at once, since the next mint most likely reaches the same
+                # old environment (#94); nothing is stored, and a later put mints again
+                double.respond = req -> req.rawpath == "/mint" ?
+                    gwtest_json(503, "session_ending", "this environment's session ends too soon") : nothing
+                e = try ATT.put_attachment(chain, IOBuffer(bytes)); nothing catch e; e end
+                @test e isa ATT.GatewaySessionEndingError && e.key == key && e.gateway == loopback_url(gw) && !GWT.retryable(e)
+                @test sprint(showerror, e) == "GatewaySessionEndingError: gateway session ending: the gateway at " *
+                    "$(loopback_url(gw)) did not mint the upload of $key — session_ending: this environment's session " *
+                    "ends too soon. The Lambda execution environment that answered is too old: its AWS session ends " *
+                    "within 15 min, too soon to sign a URL. A retry now most likely reaches the same environment, so " *
+                    "put_attachment did not retry. Nothing was stored. Put the attachment again later, once Lambda has " *
+                    "replaced that environment (ADR-0046, #94)."
+                @test length(mints()) == 1 && !haskey(s3.objects, key)
+                double.respond = _ -> nothing
                 @test ATT.put_attachment(chain, IOBuffer(bytes)) == h && s3.objects[key] == bytes
                 @test length(mints()) == 2
                 double.respond = _ -> nothing

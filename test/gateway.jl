@@ -577,7 +577,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                            "403 AccessDenied to the HEAD. S3 refused one of the gateway's own calls for the attachment — " *
                            "its HEAD, GetObjectRetention or PutObjectRetention — so the gateway's deployment is wrong and " *
                            "a retry cannot help: report it to the bucket's operator (ADR-0046).", sprint(showerror, e))
-            for (status, code, retry) in ((503, "session_ending", true), (502, "s3_error", true), (413, "too_large", false), (400, "not_a_slot", false))
+            for (status, code, retry) in ((502, "s3_error", true), (413, "too_large", false), (400, "not_a_slot", false))
                 double.respond = req -> gwtest_json(status, code, "the gateway's word")
                 e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
                 @test e isa TransportError && e.status == status && GWT.retryable(e) == retry

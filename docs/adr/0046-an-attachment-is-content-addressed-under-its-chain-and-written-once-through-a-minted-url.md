@@ -155,8 +155,10 @@ no expiry to the function, so the gateway records when its execution
 environment started, at import, and caps the lifetime at 12 h minus the
 environment's age minus 1 h; the hour covers the credentials being issued
 somewhat before the import. Below the 15-minute floor it mints nothing and
-refuses with `503 session_ending`, which the client retries, since another
-environment may be younger. The present path is never capped: it mints no URL.
+refuses with `503 session_ending`. The client raises it as
+`GatewaySessionEndingError` and does not retry: a warm environment that just
+answered most likely takes the next request too, so a retry within its backoff
+would meet the same one (#94). The user puts again later. The present path is never capped: it mints no URL.
 The 12 h is probed, not documented by AWS. An upload must end before its URL
 expires: one begun a minute before the expiry and still sending a minute after
 it is `403` "Request has expired" and stores nothing (probed 2026-11-10). So
@@ -239,8 +241,9 @@ keep.
 - `put_attachment(chain, path_or_io) -> hash` hashes, then mints and uploads.
   It takes a path or a seekable IO and refuses a non-seekable one: the hash
   must be known before the upload, and 5 GiB must not be held in memory.
-  A retryable `TransportError` (ADR-0010's rule: no status, `5xx` with
-  `503 session_ending`, `409`, `429`) runs the whole put again, up to the
+  A retryable `TransportError` (ADR-0010's rule: no status, `5xx`, `409`,
+  `429`; `503 session_ending` is `GatewaySessionEndingError` instead, not
+  retried, #94) runs the whole put again, up to the
   commit's four attempts and backoff. That is safe because a put whose upload
   landed finds the key present; the cost is that a failure partway through an
   upload sends the file again.

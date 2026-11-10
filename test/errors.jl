@@ -1,4 +1,4 @@
-# ADR-0020 — the taxonomy: twenty-three types under one supertype, each with `msg` and its evidence as
+# ADR-0020 — the taxonomy: twenty-four types under one supertype, each with `msg` and its evidence as
 # keyword fields defaulting to nothing. Every type is provoked, with @test_throws "<message>", in
 # the test file of the lane that raises it (localcopy.jl, ops.jl, builder.jl, chain.jl, recovery.jl,
 # gateway.jl); the one step 9 raises — UnsupportedStoreError — is checked by construction here.
@@ -11,7 +11,7 @@
         ChainTables.LocalCopyInconsistentError, ChainTables.MalformedRecordError, ChainTables.WriteRefusedError,
         ChainTables.GatewayMismatchError, ChainTables.RecordCacheError, ChainTables.CommitOutcomeUnknownError,
         ChainTables.AttachmentChangedError, ChainTables.AttachmentURLExpiredError, ChainTables.AttachmentAbsentError,
-        ChainTables.AttachmentDigestError, ChainTables.AttachmentCacheError,
+        ChainTables.AttachmentDigestError, ChainTables.AttachmentCacheError, ChainTables.GatewaySessionEndingError,
     )
         @test T <: ChainTables.ChainTablesError
         @test ChainTables.ChainTablesError <: Exception
@@ -56,5 +56,9 @@
     @test fieldnames(ChainTables.AttachmentAbsentError) == (:msg, :chain_id, :key)
     @test fieldnames(ChainTables.AttachmentDigestError) == (:msg, :chain_id, :key, :found, :size)
     @test fieldnames(ChainTables.AttachmentCacheError) == (:msg, :chain_id, :key, :path)
+    # a mint refused by an environment too old to sign a URL (#94): not retried, the next move is to wait
+    e = ChainTables.GatewaySessionEndingError("session ending"; key = "p/_attachments/" * "0"^64, gateway = "https://gw")
+    @test (e.key, e.gateway) == ("p/_attachments/" * "0"^64, "https://gw") && !ChainTables.retryable(e)
+    @test fieldnames(ChainTables.GatewaySessionEndingError) == (:msg, :chain_id, :key, :gateway)
     @test isabstracttype(ChainTables.AbstractObjectStore)
 end

@@ -33,6 +33,7 @@ function to call, where there is one.
 | `AttachmentAbsentError` | touch_attachment, attachment, repair! | the chain's store holds no such attachment — never put, or deleted after its retention ended: whoever holds the file puts it again; a reader without it cannot. `repair!` raises it once after its pass, naming every confirmed hash gone, whose markers it removed (ADR-0046) |
 | `AttachmentDigestError` | attachment, repair! | the store returned bytes that do not hash to the attachment's key, and nothing was cached; or, on a cache hit, the store's size differs from a cached file that hashes right, which is kept: stop, the bucket was written from outside the protocol (ADR-0046) |
 | `AttachmentCacheError` | attachment, verify (full) | the attachment cache's file does not hash to its name (a file that does, beside a sidecar that disagrees, has the sidecar rewritten), or changed while it was being hashed, because something other than ChainTables writes the cache: stop that; delete the file and its `.meta`, always safe, and the next read fetches it again; from `verify`, `repair!(copy)` does that for the confirmed hashes (ADR-0046) |
+| `GatewaySessionEndingError` | put_attachment | the gateway's execution environment is too old to sign a URL (`503 session_ending`); not retried, since a retry now most likely meets the same environment: put again later, once Lambda has replaced it; nothing was stored (ADR-0046, #94) |
 
 ADR-0023 and ADR-0014 both close by saying each failure must be
 *distinguishable* and that the names were issue #16's. This is that list
@@ -49,7 +50,9 @@ neither a refusal nor a mismatch; `AttachmentAbsentError` added with
 chain's absence nor a damaged copy; `AttachmentDigestError` and
 `AttachmentCacheError` added with `attachment`, the first because bad bytes in
 the store are not a rewritten chain, the second because `RecordCacheError`'s
-evidence, a slot and a transaction hash, does not fit an attachment).
+evidence, a slot and a transaction hash, does not fit an attachment;
+`GatewaySessionEndingError` added by #94, because its next move is to wait,
+which a retryable `TransportError` cannot say).
 
 ## Why types at all, when the message is the target
 

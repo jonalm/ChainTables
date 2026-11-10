@@ -112,7 +112,8 @@ ADR-0046's write on a gateway bucket:
 | mint `403`, or `502 s3_refused` | [`WriteRefusedError`](@ref), as for a slot |
 | mint `400 bad_request` from a gateway that predates the route | [`WriteRefusedError`](@ref), `reason = "no_mint_route"`: redeploy it |
 | mint `400`, `413` | `TransportError`, not retried |
-| mint `409`, `429`, `5xx` (`503 session_ending` among them) | `TransportError`, retryable |
+| mint `503 session_ending` | [`GatewaySessionEndingError`](@ref), not retried: put again later (#94) |
+| mint `409`, `429`, any other `5xx` | `TransportError`, retryable |
 | upload `400 BadDigest` | [`AttachmentChangedError`](@ref) |
 | upload `403` "Request has expired", or still running at the URL's end | [`AttachmentURLExpiredError`](@ref), not retried |
 | any other upload status | `TransportError` carrying S3's code, the URL's signature left out |
@@ -164,8 +165,16 @@ function mint(store::GatewayObjectStore, key::String, size::Int64)
             "attachments (ADR-0046): ask the bucket's operator to redeploy it (gateway/deploy.sh)."; key,
             reason = "no_mint_route"))
     end
+    if status == 503 && code == "session_ending"
+        throw(GatewaySessionEndingError("gateway session ending: the gateway at $(store.function_url) did not mint the " *
+            "upload of $key — session_ending: $(something(message, "no message")). The Lambda execution environment " *
+            "that answered is too old: its AWS session ends within 15 min, too soon to sign a URL. A retry now most " *
+            "likely reaches the same environment, so put_attachment did not retry. Nothing was stored. Put the " *
+            "attachment again later, once Lambda has replaced that environment (ADR-0046, #94)."; key,
+            gateway = store.function_url))
+    end
     detail = code === nothing ? "" : " " * code * (message === nothing ? "" : ": " * message)
-    throw(TransportError("POST $url: HTTP $status$detail"; status))    # 409, 429 and 5xx — session_ending among them — are retryable
+    throw(TransportError("POST $url: HTTP $status$detail"; status))    # 409, 429 and 5xx are retryable
 end
 
 # One `"name": "value"` of a minted reply's `headers`: a lowercase name, and a value of
@@ -362,13 +371,13 @@ plain bucket by one streamed PUT, on a gateway bucket through the mint route. Al
 present: nothing is uploaded, and on a gateway bucket its retention is extended. At most
 5 GiB.
 
-A retryable `TransportError` (a timeout, a `5xx` — the gateway's `503 session_ending`
-among them — a `409`, a `429`) runs the whole put again, up to
+A retryable `TransportError` (a timeout, a `5xx`, a `409`, a `429`) runs the whole put again, up to
 [`PUT_ATTEMPTS`](@ref) times; a put whose upload landed then finds it present. A failure
 partway through an upload therefore sends the file again.
 
 Raises [`AttachmentChangedError`](@ref) if the file changes between hashing and upload,
-[`AttachmentURLExpiredError`](@ref), [`WriteRefusedError`](@ref) and
+[`AttachmentURLExpiredError`](@ref), [`GatewaySessionEndingError`](@ref) (the gateway's
+`503 session_ending`, not retried), [`WriteRefusedError`](@ref) and
 [`GatewayMismatchError`](@ref) on a gateway bucket; an `ArgumentError` for a non-seekable
 IO, an IO not at its start, a path that is not a file, or over 5 GiB.
 """

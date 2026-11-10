@@ -43,7 +43,8 @@ an empty body, the first failure winning:
    ``x-amz-checksum-sha256``, ``x-amz-tagging``, and on a locked bucket the SSE-KMS and lock
    headers, plus ``retain_until`` in the reply). A URL lives 15 min plus the size at 256 KiB/s,
    since an upload must end before its URL expires, capped at 12 h less the environment's age
-   less 1 h; under 15 min it is ``503 session_ending``, which the client retries. The reply
+   less 1 h; under 15 min it is ``503 session_ending``, which the client raises without retrying
+   (a retry most likely reaches the same environment, #94). The reply
    gives the lifetime in ``seconds`` and ``capped``, true when the cap shortened it (also
    logged). The margin is the lifetime plus a day.
    The role also needs ``s3:GetObject`` and ``s3:ListBucket`` (so an absent key HEADs 404,
@@ -571,8 +572,8 @@ class Gateway:
         cap = math.floor(SESSION_SECONDS - SESSION_SLACK_SECONDS - (clock - self.started).total_seconds())
         if cap < MIN_URL_SECONDS:
             raise Refusal(503, "session_ending",
-                          f"this gateway's AWS session ends too soon to mint a URL that lives {MIN_URL_SECONDS} "
-                          "seconds: retry, and another execution environment answers")
+                          f"this execution environment's AWS session ends too soon to sign a URL that lives "
+                          f"{MIN_URL_SECONDS} seconds: put again later, once Lambda has replaced the environment")
         wanted = self._wanted_seconds(size)
         seconds = min(wanted, cap)
         capped = seconds < wanted

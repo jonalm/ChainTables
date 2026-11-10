@@ -188,12 +188,13 @@ def test_a_cap_of_exactly_15_minutes_still_mints(s3):
     assert parse_qs(urlsplit(out["url"]).query)["X-Amz-Expires"] == ["900"]
 
 
-def test_a_cap_under_15_minutes_mints_nothing_and_says_retry(s3):
+def test_a_cap_under_15_minutes_mints_nothing_and_says_put_again_later(s3):
     g = make(s3, started=NOW - timedelta(hours=10, minutes=46))
     s3.head_absent(KEY)
     status, out = parse(g.handle(mint_event()))
     assert (status, out["code"]) == (503, "session_ending")
-    assert "retry" in out["message"]
+    assert out["message"] == ("this execution environment's AWS session ends too soon to sign a URL that lives 900 "
+                              "seconds: put again later, once Lambda has replaced the environment")
     assert "url" not in out
 
 

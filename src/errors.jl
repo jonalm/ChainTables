@@ -372,6 +372,26 @@ AttachmentURLExpiredError(msg; chain_id = nothing, key = nothing, expires = noth
     AttachmentURLExpiredError(msg, chain_id, key, expires)
 
 """
+    GatewaySessionEndingError(msg; chain_id, key, gateway)
+
+Raised by `put_attachment` on a gateway bucket: the gateway answered the mint with `503
+session_ending` — the Lambda execution environment that answered is too old to sign a URL,
+its AWS session ending within 15 min (ADR-0046). Not retried: a warm environment that just
+answered most likely takes the next request too, so a retry now would meet the same one
+(#94). Nothing was stored. The next move: put the attachment again later, once Lambda has
+replaced that environment. `gateway` is the gateway's function URL; `chain_id` is always
+`nothing`, as for [`AttachmentChangedError`](@ref).
+"""
+struct GatewaySessionEndingError <: ChainTablesError
+    msg::String
+    chain_id::MaybeString
+    key::MaybeString
+    gateway::MaybeString
+end
+GatewaySessionEndingError(msg; chain_id = nothing, key = nothing, gateway = nothing) =
+    GatewaySessionEndingError(msg, chain_id, key, gateway)
+
+"""
     AttachmentAbsentError(msg; chain_id, key)
 
 Raised by `touch_attachment` and `attachment`: the chain's store holds no attachment at
