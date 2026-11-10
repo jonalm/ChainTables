@@ -41,9 +41,11 @@ an empty body, the first failure winning:
    object of the lowercase names and values the URL signs, which the client sends exactly
    (``content-type``, ``content-length``, ``if-none-match``, the base64
    ``x-amz-checksum-sha256``, ``x-amz-tagging``, and on a locked bucket the SSE-KMS and lock
-   headers, plus ``retain_until`` in the reply). A URL lives 15 min plus the size at 1 MiB/s,
-   capped at 12 h less the environment's age less 1 h; under 15 min it is
-   ``503 session_ending``, which the client retries. The margin is the lifetime plus a day.
+   headers, plus ``retain_until`` in the reply). A URL lives 15 min plus the size at 256 KiB/s,
+   since an upload must end before its URL expires, capped at 12 h less the environment's age
+   less 1 h; under 15 min it is ``503 session_ending``, which the client retries. The reply
+   gives the lifetime in ``seconds`` and ``capped``, true when the cap shortened it (also
+   logged). The margin is the lifetime plus a day.
    The role also needs ``s3:GetObject`` and ``s3:ListBucket`` (so an absent key HEADs 404,
    not 403) and ``s3:PutObjectTagging``, and on a locked bucket ``s3:GetObjectRetention``.
 
@@ -101,13 +103,13 @@ POLICY_FORMAT_VERSION = 1
 ENVIRONMENT_START = datetime.now(timezone.utc)
 
 # The mint route (ADR-0046). S3's limit for one PUT; a URL lives 15 min plus the declared
-# size at 1 MiB/s, capped at 12 h less the environment's age less 1 h, and none is minted
+# size at 256 KiB/s (S3 refuses an upload still running at the expiry: probed), capped at 12 h less the environment's age less 1 h, and none is minted
 # under the 15 min floor. The margin, added to an attachment's retention, is the URL's
 # lifetime plus a day between upload and commit.
 MAX_ATTACHMENT_BYTES = 5 * 1024 ** 3
 MIN_URL_SECONDS = 15 * 60
 MAX_SIZE_DIGITS = 11
-URL_BYTES_PER_SECOND = 1024 * 1024
+URL_BYTES_PER_SECOND = 256 * 1024
 SESSION_SECONDS = 12 * 3600
 SESSION_SLACK_SECONDS = 3600
 COMMIT_ALLOWANCE = timedelta(days=1)
@@ -571,7 +573,12 @@ class Gateway:
             raise Refusal(503, "session_ending",
                           f"this gateway's AWS session ends too soon to mint a URL that lives {MIN_URL_SECONDS} "
                           "seconds: retry, and another execution environment answers")
-        seconds = min(self._wanted_seconds(size), cap)
+        wanted = self._wanted_seconds(size)
+        seconds = min(wanted, cap)
+        capped = seconds < wanted
+        if capped:
+            log.warning("capped %s: the URL lives %d s, not the %d s its %d bytes want, since this environment's "
+                        "AWS session ends sooner", key, seconds, wanted, size)
         params = {"Bucket": self.bucket, "Key": key, "ContentType": "application/octet-stream", "ContentLength": size,
                   "IfNoneMatch": "*", "ChecksumSHA256": base64.b64encode(bytes.fromhex(key[-64:])).decode("ascii"),
                   "Tagging": ATTACHMENT_TAG}
@@ -584,8 +591,9 @@ class Gateway:
         url, headers = self._presign(params, seconds)
         expires = iso_z(now + timedelta(seconds=seconds))
         log.info("minted %s by %s (%d bytes, expires %s)", key, name, size, expires)
-        return response(200, "minted", f"PUT the attachment's {size} bytes to the url with exactly these headers "
-                                       f"before {expires}", url=url, expires=expires, headers=headers, **extra)
+        return response(200, "minted", f"PUT the attachment's {size} bytes to the url with exactly these headers; "
+                                       f"the upload must end before {expires}", url=url, expires=expires, seconds=seconds,
+                    capped=capped, headers=headers, **extra)
 
     def _presign(self, params: dict, seconds: int) -> tuple[str, dict]:
         """A presigned PUT and the headers it signs, in botocore's own serialization, so the

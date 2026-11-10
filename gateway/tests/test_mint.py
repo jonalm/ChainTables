@@ -58,8 +58,8 @@ def locked(s3):
     return make(s3, lock=LOCK)
 
 
-def lifetime(size):
-    return 900 + -(-size // (1024 * 1024))
+def lifetime(size):  # 15 min plus the size at 256 KiB/s: an upload must end before its URL expires
+    return 900 + -(-size // (256 * 1024))
 
 
 def iso(t):
@@ -84,6 +84,7 @@ def test_absent_attachment_is_minted_a_url_for_its_key_on_the_regional_host(plai
     assert (u.scheme, u.netloc, u.path) == ("https", f"{BUCKET}.s3.eu-north-1.amazonaws.com", "/" + KEY)
     assert parse_qs(u.query)["X-Amz-Expires"] == [str(lifetime(5))]
     assert out["expires"] == iso(NOW_S + timedelta(seconds=lifetime(5)))
+    assert (out["seconds"], out["capped"]) == (lifetime(5), False)
     assert "retain_until" not in out
 
 
@@ -157,22 +158,26 @@ def test_the_deployed_client_presigns_on_the_regional_host(monkeypatch, region):
 @pytest.mark.parametrize("size, seconds", [
     ("0", 900),
     ("1", 901),
-    (str(1024 * 1024), 901),
-    (str(1024 * 1024 + 1), 902),
-    (str(GIB5), 900 + 5120),
+    (str(256 * 1024), 901),
+    (str(256 * 1024 + 1), 902),
+    (str(GIB5), 900 + 20480),
 ])
-def test_lifetime_is_15_minutes_plus_the_size_at_1_mib_per_second(plain, s3, size, seconds):
+def test_lifetime_is_15_minutes_plus_the_size_at_256_kib_per_second(plain, s3, size, seconds):
     s3.head_absent(KEY)
     _, out = parse(plain.handle(mint_event(size=size)))
     assert parse_qs(urlsplit(out["url"]).query)["X-Amz-Expires"] == [str(seconds)]
+    assert (out["seconds"], out["capped"]) == (seconds, False)
 
 
-def test_lifetime_is_capped_at_12_hours_less_the_environments_age_less_1_hour(s3):
-    g = make(s3, started=NOW - timedelta(hours=10, minutes=30))  # cap 30 min, under the 100 min wanted
+def test_lifetime_is_capped_at_12_hours_less_the_environments_age_less_1_hour(s3, caplog):
+    g = make(s3, started=NOW - timedelta(hours=10, minutes=30))  # cap 30 min, under the 5.9 h wanted
     s3.head_absent(KEY)
     _, out = parse(g.handle(mint_event(size=str(GIB5))))
     assert parse_qs(urlsplit(out["url"]).query)["X-Amz-Expires"] == ["1800"]
     assert out["expires"] == iso(NOW_S + timedelta(seconds=1800))
+    assert (out["seconds"], out["capped"]) == (1800, True)
+    assert f"capped {KEY}: the URL lives 1800 s, not the {900 + 20480} s its {GIB5} bytes want, " \
+           "since this environment's AWS session ends sooner" in caplog.messages
 
 
 def test_a_cap_of_exactly_15_minutes_still_mints(s3):

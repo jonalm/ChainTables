@@ -106,8 +106,10 @@ gateway bucket uses it; a locked one adds the KMS and lock headers.
      outside us-east-1 with `307`. In us-east-1 virtual addressing alone
      still signs the global host, which the gateway refuses to hand out, so
      it also sets `us_east_1_regional_endpoint = "regional"`. The reply is
-     `200 minted` with `url`, `expires` and `headers`: a flat JSON object of the lowercase names and
-     values the URL signs, in botocore's own serialization, `host` excepted.
+     `200 minted` with `url`, `expires`, `seconds` (the URL's lifetime),
+     `capped` (true when the session cap shortened it) and `headers`: a flat
+     JSON object of the lowercase names and values the URL signs, in botocore's
+     own serialization, `host` excepted.
      The client reads it as it reads every reply, with no JSON parser; every
      value is ASCII with no quote. On a locked bucket it also carries
      `retain_until`. A failed HEAD, `GetObjectRetention` or
@@ -155,12 +157,18 @@ environment's age minus 1 h; the hour covers the credentials being issued
 somewhat before the import. Below the 15-minute floor it mints nothing and
 refuses with `503 session_ending`, which the client retries, since another
 environment may be younger. The present path is never capped: it mints no URL.
-The lifetime is 15 minutes plus the declared size at 1 MiB/s, about 100 minutes
-at 5 GiB, so a slow link does not rely on an upload surviving its URL's expiry.
-The present path's margin uses the same uncapped lifetime of the declared size. The 12 h is probed, not
-documented by AWS. S3 checks the
-expiry when a request starts, so an upload that has begun survives it
-(per AWS; not yet probed).
+The 12 h is probed, not documented by AWS. An upload must end before its URL
+expires: one begun a minute before the expiry and still sending a minute after
+it is `403` "Request has expired" and stores nothing (probed 2026-11-10). So
+the lifetime is 15 minutes plus the declared size at 256 KiB/s (2 Mbit/s),
+about 5.9 h at 5 GiB: a link that slow still finishes. It was 1 MiB/s, on the
+belief, from AWS, that S3 checks the expiry only when a request starts. A
+slower rate would be capped by the session for most environments; at this one
+a 5 GiB mint is capped only once its environment is about 5 h old. A capped
+mint says so (`capped`, and a gateway log line), since a shortened URL is what
+a slow upload then fails on. The present path's margin uses the same uncapped
+lifetime of the declared size. The longest retention, N days + 1 day + 5.9 h,
+is N + 1 whole days, well under the cap.
 
 S3 enforces what the gateway cannot see. A body that does not hash to `<h>` is
 refused (`400 BadDigest`). A missing or altered signed header, a body whose
@@ -491,6 +499,8 @@ a signed header, which S3 enforces like any other.
   - a presigned `GetObject` of the control is a 403, though the role holds
     `s3:GetObject` on attachment keys;
   - `run.sh attachments` passed, 53 of 53.
-- **Still unverified**:
-  - whether an upload that starts before its URL expires survives the
-    expiry.
+- **Probed on 2026-11-10** (`attachment_probe.py expiry`, run
+  `20261110T154105Z-1bd43b`): a role-signed URL living 60 s, a PUT whose headers
+  and first byte went 60 s before the expiry, one byte every 3 s, the last 60 s
+  after it: `403 AccessDenied` "Request has expired", nothing stored. An upload
+  that begins before its URL expires does not survive the expiry.

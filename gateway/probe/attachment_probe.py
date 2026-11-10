@@ -264,8 +264,9 @@ def slot_cases(a, s3, lam, region, key_arn):
 
 
 def expiry(a):
-    """ADR-0046's open question: does an upload that starts before its URL expires survive the
-    expiry? A URL signed under the gateway role, as the gateway signs (every lock, KMS and checksum
+    """Does an upload that starts before its URL expires survive the expiry? Probed 2026-11-10: no,
+    `403 AccessDenied` "Request has expired" (ADR-0046), which is why the gateway's URLs now allow
+    256 KiB/s. A URL signed under the gateway role, as the gateway signs (every lock, KMS and checksum
     header, the length), that lives --lifetime seconds; the PUT's headers and first byte go at once,
     then one byte every --gap seconds until --past seconds after the expiry (a trickle, so S3 does
     not close the connection as idle), then the response. Reports, and exits zero, either way:
