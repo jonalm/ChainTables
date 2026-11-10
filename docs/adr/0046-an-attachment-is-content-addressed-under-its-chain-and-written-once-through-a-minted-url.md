@@ -183,7 +183,8 @@ author check. It names `s3:PutObjectRetention` and `s3:PutObjectTagging` as well
 as `s3:PutObject`, since S3 authorizes those too for a put carrying lock headers
 or a tag. The role is denied every other action not signed in a header
 (`DenyGatewayPresignedNonPuts`), and a locked bucket caps every retention at
-N + 3 days (`DenyLongRetention`), so whatever signs as the role cannot lock an
+N + 3 whole days (`DenyLongRetention`; S3 rounds the remaining days down, so a
+date under N + 4 days passes), so whatever signs as the role cannot lock an
 object for longer (#92). The
 pattern cannot spell "lowercase hex": a slot under a contrived prefix whose last
 64 characters span a `/` (`p/_attachments/<51 characters>/<12 digits>`) still
@@ -470,6 +471,26 @@ a signed header, which S3 enforces like any other.
     lock and KMS header, is `403 AccessDenied` "explicit deny in a
     resource-based policy" for a slot key and stores nothing, while the same
     headers for an attachment key in the same run are stored.
+- **Proved on 2026-11-10** on the same bucket, after `setup-locked-bucket.sh`
+  redeployed the gateway with #92 (N = 1, so the cap is 4 days; botocore
+  1.43.93; probe run `20261110T145606Z-29a95f`). Each 403 below is `403
+  AccessDenied` "explicit deny in a resource-based policy":
+  - attachment PUTs retained 1 day and N + 2 days are stored; one retained
+    N + 4 days is a 403 on `s3:PutObjectRetention` and stores nothing;
+  - S3 rounds `s3:object-lock-remaining-retention-days` down: N + 3 days + 1 h
+    is stored, so the cap refuses N + 4 days and more, not N + 3 days + 1 h;
+  - a presigned `PutObjectRetention` moving the control to N + 4 days is a 403;
+  - a presigned `PutObjectRetention` on an absent slot key is a 403 on
+    `s3:ListBucket`, not on `s3:PutObjectRetention`: S3 looks the key up
+    first, and the role's denied ListBucket keeps its absence from leaking. The
+    slot PUT's 403, on `s3:PutObjectRetention`, is what shows
+    `DenyPresignedSlotPuts` covers the retention action;
+  - a presigned PUT to a slot key and a form POST to a slot key are 403s and
+    store nothing; a form POST to an attachment key with the same fields is
+    stored (`204`), so the slot POST's 403 is the policy, not the form;
+  - a presigned `GetObject` of the control is a 403, though the role holds
+    `s3:GetObject` on attachment keys;
+  - `run.sh attachments` passed, 53 of 53.
 - **Still unverified**:
   - whether an upload that starts before its URL expires survives the
     expiry.

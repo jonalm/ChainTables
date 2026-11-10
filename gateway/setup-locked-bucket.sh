@@ -15,7 +15,8 @@
 #                           retention cannot be undone, so the script refuses the wrong account)
 #   --alias <alias/...>     KMS key alias; the key is created if the alias is absent
 #   --retention-days <n>    COMPLIANCE retention the gateway puts on every record; the bucket
-#                           policy refuses any retention past n + 3 days (DenyLongRetention)
+#                           policy refuses any retention of n + 4 days or more (DenyLongRetention:
+#                           past n + 3 whole days, and S3 rounds the remaining days down)
 #   --policy <file>         private gateway policy config bundled into the zip (never committed)
 #   --permission-set <name> Identity Center permission set whose role gets kms:Decrypt; repeatable
 #   --decrypt-role <arn>    other principal granted kms:Decrypt; repeatable
@@ -58,7 +59,8 @@
 #        DenyNoRetainUntil                   PutObject unless x-amz-object-lock-retain-until-date is set
 #        DenyNotCompliance / DenyNoLockMode  PutObject unless x-amz-object-lock-mode = COMPLIANCE
 #        DenyLongRetention                   PutObject and PutObjectRetention past
-#                                            --retention-days + 3 days, for every principal: the
+#                                            --retention-days + 3 whole days (S3 rounds down, so
+#                                            under n + 4 days passes), for every principal: the
 #                                            gateway's latest date is about n + 1.5 days, and
 #                                            COMPLIANCE cannot be undone (#92). A cap raised for a
 #                                            longer n is put before the new gateway is deployed;

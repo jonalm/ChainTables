@@ -246,8 +246,9 @@ role also needs `s3:PutObjectRetention`, `s3:GetObjectRetention` on the attachme
 mint route reads a present attachment's retain-until before it extends it), and
 `kms:GenerateDataKey` on the key, and every reader `kms:Decrypt`; `deploy.sh` grants none of
 those. COMPLIANCE cannot be undone, so the bucket policy also caps every retention, for every
-principal, at n + 3 days (`DenyLongRetention`, `s3:object-lock-remaining-retention-days` on
-`PutObject` and `PutObjectRetention`): the gateway's latest date is about n + 1.5 days, and a
+principal, at n + 3 whole days (`DenyLongRetention`, `s3:object-lock-remaining-retention-days` on
+`PutObject` and `PutObjectRetention`; S3 rounds the remaining days down, so a date under n + 4
+days passes): the gateway's latest date is about n + 1.5 days, and a
 bug or a role-signed URL cannot lock anything for longer (#92).
 
 `gateway/setup-locked-bucket.sh` establishes all of it, and is as generic and idempotent as
