@@ -39,7 +39,7 @@ end
     bucket = gwbucket.name
     listed = config.prefix                       # a prefix the policy lists the caller under
     unlisted = config.unlisted_prefix            # one it does not
-    run_id = bytes2hex(rand(UInt8, 8))
+    run_id = live_run_id()
     prefix = "$listed/$run_id"
     mktempdir() do dir
         cache_dir = joinpath(dir, "cache")

@@ -65,3 +65,15 @@ end
     end
     @test calls > 50  # the walk finds the calls at all
 end
+
+# Each live suite creates a chain under `<prefix>/<run id>/`. Drawn from the task RNG, two suites
+# in one run drew the same id, because `@testset` restores that RNG when a testset ends: the
+# second suite's create_chain then lost slot 0 to the first suite's chain.
+@testset "each live suite draws its own run id" begin
+    live = Module(:LiveConfig)
+    Base.include(live, joinpath(@__DIR__, "live", "config.jl"))
+    ids = String[]
+    @testset "a suite" begin push!(ids, live.live_run_id()) end
+    @testset "the next suite" begin push!(ids, live.live_run_id()) end
+    @test allunique(ids) && all(contains(r"^[0-9a-f]{16}$"), ids)
+end

@@ -5,6 +5,17 @@
 
 const LIVE_EXAMPLE = "test/live/live.env.example"
 
+using Random: RandomDevice
+
+"""
+    live_run_id() -> String
+
+A fresh run id, 16 lowercase hex digits from the system's entropy source. Not the task RNG:
+`@testset` restores that when a testset ends, so two suites in one run drew the same id and
+the second's `create_chain` lost slot 0 to the first's chain.
+"""
+live_run_id() = bytes2hex(rand(RandomDevice(), UInt8, 8))
+
 # test => the variables it requires, each read from CHAINTABLES_LIVE_<TEST>_<NAME>
 const LIVE_VARIABLES = (
     gateway = (:bucket, :url, :function, :region, :profile, :prefix, :unlisted_prefix),

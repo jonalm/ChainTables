@@ -56,7 +56,7 @@ random_hash() = bytes2hex(rand(UInt8, 32))
     config = LIVE_CONFIG[:attachments]
     gwbucket = Bucket(config.bucket; config.region, gateway = config.url, config.profile)
     base = config.prefix
-    run_id = bytes2hex(rand(UInt8, 8))
+    run_id = live_run_id()
     prefix = "$base/$run_id"
     mktempdir() do dir
         cache_dir = joinpath(dir, "cache")
