@@ -96,7 +96,7 @@ random_hash() = bytes2hex(rand(UInt8, 32))
             @test signed(reply.headers, "content-length") == string(length(body))
             # a body of the signed length that does not hash to the key: BadDigest, nothing stored
             wrong = copy(body); wrong[1] ⊻= 0x01
-            e = try GWT.upload_minted(store, key, IOBuffer(wrong), reply); nothing catch e; e end
+            e = try GWT.upload_minted(store, key, IOBuffer(wrong), Int64(length(wrong)), reply); nothing catch e; e end
             @test e isa AttachmentChangedError && e.key == key
             r = raw_put(reply.url, reply.headers, wrong)
             @test r.status == 400 && occursin("<Code>BadDigest</Code>", r.text)
@@ -116,7 +116,7 @@ random_hash() = bytes2hex(rand(UInt8, 32))
             @test r.status == 403 && occursin("<Code>AccessDenied</Code>", r.text)
             @test stat_object(store, key) === nothing
             # the right body: stored, locked, encrypted under the signed key, checksummed, tagged
-            @test GWT.upload_minted(store, key, IOBuffer(body), reply) === true
+            @test GWT.upload_minted(store, key, IOBuffer(body), Int64(length(body)), reply) === true
             head = live_head(store, key)
             @test parse(Int, head["content-length"]) == length(body)
             @test head["x-amz-object-lock-mode"] == "COMPLIANCE"
@@ -130,7 +130,7 @@ random_hash() = bytes2hex(rand(UInt8, 32))
                   occursin(r"<Tag><Key>chaintables</Key><Value>attachment</Value></Tag>", String(tagging.body))
             @test signed(reply.headers, "x-amz-tagging") == "chaintables=attachment"
             # the same URL again: If-None-Match refuses it, and there is still one version
-            @test GWT.upload_minted(store, key, IOBuffer(body), reply) === false
+            @test GWT.upload_minted(store, key, IOBuffer(body), Int64(length(body)), reply) === false
             r = raw_put(reply.url, reply.headers, body)
             @test r.status == 412
             versions = GWT.s3_request(store.s3, "GET", ""; query = ["prefix" => key, "versions" => ""])
