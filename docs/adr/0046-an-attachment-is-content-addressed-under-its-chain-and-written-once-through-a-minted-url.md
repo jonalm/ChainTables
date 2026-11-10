@@ -518,3 +518,8 @@ a signed header, which S3 enforces like any other.
   (8705e71): `run.sh attachments` passed, 55 of 55, the deployed gateway's
   minted reply giving `seconds` = 15 min plus the size at 256 KiB/s, not
   `capped`, and the URL signing that lifetime.
+- **Proved on 2026-11-10** on a fresh locked deployment of the same code
+  (N = 1), with both live suites run as a plain writer, an IAM user holding
+  the four writer statements plus `s3:GetObjectRetention`,
+  `s3:GetObjectTagging` and `s3:ListBucketVersions`, not as an administrator
+  (ADR-0036): `run.sh` passed, 91 of 91 (`gateway` 36, `attachments` 55).
