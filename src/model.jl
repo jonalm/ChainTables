@@ -211,7 +211,7 @@ Shape(w) = fail("shape is not a map, got a value of type $(typeof(w))")
 The shape's wire form, ready for `CBOR.encode` (ADR-0025): one encoding whether it
 sits in a table file or in a `create_table` op.
 """
-wire(s::Shape) = Dict{String,Any}(
+wire(s::Shape) = Dict{String, Any}(
     "columns" => Any[Any[c.name, c.type, c.nullable] for c in s.columns],
     "key" => Any[s.key...],
 )
@@ -339,7 +339,7 @@ function check_update(s::Shape, names, rows)
             check_cell(s.columns[j], row[i])
         end
         for (p, j) in enumerate(cols)
-            check_cell(s.columns[j], row[nk+p])
+            check_cell(s.columns[j], row[nk + p])
         end
     end
     check_key_order(Tuple(row[1:nk]) for row in rows)
@@ -386,12 +386,12 @@ mutable struct Table
     shape::Shape
     columns::Vector{Vector}
     slots::Vector{Int64}         # row slot of each row, aligned with the columns
-    index::Dict{Any,Int}
+    index::Dict{Any, Int}
 end
 
-column_storage(c::Column) = c.nullable ? Vector{Union{Missing,julia_type(c.type)}}() : Vector{julia_type(c.type)}()
+column_storage(c::Column) = c.nullable ? Vector{Union{Missing, julia_type(c.type)}}() : Vector{julia_type(c.type)}()
 
-Table(s::Shape) = Table(s, Vector[column_storage(c) for c in s.columns], Int64[], Dict{Any,Int}())
+Table(s::Shape) = Table(s, Vector[column_storage(c) for c in s.columns], Int64[], Dict{Any, Int}())
 
 function Table(s::Shape, rows, slot)
     t = Table(s)
@@ -486,7 +486,7 @@ function update_rows!(t::Table, names, rows, slot)
     for row in rows
         i = t.index[Tuple(row[1:nk])]
         for (p, j) in enumerate(cols)
-            t.columns[j][i] = own(row[nk+p])
+            t.columns[j][i] = own(row[nk + p])
         end
         t.slots[i] = slot
     end
@@ -576,7 +576,7 @@ The whole model: every table the chain created, by name. A `Dict{String,Table}`;
 [`create_table!`](@ref), [`drop_table!`](@ref) and [`table`](@ref) enforce the
 name rules on top of it.
 """
-const Content = Dict{String,Table}
+const Content = Dict{String, Table}
 
 """
     create_table!(content, name, shape) -> Table
@@ -614,7 +614,7 @@ end
 
 # An IO that hashes everything written through it, so a table file is hashed as
 # it is streamed rather than buffered (ADR-0023's 1 GB ceiling).
-mutable struct HashingIO{T<:IO} <: IO
+mutable struct HashingIO{T <: IO} <: IO
     io::T
     ctx::SHA.SHA256_CTX
 end
@@ -712,7 +712,7 @@ function state_fingerprint(tables)
         name, h = entries[i]
         h isa AbstractVector{UInt8} && length(h) == 32 ||
             fail("table_hash of $(repr(name)) is $(h isa AbstractVector{UInt8} ? length(h) : "not") bytes; a SHA-256 is 32")
-        i > 1 && entries[i-1][1] == name && fail("duplicate table name $(repr(name))")
+        i > 1 && entries[i - 1][1] == name && fail("duplicate table name $(repr(name))")
     end
     io = IOBuffer()
     write(io, codeunits(FP_SEPARATOR))

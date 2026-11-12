@@ -17,10 +17,10 @@ mutable struct S3TestServer
     const bucket::String
     const region::String
     const credentials::Credentials
-    const objects::Dict{String,Vector{UInt8}}
-    const modified::Dict{String,Int64}
+    const objects::Dict{String, Vector{UInt8}}
+    const modified::Dict{String, Int64}
     const requests::Vector{Any}
-    const presigned::Dict{String,Any}     # X-Amz-Signature => (; key, headers, expires): what a minter granted
+    const presigned::Dict{String, Any}     # X-Amz-Signature => (; key, headers, expires): what a minter granted
     respond::Any
     page_size::Int
 end
@@ -28,8 +28,10 @@ end
 function S3TestServer(; bucket, credentials, region = "eu-north-1", page_size = 1000)
     server = listen(ip"127.0.0.1", 0)
     port = Int(getsockname(server)[2])
-    s = S3TestServer(server, port, bucket, region, credentials, Dict{String,Vector{UInt8}}(), Dict{String,Int64}(), Any[],
-                     Dict{String,Any}(), _ -> nothing, page_size)
+    s = S3TestServer(
+        server, port, bucket, region, credentials, Dict{String, Vector{UInt8}}(), Dict{String, Int64}(), Any[],
+        Dict{String, Any}(), _ -> nothing, page_size
+    )
     @async try
         while isopen(server)
             sock = accept(server)
@@ -55,7 +57,7 @@ function s3test_percent_decode(s::AbstractString)
     i = 1
     while i <= length(bytes)
         if bytes[i] == UInt8('%') && i + 2 <= length(bytes)
-            push!(out, parse(UInt8, String(bytes[i+1:i+2]); base = 16)); i += 3
+            push!(out, parse(UInt8, String(bytes[(i + 1):(i + 2)]); base = 16)); i += 3
         else
             push!(out, bytes[i]); i += 1
         end
@@ -72,7 +74,7 @@ function s3test_http_date(t::Integer)
     y, m, d = S3T.civil_from_days(days)
     h, r = fldmod(secs, 3600); mi, s = fldmod(r, 60)
     return "$(S3TEST_WEEKDAYS[mod(days, 7) + 1]), $(string(d; pad = 2)) $(S3TEST_MONTHS[m]) $y " *
-           "$(string(h; pad = 2)):$(string(mi; pad = 2)):$(string(s; pad = 2)) GMT"
+        "$(string(h; pad = 2)):$(string(mi; pad = 2)):$(string(s; pad = 2)) GMT"
 end
 function s3test_iso_date(t::Integer)
     days, secs = fldmod(Int64(t), 86400)
@@ -81,14 +83,16 @@ function s3test_iso_date(t::Integer)
     return "$y-$(string(m; pad = 2))-$(string(d; pad = 2))T$(string(h; pad = 2)):$(string(mi; pad = 2)):$(string(s; pad = 2)).000Z"
 end
 
-s3test_error(code, message) = Vector{UInt8}("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Error><Code>$code</Code>" *
-                                            "<Message>$message</Message></Error>")
+s3test_error(code, message) = Vector{UInt8}(
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Error><Code>$code</Code>" *
+        "<Message>$message</Message></Error>"
+)
 
 function s3test_handle(s::S3TestServer, sock)
     line = readline(sock)
     isempty(line) && return nothing
     method, target, _ = split(line, ' ')
-    headers = Dict{String,String}()
+    headers = Dict{String, String}()
     while (h = readline(sock)) != ""
         k, v = split(h, ":"; limit = 2)
         headers[lowercase(k)] = strip(v)
@@ -97,8 +101,10 @@ function s3test_handle(s::S3TestServer, sock)
     len = parse(Int, get(headers, "content-length", "0"))
     body = len > 0 ? read(sock, len) : UInt8[]
     rawpath, rawquery = occursin('?', target) ? split(target, '?'; limit = 2) : (target, "")
-    query = Pair{String,String}[s3test_percent_decode(first(kv)) => s3test_percent_decode(get(kv, 2, ""))
-                                 for kv in (split(p, '='; limit = 2) for p in split(rawquery, '&'; keepempty = false))]
+    query = Pair{String, String}[
+        s3test_percent_decode(first(kv)) => s3test_percent_decode(get(kv, 2, ""))
+            for kv in (split(p, '='; limit = 2) for p in split(rawquery, '&'; keepempty = false))
+    ]
     req = (; method = String(method), rawpath = String(rawpath), path = s3test_percent_decode(rawpath), query, headers, body)
     push!(s.requests, req)
     scripted = Base.invokelatest(s.respond, req)          # `respond` is assigned after the accept task started
@@ -168,7 +174,7 @@ function s3test_default(s::S3TestServer, req)
     refused = s3test_check_signature(s, req)
     refused === nothing || return refused
     startswith(req.path, "/" * s.bucket) || return (404, [], s3test_error("NoSuchBucket", req.path))
-    key = req.path[length(s.bucket)+2:end]
+    key = req.path[(length(s.bucket) + 2):end]
     startswith(key, "/") && (key = key[2:end])
     if req.method == "PUT"
         if get(req.headers, "if-none-match", "") == "*" && haskey(s.objects, key)
@@ -201,13 +207,17 @@ function s3test_list(s::S3TestServer, req)
     page = keys[from:min(end, from + s.page_size - 1)]
     truncated = from + s.page_size <= length(keys)
     io = IOBuffer()
-    write(io, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ListBucketResult><Name>$(s.bucket)</Name>",
-          "<Prefix>$(s3test_xml_escape(prefix))</Prefix><KeyCount>$(length(page))</KeyCount>",
-          "<IsTruncated>$(truncated)</IsTruncated>")
+    write(
+        io, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ListBucketResult><Name>$(s.bucket)</Name>",
+        "<Prefix>$(s3test_xml_escape(prefix))</Prefix><KeyCount>$(length(page))</KeyCount>",
+        "<IsTruncated>$(truncated)</IsTruncated>"
+    )
     truncated && write(io, "<NextContinuationToken>$(from + s.page_size)</NextContinuationToken>")
     for k in page
-        write(io, "<Contents><Key>$(s3test_xml_escape(k))</Key><LastModified>$(s3test_iso_date(s.modified[k]))</LastModified>",
-              "<ETag>\"x\"</ETag><Size>$(length(s.objects[k]))</Size><StorageClass>STANDARD</StorageClass></Contents>")
+        write(
+            io, "<Contents><Key>$(s3test_xml_escape(k))</Key><LastModified>$(s3test_iso_date(s.modified[k]))</LastModified>",
+            "<ETag>\"x\"</ETag><Size>$(length(s.objects[k]))</Size><StorageClass>STANDARD</StorageClass></Contents>"
+        )
     end
     write(io, "</ListBucketResult>")
     return (200, ["content-type" => "application/xml"], take!(io))

@@ -48,22 +48,26 @@ operation made none (`open`, ADR-0023) or how many (galloping, ADR-0012). `objec
 and `modified` hold the bytes and stamps by key and are the store's own copies.
 """
 mutable struct InMemoryObjectStore <: AbstractObjectStore
-    const objects::Dict{String,Vector{UInt8}}
-    const modified::Dict{String,Int64}
-    const calls::Vector{Tuple{Symbol,String}}
+    const objects::Dict{String, Vector{UInt8}}
+    const modified::Dict{String, Int64}
+    const calls::Vector{Tuple{Symbol, String}}
     const namespace::String       # the record cache's directory for this store (ADR-0040)
     clock::Any
     fault::Any
     state::UInt64
 end
 
-function InMemoryObjectStore(; clock = () -> floor(Int64, time()),
-                             fault = (verb, key, phase) -> nothing,
-                             seed = hash(time_ns()))
+function InMemoryObjectStore(;
+        clock = () -> floor(Int64, time()),
+        fault = (verb, key, phase) -> nothing,
+        seed = hash(time_ns())
+    )
     state = UInt64(seed) | UInt64(1)   # xorshift needs a non-zero state
-    return InMemoryObjectStore(Dict{String,Vector{UInt8}}(), Dict{String,Int64}(),
-                               Tuple{Symbol,String}[], "mem-" * string(rand(UInt32); base = 16, pad = 8),
-                               clock, fault, state)
+    return InMemoryObjectStore(
+        Dict{String, Vector{UInt8}}(), Dict{String, Int64}(),
+        Tuple{Symbol, String}[], "mem-" * string(rand(UInt32); base = 16, pad = 8),
+        clock, fault, state
+    )
 end
 
 cache_namespace(store::InMemoryObjectStore) = store.namespace
@@ -131,8 +135,10 @@ function stat_object(store::InMemoryObjectStore, key::AbstractString)
     return meta
 end
 
-function list_objects(store::InMemoryObjectStore, prefix::AbstractString;
-                      start_after::Union{Nothing,AbstractString} = nothing)
+function list_objects(
+        store::InMemoryObjectStore, prefix::AbstractString;
+        start_after::Union{Nothing, AbstractString} = nothing
+    )
     prefix = String(prefix)
     _request!(store, :list_objects, prefix)
     listed = ObjectMeta[]

@@ -59,12 +59,12 @@ as `con` or `nul`. No segment may be `_attachments`, where a chain's attachments
 (ADR-0046). The prefix is at most 100 characters, and the longest record-cache path for
 the chain, `cache_dir` included, at most 259: Windows' `MAX_PATH` (ADR-0034).
 """
-struct Chain{S<:AbstractObjectStore}
+struct Chain{S <: AbstractObjectStore}
     bucket::String
     prefix::String
-    region::Union{Nothing,String}
+    region::Union{Nothing, String}
     credentials::Any
-    endpoint::Union{Nothing,String}
+    endpoint::Union{Nothing, String}
     path_style::Bool
     assume_first_writer_wins::Bool
     read_ahead::Int
@@ -74,19 +74,29 @@ struct Chain{S<:AbstractObjectStore}
     record_user::Bool
 end
 
-function Chain(bucket::AbstractString, prefix::AbstractString;
-               store = nothing, gateway = nothing, region = nothing, credentials = nothing, endpoint = nothing,
-               path_style = false, assume_first_writer_wins = false, read_ahead = 8, cache_dir = default_cache_dir(),
-               record_host = true, record_user = true)
+function Chain(
+        bucket::AbstractString, prefix::AbstractString;
+        store = nothing, gateway = nothing, region = nothing, credentials = nothing, endpoint = nothing,
+        path_style = false, assume_first_writer_wins = false, read_ahead = 8, cache_dir = default_cache_dir(),
+        record_host = true, record_user = true
+    )
     check_bucket_name(bucket)
     check_prefix(prefix)
     cache = RecordCache(; dir = cache_dir)
     read_ahead >= 1 || throw(ArgumentError("Chain: read_ahead is $read_ahead; at least 1 record is fetched ahead"))
     if gateway !== nothing                   # the gateway store (gateway.jl, ADR-0028): the S3 client plus a function URL
-        store === nothing || throw(ArgumentError("Chain: gateway and store were both given; a chain has one store, and " *
-            "the gateway keyword builds it from the bucket, region and credentials (ADR-0028)"))
-        record_user || throw(ArgumentError("Chain: record_user = false with a gateway: the gateway refuses a record " *
-            "with no author (ADR-0028), so this chain could never commit; leave record_user = true"))
+        store === nothing || throw(
+            ArgumentError(
+                "Chain: gateway and store were both given; a chain has one store, and " *
+                    "the gateway keyword builds it from the bucket, region and credentials (ADR-0028)"
+            )
+        )
+        record_user || throw(
+            ArgumentError(
+                "Chain: record_user = false with a gateway: the gateway refuses a record " *
+                    "with no author (ADR-0028), so this chain could never commit; leave record_user = true"
+            )
+        )
         region = resolve_region(region)
         credentials = resolve_credentials(credentials)
         store = GatewayObjectStore(bucket, gateway; region, credentials, endpoint, path_style)
@@ -97,21 +107,35 @@ function Chain(bucket::AbstractString, prefix::AbstractString;
     end
     store isa AbstractObjectStore || throw(ArgumentError("Chain: store is a $(typeof(store)), not an AbstractObjectStore"))
     record_path(cache, store, bucket, isempty(prefix) ? head_filename(0) : prefix * "/" * head_filename(0))   # every slot's path is as long (ADR-0034)
-    (store isa GatewayObjectStore && !record_user) && throw(ArgumentError("Chain: record_user = false with a gateway " *
-        "store: the gateway refuses a record with no author (ADR-0028), so this chain could never commit; leave record_user = true"))
-    return Chain{typeof(store)}(String(bucket), String(prefix), region === nothing ? nothing : String(region), credentials,
-                                endpoint === nothing ? nothing : String(endpoint), path_style, assume_first_writer_wins,
-                                Int(read_ahead), cache, store, record_host, record_user)
+    (store isa GatewayObjectStore && !record_user) && throw(
+        ArgumentError(
+            "Chain: record_user = false with a gateway " *
+                "store: the gateway refuses a record with no author (ADR-0028), so this chain could never commit; leave record_user = true"
+        )
+    )
+    return Chain{typeof(store)}(
+        String(bucket), String(prefix), region === nothing ? nothing : String(region), credentials,
+        endpoint === nothing ? nothing : String(endpoint), path_style, assume_first_writer_wins,
+        Int(read_ahead), cache, store, record_host, record_user
+    )
 end
 
 # The bucket-name rules, shared with `Bucket` (bucket.jl, ADR-0029).
 function check_bucket_name(bucket::AbstractString)
     isempty(bucket) && throw(ArgumentError("Chain: the bucket name is empty"))
-    '.' in bucket && throw(ArgumentError("Chain: bucket name $(repr(bucket)) contains a dot, which breaks certificate " *
-        "matching under the virtual-hosted URL ChainTables builds (ADR-0010); use a bucket without one"))
+    '.' in bucket && throw(
+        ArgumentError(
+            "Chain: bucket name $(repr(bucket)) contains a dot, which breaks certificate " *
+                "matching under the virtual-hosted URL ChainTables builds (ADR-0010); use a bucket without one"
+        )
+    )
     problem = portable_segment_problem(bucket)
-    problem === nothing || throw(ArgumentError("Chain: bucket name $(repr(bucket)) $problem; it is a record-cache " *
-        "directory, and must be portable to every filesystem (ADR-0034)"))
+    problem === nothing || throw(
+        ArgumentError(
+            "Chain: bucket name $(repr(bucket)) $problem; it is a record-cache " *
+                "directory, and must be portable to every filesystem (ADR-0034)"
+        )
+    )
     return nothing
 end
 
@@ -127,20 +151,35 @@ const MAX_PREFIX_LENGTH = 100
 const ATTACHMENTS_SEGMENT = "_attachments"
 
 function check_prefix(prefix::AbstractString)
-    (startswith(prefix, "/") || endswith(prefix, "/")) && throw(ArgumentError(
-        "Chain: prefix $(repr(prefix)) begins or ends with '/'; a slot key is <prefix>/<12 digits>, so give the prefix without them"))
+    (startswith(prefix, "/") || endswith(prefix, "/")) && throw(
+        ArgumentError(
+            "Chain: prefix $(repr(prefix)) begins or ends with '/'; a slot key is <prefix>/<12 digits>, so give the prefix without them"
+        )
+    )
     isempty(prefix) && return nothing
-    length(prefix) <= MAX_PREFIX_LENGTH || throw(ArgumentError("Chain: prefix $(repr(prefix)) is $(length(prefix)) " *
-        "characters, over $MAX_PREFIX_LENGTH; the record cache's paths must fit Windows' $MAX_PORTABLE_PATH under any " *
-        "reasonable cache_dir (ADR-0034)"))
+    length(prefix) <= MAX_PREFIX_LENGTH || throw(
+        ArgumentError(
+            "Chain: prefix $(repr(prefix)) is $(length(prefix)) " *
+                "characters, over $MAX_PREFIX_LENGTH; the record cache's paths must fit Windows' $MAX_PORTABLE_PATH under any " *
+                "reasonable cache_dir (ADR-0034)"
+        )
+    )
     for s in split(prefix, '/')
         problem = portable_segment_problem(s)
-        problem === nothing || throw(ArgumentError("Chain: prefix $(repr(prefix)) has the segment $(repr(s)), which " *
-            "$problem; each '/'-separated segment of a slot key is a record-cache directory, and must be portable to " *
-            "every filesystem (ADR-0034)"))
+        problem === nothing || throw(
+            ArgumentError(
+                "Chain: prefix $(repr(prefix)) has the segment $(repr(s)), which " *
+                    "$problem; each '/'-separated segment of a slot key is a record-cache directory, and must be portable to " *
+                    "every filesystem (ADR-0034)"
+            )
+        )
         # A chain under it would be a "directory" of another chain's attachment keys (#92).
-        s == ATTACHMENTS_SEGMENT && throw(ArgumentError("Chain: prefix $(repr(prefix)) has the segment $(repr(s)), " *
-            "which is reserved for a chain's attachments (ADR-0046); a chain may not live under one"))
+        s == ATTACHMENTS_SEGMENT && throw(
+            ArgumentError(
+                "Chain: prefix $(repr(prefix)) has the segment $(repr(s)), " *
+                    "which is reserved for a chain's attachments (ADR-0046); a chain may not live under one"
+            )
+        )
     end
     return nothing
 end
@@ -187,9 +226,13 @@ chain_of(copy::LocalCopy, call) = copy.chain isa Chain ? copy.chain :
 function refuse_pinned(copy::LocalCopy, call)
     ispinned(copy) || return nothing
     slot = copy.head === nothing ? "no slot" : "slot $(copy.head.slot)"
-    throw(PinnedCopyError("pinned copy: the local copy at $(copy.path) is pinned at $slot, so $call refuses to move it " *
-        "(ADR-0015). unpin!(copy) makes it live, or use a live copy.";
-        path = copy.path, slot = copy.head === nothing ? nothing : copy.head.slot))
+    throw(
+        PinnedCopyError(
+            "pinned copy: the local copy at $(copy.path) is pinned at $slot, so $call refuses to move it " *
+                "(ADR-0015). unpin!(copy) makes it live, or use a live copy.";
+            path = copy.path, slot = copy.head === nothing ? nothing : copy.head.slot
+        )
+    )
 end
 
 location(chain::Chain) = isempty(chain.prefix) ? chain.bucket : "$(chain.bucket)/$(chain.prefix)"
@@ -215,8 +258,12 @@ end
 # store, and the next move. `encode_record` has already enforced the 64 MiB format cap.
 function check_record_cap(store::AbstractObjectStore, bytes, call)
     cap = record_cap(store)
-    length(bytes) <= cap || throw(WriteBuilderError("$call: record is $(length(bytes)) bytes; the cap on a " *
-        "$(nameof(typeof(store))) is $cap bytes ($(cap ÷ (1024 * 1024)) MiB): split the write into more than one commit"))
+    length(bytes) <= cap || throw(
+        WriteBuilderError(
+            "$call: record is $(length(bytes)) bytes; the cap on a " *
+                "$(nameof(typeof(store))) is $cap bytes ($(cap ÷ (1024 * 1024)) MiB): split the write into more than one commit"
+        )
+    )
     return nothing
 end
 
@@ -240,7 +287,7 @@ function put_record_for!(chain::Chain, chain_id, slot, bytes)
     try
         return put_record!(chain.store, chain.cache, chain.bucket, slot_key(chain, slot), bytes)
     catch e
-        e isa Union{WriteRefusedError,GatewayMismatchError} ? throw(refused_for(e, chain, chain_id, slot)) : rethrow()
+        e isa Union{WriteRefusedError, GatewayMismatchError} ? throw(refused_for(e, chain, chain_id, slot)) : rethrow()
     end
 end
 
@@ -267,8 +314,10 @@ function create_chain(chain::Chain)
     chain_id = rand(UInt8, 16)
     cid = chain_id_string(chain_id)
     user = write_author(chain, cid, 0)                         # ADR-0028: the author, before anything is written
-    record = Record(chain_id, 0, nothing, Model.state_fingerprint(Content()),
-                    Ops.local_client(; chain.record_host, user), nothing, Ops.Op[])
+    record = Record(
+        chain_id, 0, nothing, Model.state_fingerprint(Content()),
+        Ops.local_client(; chain.record_host, user), nothing, Ops.Op[]
+    )
     bytes = Ops.encode_record(record)
     check_record_cap(chain.store, bytes, "create_chain(chain)")
     found = put_record_for!(chain, cid, 0, bytes)
@@ -281,10 +330,14 @@ function create_chain(chain::Chain)
             nothing
         end
         cid = theirs === nothing ? nothing : chain_id_string(theirs.chain_id)
-        throw(LostRaceError("lost race for slot 0 at $(location(chain)): a chain already exists there " *
-            "(chain $(something(cid, "unknown: its genesis record is malformed")), transaction hash $(bytes2hex(th))). " *
-            "create_chain writes slot 0 once and is never retried: open(chain, path) and sync!(copy) to use the " *
-            "existing chain, or create under another prefix."; chain_id = cid, slot = 0, transaction_hash = th))
+        throw(
+            LostRaceError(
+                "lost race for slot 0 at $(location(chain)): a chain already exists there " *
+                    "(chain $(something(cid, "unknown: its genesis record is malformed")), transaction hash $(bytes2hex(th))). " *
+                    "create_chain writes slot 0 once and is never retried: open(chain, path) and sync!(copy) to use the " *
+                    "existing chain, or create under another prefix."; chain_id = cid, slot = 0, transaction_hash = th
+            )
+        )
     end
     return (; chain_id = cid, slot = 0, transaction_hash = TransactionHash(Ops.transaction_hash(bytes)))
 end
@@ -326,11 +379,15 @@ function check_head_slot(copy::LocalCopy, chain::Chain)
     bytes = fetch_object(chain.store, key)
     bytes === nothing || Ops.transaction_hash(bytes) != h.transaction_hash ||
         heal_record!(chain.cache, chain.store, chain.bucket, key, bytes)
-    bytes === nothing && throw(RewrittenChainError("rewritten chain: slot $(h.slot) — the head of the local copy at " *
-        "$(copy.path), chain $(h.chain_id) — is absent at $where. Either the chain was truncated from outside the " *
-        "protocol, or this is not the chain's bucket and prefix; neither is healed. The local copy stays readable; " *
-        "open it over the chain it was built from, or delete it and sync!(copy) a fresh one.";
-        chain_id = h.chain_id, slot = h.slot, expected = h.transaction_hash, found = nothing))
+    bytes === nothing && throw(
+        RewrittenChainError(
+            "rewritten chain: slot $(h.slot) — the head of the local copy at " *
+                "$(copy.path), chain $(h.chain_id) — is absent at $where. Either the chain was truncated from outside the " *
+                "protocol, or this is not the chain's bucket and prefix; neither is healed. The local copy stays readable; " *
+                "open it over the chain it was built from, or delete it and sync!(copy) a fresh one.";
+            chain_id = h.chain_id, slot = h.slot, expected = h.transaction_hash, found = nothing
+        )
+    )
     th = Ops.transaction_hash(bytes)
     th == h.transaction_hash && return bytes
     theirs = try
@@ -341,15 +398,23 @@ function check_head_slot(copy::LocalCopy, chain::Chain)
     end
     if theirs !== nothing && chain_id_string(theirs.chain_id) != h.chain_id
         opened = chain_id_string(theirs.chain_id)
-        throw(WrongChainError("wrong chain: the local copy at $(copy.path) is bound to chain $(h.chain_id), the chain " *
-            "at $where is $opened: open a different path for this chain.";
-            path = copy.path, bound = h.chain_id, opened))
+        throw(
+            WrongChainError(
+                "wrong chain: the local copy at $(copy.path) is bound to chain $(h.chain_id), the chain " *
+                    "at $where is $opened: open a different path for this chain.";
+                path = copy.path, bound = h.chain_id, opened
+            )
+        )
     end
-    throw(RewrittenChainError("rewritten chain: slot $(h.slot) of chain $(h.chain_id) at $where holds a record hashing to " *
-        "$(bytes2hex(th)); the local copy at $(copy.path) applied $(bytes2hex(h.transaction_hash)) there. The bucket was " *
-        "written from outside the protocol and nothing heals it. The local copy stays readable and never commits onto " *
-        "this chain.";
-        chain_id = h.chain_id, slot = h.slot, expected = h.transaction_hash, found = th))
+    throw(
+        RewrittenChainError(
+            "rewritten chain: slot $(h.slot) of chain $(h.chain_id) at $where holds a record hashing to " *
+                "$(bytes2hex(th)); the local copy at $(copy.path) applied $(bytes2hex(h.transaction_hash)) there. The bucket was " *
+                "written from outside the protocol and nothing heals it. The local copy stays readable and never commits onto " *
+                "this chain.";
+            chain_id = h.chain_id, slot = h.slot, expected = h.transaction_hash, found = th
+        )
+    )
 end
 
 """
@@ -382,11 +447,15 @@ function sync!(copy::LocalCopy)
     lo = h === nothing ? -1 : h.slot
     top = gallop(chain.store, s -> slot_key(chain, s), lo)
     if top == lo
-        h === nothing && throw(ChainNotFoundError("chain not found: no slot 0 at $(location(chain)), so there is no " *
-            "chain to sync the local copy at $(copy.path) from. Either the bucket or prefix is not the chain's, or no " *
-            "chain was created there — create_chain(chain) writes slot 0, and only that. The two cannot be told apart " *
-            "from here.";
-            bucket = chain.bucket, prefix = chain.prefix))
+        h === nothing && throw(
+            ChainNotFoundError(
+                "chain not found: no slot 0 at $(location(chain)), so there is no " *
+                    "chain to sync the local copy at $(copy.path) from. Either the bucket or prefix is not the chain's, or no " *
+                    "chain was created there — create_chain(chain) writes slot 0, and only that. The two cannot be told apart " *
+                    "from here.";
+                bucket = chain.bucket, prefix = chain.prefix
+            )
+        )
         return (; applied = 0, slot = h.slot, transaction_hash = TransactionHash(h.transaction_hash))
     end
     applied = replay!(copy, lo + 1, top).applied
@@ -439,8 +508,10 @@ kept decoded, and as much again of the store's bytes while a cached run is asked
 store; the rest is read again when needed — a cache file that changed meanwhile is read
 from the store, which must hold the bytes the chain names.
 """
-function read_forward(f, chain::Chain, first::Integer, last::Integer;
-                      prev = nothing, chain_id = nothing, holder = nothing, tail = "", keep_bytes = PENDING_BYTES)
+function read_forward(
+        f, chain::Chain, first::Integer, last::Integer;
+        prev = nothing, chain_id = nothing, holder = nothing, tail = "", keep_bytes = PENDING_BYTES
+    )
     first, last = Int64(first), Int64(last)
     given = (prev !== nothing, holder !== nothing, chain_id !== nothing)
     (all(given) || !any(given)) && all(given) == (first > 0) ||
@@ -451,9 +522,11 @@ function read_forward(f, chain::Chain, first::Integer, last::Integer;
     # `bytes` as slot `s`, whose parent is `parent` (`(; th, is)`: the hash and the words
     # naming who holds it): the record, or the error to raise once the store agrees
     function check(bytes, s, parent)
-        bytes === nothing && return RewrittenChainError("rewritten chain: slot $s at $where was there when head " *
-            "discovery probed it and is absent now. The bucket is being written from outside the protocol and nothing " *
-            "heals it.$tail"; chain_id = cid, slot = s, found = nothing)
+        bytes === nothing && return RewrittenChainError(
+            "rewritten chain: slot $s at $where was there when head " *
+                "discovery probed it and is absent now. The bucket is being written from outside the protocol and nothing " *
+                "heals it.$tail"; chain_id = cid, slot = s, found = nothing
+        )
         record = try
             Ops.decode_record(bytes; slot = s)
         catch e
@@ -461,14 +534,18 @@ function read_forward(f, chain::Chain, first::Integer, last::Integer;
             return e
         end
         rcid = chain_id_string(record.chain_id)
-        cid === nothing || rcid == cid || return MalformedRecordError("malformed record at slot $s: it carries chain id " *
-            "$rcid, the chain is $cid (a record of another chain was written into this prefix). No client can apply it: " *
-            "the chain is dead beyond this slot; a new chain is the recovery (ADR-0025)."; chain_id = cid, slot = s)
+        cid === nothing || rcid == cid || return MalformedRecordError(
+            "malformed record at slot $s: it carries chain id " *
+                "$rcid, the chain is $cid (a record of another chain was written into this prefix). No client can apply it: " *
+                "the chain is dead beyond this slot; a new chain is the recovery (ADR-0025)."; chain_id = cid, slot = s
+        )
         (parent === nothing || record.prev_hash == parent.th) && return record
-        return RewrittenChainError("rewritten chain: slot $s of chain $cid at $where names parent " *
-            "$(bytes2hex(record.prev_hash)), $(parent.is) $(bytes2hex(parent.th)). The chain below was rewritten from " *
-            "outside the protocol, or the committer of slot $s had a bug; nothing heals it.$tail";
-            chain_id = cid, slot = s, expected = parent.th, found = record.prev_hash)
+        return RewrittenChainError(
+            "rewritten chain: slot $s of chain $cid at $where names parent " *
+                "$(bytes2hex(record.prev_hash)), $(parent.is) $(bytes2hex(parent.th)). The chain below was rewritten from " *
+                "outside the protocol, or the committer of slot $s had a bug; nothing heals it.$tail";
+            chain_id = cid, slot = s, expected = parent.th, found = record.prev_hash
+        )
     end
     hashed(s, th) = (; th, is = "slot $s hashes to")
     anchor = prev === nothing ? nothing : (; th = prev, is = "$holder holds slot $(first - 1) as")   # the last record vouched for
@@ -489,7 +566,7 @@ function read_forward(f, chain::Chain, first::Integer, last::Integer;
     # fetches the rest again on the way up. Returns the run's top as a parent, or the
     # store's error, `pending` then holding the part of the run the store vouched for.
     function settle!()
-        fresh = Dict{Int,Any}()          # index in `pending` => the store's bytes, or nothing
+        fresh = Dict{Int, Any}()          # index in `pending` => the store's bytes, or nothing
         fresh_bytes = 0
         agree = length(pending)
         while agree >= 1
@@ -499,11 +576,11 @@ function read_forward(f, chain::Chain, first::Integer, last::Integer;
             fresh_bytes + n <= keep_bytes && (fresh[agree] = bytes; fresh_bytes += n)
             agree -= 1
         end
-        above = [p.slot for p in pending[agree+1:end]]
+        above = [p.slot for p in pending[(agree + 1):end]]
         resize!(pending, agree)
         pending_bytes = sum((p.size for p in pending); init = 0)
         parent = agree == 0 ? anchor : hashed(pending[agree].slot, pending[agree].th)
-        for (j, s) in zip(agree+1:agree+length(above), above)
+        for (j, s) in zip((agree + 1):(agree + length(above)), above)
             bytes = haskey(fresh, j) ? pop!(fresh, j) : fetch_object(chain.store, key(s))
             got = check(bytes, s, parent)
             got isa Exception && return got
@@ -522,10 +599,14 @@ function read_forward(f, chain::Chain, first::Integer, last::Integer;
         if bytes === nothing || Ops.transaction_hash(bytes) != th
             bytes = fetch_object(chain.store, key(s))
             found = bytes === nothing ? nothing : Ops.transaction_hash(bytes)
-            found == th || throw(RewrittenChainError("rewritten chain: slot $s of chain $cid at $where " *
-                (found === nothing ? "is absent" : "holds a record hashing to $(bytes2hex(found))") * "; the record " *
-                "above it names $(bytes2hex(th)). The bucket is being written from outside the protocol and nothing " *
-                "heals it.$tail"; chain_id = cid, slot = s, expected = th, found))
+            found == th || throw(
+                RewrittenChainError(
+                    "rewritten chain: slot $s of chain $cid at $where " *
+                        (found === nothing ? "is absent" : "holds a record hashing to $(bytes2hex(found))") * "; the record " *
+                        "above it names $(bytes2hex(th)). The bucket is being written from outside the protocol and nothing " *
+                        "heals it.$tail"; chain_id = cid, slot = s, expected = th, found
+                )
+            )
             heal_record!(chain.cache, chain.store, chain.bucket, key(s), bytes)
         end
         return Ops.decode_record(bytes; slot = s)
@@ -540,7 +621,7 @@ function read_forward(f, chain::Chain, first::Integer, last::Integer;
         pending_bytes = 0
         return false
     end
-    tasks = Dict{Int64,Task}()
+    tasks = Dict{Int64, Task}()
     next = first
     try
         for s in first:last
@@ -608,10 +689,12 @@ function replay!(copy::LocalCopy, first::Integer, last::Integer; clock = time_ns
     last_checkpoint_ns = 0
     applying_ns = 0
     try
-        read_forward(chain, first, last; prev = h === nothing ? nothing : h.transaction_hash,
-                     chain_id = h === nothing ? nothing : h.chain_id,
-                     holder = h === nothing ? nothing : "the local copy at $(copy.path)",
-                     tail = " The local copy at $(copy.path) stays at its last checkpoint and readable.") do s, record, th
+        read_forward(
+            chain, first, last; prev = h === nothing ? nothing : h.transaction_hash,
+            chain_id = h === nothing ? nothing : h.chain_id,
+            holder = h === nothing ? nothing : "the local copy at $(copy.path)",
+            tail = " The local copy at $(copy.path) stays at its last checkpoint and readable."
+        ) do s, record, th
             t0 = clock()
             load_tables!(copy, record)
             Ops.apply!(copy.content, record)
@@ -647,8 +730,12 @@ consumes it.
 function write_builder(copy::LocalCopy)
     check_open(copy)
     h = copy.head
-    h === nothing && throw(ArgumentError("write_builder(copy): the local copy at $(copy.path) has no head yet; " *
-        "sync!(copy) binds it to the chain first"))
+    h === nothing && throw(
+        ArgumentError(
+            "write_builder(copy): the local copy at $(copy.path) has no head yet; " *
+                "sync!(copy) binds it to the chain first"
+        )
+    )
     refuse_pinned(copy, "write_builder")
     pending = Set{String}(name for name in keys(copy.tables) if name ∉ copy.loaded)
     return WriteBuilder(copy.content; copy, head = (; slot = h.slot, transaction_hash = h.transaction_hash), pending)
@@ -688,8 +775,12 @@ caller's name on a gateway bucket).
 function commit!(w::WriteBuilder; comment = nothing)
     spend!(w)
     copy = w.copy
-    copy === nothing && throw(WriteBuilderError("commit!(w): this builder was not taken over a local copy; " *
-        "take one with write_builder(copy)"))
+    copy === nothing && throw(
+        WriteBuilderError(
+            "commit!(w): this builder was not taken over a local copy; " *
+                "take one with write_builder(copy)"
+        )
+    )
     check_open(copy)
     chain = chain_of(copy, "commit!")
     refuse_pinned(copy, "commit!")
@@ -697,30 +788,44 @@ function commit!(w::WriteBuilder; comment = nothing)
     h = copy.head
     h === nothing && throw(ArgumentError("commit!(w): the local copy at $(copy.path) has no head; sync!(copy) binds it first"))
     user = write_author(chain, h.chain_id, h.slot + 1)         # ADR-0028: the author, before anything is applied
-    isempty(w.ops) && throw(WriteBuilderError("commit!(w): the builder has no ops; a record after genesis carries at least " *
-        "one, and genesis is create_chain's (ADR-0019). Add ops, or do not commit."))
+    isempty(w.ops) && throw(
+        WriteBuilderError(
+            "commit!(w): the builder has no ops; a record after genesis carries at least " *
+                "one, and genesis is create_chain's (ADR-0019). Add ops, or do not commit."
+        )
+    )
     if w.head.slot != h.slot || w.head.transaction_hash != h.transaction_hash
-        throw(StaleHeadError("stale head: this builder was taken at slot $(w.head.slot) of chain $(h.chain_id), and the " *
-            "local copy at $(copy.path) has since moved to slot $(h.slot) (a sync!). The row set was computed against a " *
-            "state that has moved: recompute it and build again with write_builder(copy); this builder is spent and is " *
-            "never re-run (ADR-0002).";
-            chain_id = h.chain_id, slot = w.head.slot, chain_slot = h.slot))
+        throw(
+            StaleHeadError(
+                "stale head: this builder was taken at slot $(w.head.slot) of chain $(h.chain_id), and the " *
+                    "local copy at $(copy.path) has since moved to slot $(h.slot) (a sync!). The row set was computed against a " *
+                    "state that has moved: recompute it and build again with write_builder(copy); this builder is spent and is " *
+                    "never re-run (ADR-0002).";
+                chain_id = h.chain_id, slot = w.head.slot, chain_slot = h.slot
+            )
+        )
     end
     comment === nothing || comment isa AbstractString ||
         throw(WriteBuilderError("commit!(w): comment is a $(typeof(comment)), not text"))
     store = chain.store
     # the commit pre-check (ADR-0007, ADR-0014): the head against its own record
-    check_head_record(copy, chain, "The copy drifted from the chain since it was applied, and commits nothing onto it: " *
-        "repair!(copy) confirms whether this machine reproduces the chain.")
+    check_head_record(
+        copy, chain, "The copy drifted from the chain since it was applied, and commits nothing onto it: " *
+            "repair!(copy) confirms whether this machine reproduces the chain."
+    )
     slot = h.slot + 1
     key = slot_key(chain, slot)
     # the preflight (ADR-0002): a taken next slot is a stale head, before anything is applied
     if stat_object(store, key) !== nothing
         top = gallop(store, s -> slot_key(chain, s), slot)
-        throw(StaleHeadError("stale head: the local copy at $(copy.path) is at slot $(h.slot) of chain $(h.chain_id), " *
-            "the chain is at slot $top. sync!(copy), recompute the row set against the fresh state, and build again with " *
-            "write_builder(copy); this builder is spent and is never re-run (ADR-0002).";
-            chain_id = h.chain_id, slot = h.slot, chain_slot = top))
+        throw(
+            StaleHeadError(
+                "stale head: the local copy at $(copy.path) is at slot $(h.slot) of chain $(h.chain_id), " *
+                    "the chain is at slot $top. sync!(copy), recompute the row set against the fresh state, and build again with " *
+                    "write_builder(copy); this builder is spent and is never re-run (ADR-0002).";
+                chain_id = h.chain_id, slot = h.slot, chain_slot = top
+            )
+        )
     end
     th, staged, chain_id = try
         load_tables!(copy, unique(op.table for op in w.ops))
@@ -735,8 +840,10 @@ function commit!(w::WriteBuilder; comment = nothing)
         staged = stage!(copy)
         chain_id = chain_id_bytes(h.chain_id)
         record = try
-            Record(chain_id, slot, h.transaction_hash, staged.state_fingerprint,
-                   Ops.local_client(; chain.record_host, user), comment === nothing ? nothing : String(comment), w.ops)
+            Record(
+                chain_id, slot, h.transaction_hash, staged.state_fingerprint,
+                Ops.local_client(; chain.record_host, user), comment === nothing ? nothing : String(comment), w.ops
+            )
         catch e
             e isa ModelError || rethrow()
             throw(WriteBuilderError("commit!(w): $(e.msg)"))
@@ -751,11 +858,15 @@ function commit!(w::WriteBuilder; comment = nothing)
             throw(outcome_unknown(chain, h.chain_id, slot, th, nothing, e))
         end
         if found !== nothing
-            throw(LostRaceError("lost race for slot $slot of chain $(h.chain_id) at $(location(chain)): another client's " *
-                "record is there (transaction hash $(bytes2hex(Ops.transaction_hash(found)))). sync!(copy), recompute the " *
-                "row set against the fresh state, and build again with write_builder(copy); this builder is spent and is " *
-                "never re-run (ADR-0002).";
-                chain_id = h.chain_id, slot, transaction_hash = Ops.transaction_hash(found)))
+            throw(
+                LostRaceError(
+                    "lost race for slot $slot of chain $(h.chain_id) at $(location(chain)): another client's " *
+                        "record is there (transaction hash $(bytes2hex(Ops.transaction_hash(found)))). sync!(copy), recompute the " *
+                        "row set against the fresh state, and build again with write_builder(copy); this builder is spent and is " *
+                        "never re-run (ADR-0002).";
+                    chain_id = h.chain_id, slot, transaction_hash = Ops.transaction_hash(found)
+                )
+            )
         end
         th, staged, chain_id
     catch
@@ -782,10 +893,12 @@ function outcome_unknown(chain::Chain, chain_id, slot, th, landed, cause)
         "the record for slot $slot of chain $chain_id at $(location(chain)) is in the chain, but the local copy's head " *
         "was not written" :
         "the record for slot $slot of chain $chain_id at $(location(chain)) may or may not be in the chain"
-    return CommitOutcomeUnknownError("commit outcome unknown: $what ($(sprint(showerror, cause))). Our record's " *
-        "transaction hash is $(bytes2hex(th)): sync!(copy), and the commit happened exactly when commit_log(copy) shows " *
-        "it at slot $slot. This builder is spent and is never re-run (ADR-0002).";
-        chain_id, slot, transaction_hash = th, landed, cause)
+    return CommitOutcomeUnknownError(
+        "commit outcome unknown: $what ($(sprint(showerror, cause))). Our record's " *
+            "transaction hash is $(bytes2hex(th)): sync!(copy), and the commit happened exactly when commit_log(copy) shows " *
+            "it at slot $slot. This builder is spent and is never re-run (ADR-0002).";
+        chain_id, slot, transaction_hash = th, landed, cause
+    )
 end
 
 # The head against its own record (ADR-0007, ADR-0014): the slot is fetched from the
@@ -797,10 +910,14 @@ function check_head_record(copy::LocalCopy, chain::Chain, next)
     record = Ops.decode_record(bytes; slot = h.slot)
     record.state_fingerprint == h.state_fingerprint && return record
     here = written_by_here()
-    throw(FingerprintMismatchError("state fingerprint mismatch at slot $(h.slot) (chain $(h.chain_id)): the record's " *
-        "state_fingerprint is $(bytes2hex(record.state_fingerprint)), the head of the local copy at $(copy.path) " *
-        "holds $(bytes2hex(h.state_fingerprint)). The record was written by $(record.client.lib) on Julia " *
-        "$(record.client.julia); this client is $(here.lib) on Julia $(here.julia). $next";
-        chain_id = h.chain_id, slot = h.slot, expected = record.state_fingerprint, computed = h.state_fingerprint,
-        record_client = (; lib = record.client.lib, julia = record.client.julia), this_client = here))
+    throw(
+        FingerprintMismatchError(
+            "state fingerprint mismatch at slot $(h.slot) (chain $(h.chain_id)): the record's " *
+                "state_fingerprint is $(bytes2hex(record.state_fingerprint)), the head of the local copy at $(copy.path) " *
+                "holds $(bytes2hex(h.state_fingerprint)). The record was written by $(record.client.lib) on Julia " *
+                "$(record.client.julia); this client is $(here.lib) on Julia $(here.julia). $next";
+            chain_id = h.chain_id, slot = h.slot, expected = record.state_fingerprint, computed = h.state_fingerprint,
+            record_client = (; lib = record.client.lib, julia = record.client.julia), this_client = here
+        )
+    )
 end

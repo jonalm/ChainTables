@@ -45,12 +45,14 @@ mutable struct GatewayObjectStore <: AbstractObjectStore
     const host::String                        # the Host header of the function URL
     const sts_endpoint::String
     const timeout::Float64
-    author_key::Union{Nothing,String}         # the access key id the memoized author was fetched under
-    author::Union{Nothing,String}
+    author_key::Union{Nothing, String}         # the access key id the memoized author was fetched under
+    author::Union{Nothing, String}
 end
 
-function GatewayObjectStore(bucket::AbstractString, function_url::AbstractString; region::AbstractString, credentials,
-                            endpoint = nothing, path_style::Bool = false, timeout::Real = 60, sts_endpoint = nothing)
+function GatewayObjectStore(
+        bucket::AbstractString, function_url::AbstractString; region::AbstractString, credentials,
+        endpoint = nothing, path_style::Bool = false, timeout::Real = 60, sts_endpoint = nothing
+    )
     s3 = S3ObjectStore(bucket; region, credentials, endpoint, path_style, timeout)
     base, hostport = gateway_base(function_url, region)
     sts = sts_endpoint === nothing ? default_sts_endpoint(region) : join(parse_endpoint(sts_endpoint; what = "sts_endpoint"), "://")
@@ -67,15 +69,21 @@ default_sts_endpoint(region::AbstractString) =
 function gateway_base(function_url::AbstractString, region)
     scheme, hostport = parse_endpoint(function_url; what = "gateway")
     m = match(r"\.lambda-url\.([a-z0-9-]+)\.on\.aws\z", hostport)
-    (region === nothing || m === nothing || m.captures[1] == region) || throw(ArgumentError("Chain: region " *
-        "$(repr(String(region))) disagrees with the region in the function URL host $(repr(hostport)), " *
-        "$(repr(m.captures[1])); SigV4 signs the region, so the two must agree — pass the region the gateway is deployed in"))
+    (region === nothing || m === nothing || m.captures[1] == region) || throw(
+        ArgumentError(
+            "Chain: region " *
+                "$(repr(String(region))) disagrees with the region in the function URL host $(repr(hostport)), " *
+                "$(repr(m.captures[1])); SigV4 signs the region, so the two must agree — pass the region the gateway is deployed in"
+        )
+    )
     return scheme * "://" * hostport, hostport
 end
 
-Base.show(io::IO, s::GatewayObjectStore) = print(io, "GatewayObjectStore(", repr(s.s3.bucket), ", ", repr(s.function_url),
+Base.show(io::IO, s::GatewayObjectStore) = print(
+    io, "GatewayObjectStore(", repr(s.s3.bucket), ", ", repr(s.function_url),
     "; region = ", repr(s.s3.region), s.s3.endpoint === nothing ? "" : ", endpoint = " * repr(s.s3.endpoint),
-    s.s3.path_style ? ", path_style = true" : "", ")")
+    s.s3.path_style ? ", path_style = true" : "", ")"
+)
 
 is_aws(store::GatewayObjectStore) = is_aws(store.s3)
 cache_namespace(store::GatewayObjectStore) = cache_namespace(store.s3)     # reads go to S3 directly (ADR-0040)
@@ -86,7 +94,7 @@ record_cap(::GatewayObjectStore) = GATEWAY_RECORD_BYTES
 # The three read verbs are the S3 half's (ADR-0028: reads stay direct).
 fetch_object(store::GatewayObjectStore, key::AbstractString) = fetch_object(store.s3, key)
 stat_object(store::GatewayObjectStore, key::AbstractString) = stat_object(store.s3, key)
-list_objects(store::GatewayObjectStore, prefix::AbstractString; start_after::Union{Nothing,AbstractString} = nothing) =
+list_objects(store::GatewayObjectStore, prefix::AbstractString; start_after::Union{Nothing, AbstractString} = nothing) =
     list_objects(store.s3, prefix; start_after)
 
 # ---------------------------------------------------------------------------
@@ -111,9 +119,13 @@ an Identity Center session the session name is the user name. Any other principa
 """
 function author_from_arn(arn::AbstractString)
     m = match(PRINCIPAL_ARN, arn)
-    m === nothing && throw(WriteRefusedError("write refused: the caller $arn is neither an IAM user nor an " *
-        "assumed role, and a gateway fills slots for those alone (ADR-0028). Log in as a user — aws sso login for an " *
-        "Identity Center user — and commit again."; reason = "not_allowed"))
+    m === nothing && throw(
+        WriteRefusedError(
+            "write refused: the caller $arn is neither an IAM user nor an " *
+                "assumed role, and a gateway fills slots for those alone (ADR-0028). Log in as a user — aws sso login for an " *
+                "Identity Center user — and commit again."; reason = "not_allowed"
+        )
+    )
     return String(something(m[:session], m[:user]))
 end
 
@@ -138,8 +150,10 @@ function record_author(store::GatewayObjectStore)
     store.author_key == credentials.access_key_id && store.author !== nothing && return store.author
     body = Vector{UInt8}("Action=GetCallerIdentity&Version=2011-06-15")
     host = split(store.sts_endpoint, "://"; limit = 2)[2]
-    headers = signed_headers(credentials, store.s3.region, "sts", host, "POST", "/";
-                             body, headers = ["content-type" => "application/x-www-form-urlencoded; charset=utf-8"])
+    headers = signed_headers(
+        credentials, store.s3.region, "sts", host, "POST", "/";
+        body, headers = ["content-type" => "application/x-www-form-urlencoded; charset=utf-8"]
+    )
     url = store.sts_endpoint * "/"
     response = http_request(url, "POST", headers, body, store.timeout)
     response.status == 200 || throw(failure("POST", url, response))
@@ -175,11 +189,17 @@ any request; the commit layer checks the cap first and reports it as `WriteBuild
 """
 function put_object_if_absent(store::GatewayObjectStore, key::AbstractString, bytes)
     body = bytes isa Vector{UInt8} ? bytes : Vector{UInt8}(bytes)
-    length(body) <= GATEWAY_RECORD_BYTES || throw(ArgumentError("GatewayObjectStore: $(length(body)) bytes for $key is over " *
-        "the gateway's 4 MiB record cap ($GATEWAY_RECORD_BYTES bytes; ADR-0028); the commit layer checks this before the put"))
-    query = Pair{String,String}["key" => String(key)]
-    headers = signed_headers(current_credentials(store.s3), store.s3.region, "lambda", store.host, "PUT", "/";
-                             query, body, headers = ["content-type" => "application/cbor"])
+    length(body) <= GATEWAY_RECORD_BYTES || throw(
+        ArgumentError(
+            "GatewayObjectStore: $(length(body)) bytes for $key is over " *
+                "the gateway's 4 MiB record cap ($GATEWAY_RECORD_BYTES bytes; ADR-0028); the commit layer checks this before the put"
+        )
+    )
+    query = Pair{String, String}["key" => String(key)]
+    headers = signed_headers(
+        current_credentials(store.s3), store.s3.region, "lambda", store.host, "PUT", "/";
+        query, body, headers = ["content-type" => "application/cbor"]
+    )
     url = store.function_url * "/" * query_string(query)
     response = http_request(url, "PUT", headers, body, store.timeout)
     status = response.status
@@ -187,7 +207,7 @@ function put_object_if_absent(store::GatewayObjectStore, key::AbstractString, by
     status == 412 && return PutOutcome(false, 412)
     code, message = gateway_reply(response.body)
     if status == 403 || code == "s3_refused"
-            reason = something(code, "forbidden")
+        reason = something(code, "forbidden")
         throw(WriteRefusedError(refusal_message(store, String(key), reason, message); key = String(key), caller = store.author, reason))
     end
     detail = code === nothing ? "" : " " * code * (message === nothing ? "" : ": " * message)
@@ -204,11 +224,17 @@ function created_in_our_bucket(store::GatewayObjectStore, key, body)
     held = fetch_object(store.s3, key)
     held == body && return PutOutcome(true, 200)
     bucket = store.s3.bucket
-    throw(GatewayMismatchError("gateway mismatch: the gateway at $(store.function_url) answered 200 created for $key, and bucket " *
-        "$bucket $(held === nothing ? "does not hold it" : "holds another record there ($(length(held)) bytes, not the " *
-        "$(length(body)) sent)"): this gateway fills another bucket than the one this chain reads. The record now sits " *
-        "in the gateway's own bucket and nothing removes it. Pair the bucket with its own gateway — one " *
-        "ChainTables.Bucket value holds both (ADR-0029) — and commit again."; key, bucket, gateway = store.function_url))
+    throw(
+        GatewayMismatchError(
+            "gateway mismatch: the gateway at $(store.function_url) answered 200 created for $key, and bucket " *
+                "$bucket $(
+                held === nothing ? "does not hold it" : "holds another record there ($(length(held)) bytes, not the " *
+                    "$(length(body)) sent)"
+            ): this gateway fills another bucket than the one this chain reads. The record now sits " *
+                "in the gateway's own bucket and nothing removes it. Pair the bucket with its own gateway — one " *
+                "ChainTables.Bucket value holds both (ADR-0029) — and commit again."; key, bucket, gateway = store.function_url
+        )
+    )
 end
 
 # The refusal's message (ADR-0020's three parts): what happened, the evidence, the next
@@ -219,31 +245,31 @@ function refusal_message(store::GatewayObjectStore, key, reason, message; mint::
     where = "the gateway at $(store.function_url) refused to $(mint ? "mint the upload of" : "fill") $key"
     if reason == "forbidden"
         return "write refused: AWS refused the invocation of $(store.function_url) for caller $caller before the gateway ran " *
-               "(HTTP 403 with no gateway code)$(message === nothing ? "" : ": " * message). Either the request's " *
-               "signature was not accepted — expired or revoked credentials (refresh them, e.g. aws sso login), or a " *
-               "clock off by more than five minutes — or the principal lacks lambda:InvokeFunctionUrl and " *
-               "lambda:InvokeFunction on the function: ask the bucket's operator for the writer permission set (ADR-0028)."
+            "(HTTP 403 with no gateway code)$(message === nothing ? "" : ": " * message). Either the request's " *
+            "signature was not accepted — expired or revoked credentials (refresh them, e.g. aws sso login), or a " *
+            "clock off by more than five minutes — or the principal lacks lambda:InvokeFunctionUrl and " *
+            "lambda:InvokeFunction on the function: ask the bucket's operator for the writer permission set (ADR-0028)."
     elseif reason == "not_allowed"
         return "write refused: $where for caller $caller — not_allowed" *
-               "$(message === nothing ? "" : ": " * message). The gateway policy has no entry for this name on this prefix " *
-               "(or none from this account or role), or the principal is neither an IAM user nor an assumed role: ask " *
-               "the bucket's operator to add the name to the gateway policy (ADR-0028, ADR-0039)."
+            "$(message === nothing ? "" : ": " * message). The gateway policy has no entry for this name on this prefix " *
+            "(or none from this account or role), or the principal is neither an IAM user nor an assumed role: ask " *
+            "the bucket's operator to add the name to the gateway policy (ADR-0028, ADR-0039)."
     elseif reason == "author_mismatch"
         return "write refused: $where for caller $caller — author_mismatch" *
-               "$(message === nothing ? "" : ": " * message). client.user was resolved from sts:GetCallerIdentity and " *
-               "the gateway saw another caller: a bug, or the credentials changed between the STS call and the put; " *
-               "report it (ADR-0028)."
+            "$(message === nothing ? "" : ": " * message). client.user was resolved from sts:GetCallerIdentity and " *
+            "the gateway saw another caller: a bug, or the credentials changed between the STS call and the put; " *
+            "report it (ADR-0028)."
     elseif reason == "s3_refused" && mint
         return "write refused: $where — s3_refused$(message === nothing ? "" : ": " * message). S3 refused one of " *
-               "the gateway's own calls for the attachment — its HEAD, GetObjectRetention or PutObjectRetention — so " *
-               "the gateway's deployment is wrong and a retry cannot help: report it to the bucket's operator (ADR-0046)."
+            "the gateway's own calls for the attachment — its HEAD, GetObjectRetention or PutObjectRetention — so " *
+            "the gateway's deployment is wrong and a retry cannot help: report it to the bucket's operator (ADR-0046)."
     elseif reason == "s3_refused"
         return "write refused: $where — s3_refused$(message === nothing ? "" : ": " * message). S3 refused the " *
-               "gateway's own put, so the gateway's deployment is wrong and a retry cannot help: report it to the " *
-               "bucket's operator (ADR-0028)."
+            "gateway's own put, so the gateway's deployment is wrong and a retry cannot help: report it to the " *
+            "bucket's operator (ADR-0028)."
     end
     return "write refused: $where for caller $caller — $reason$(message === nothing ? "" : ": " * message). " *
-           "This gateway answered with a reason this client does not know; stop and have the bucket's operator look (ADR-0028)."
+        "This gateway answered with a reason this client does not know; stop and have the bucket's operator look (ADR-0028)."
 end
 
 # `{"code": "<code>", "message": "<text>"}` read without a JSON dependency (ADR-0027): the
@@ -254,8 +280,10 @@ function gateway_reply(body::Vector{UInt8})
     text = String(copy(body))
     code = match(r"\"code\"\s*:\s*\"([A-Za-z0-9_]*)\"", text)
     message = match(r"\"[Mm]essage\"\s*:\s*\"((?:[^\"\\]|\\.)*)\"", text)
-    return (code === nothing ? nothing : String(code.captures[1]),
-            message === nothing ? nothing : json_unescape(message.captures[1]))
+    return (
+        code === nothing ? nothing : String(code.captures[1]),
+        message === nothing ? nothing : json_unescape(message.captures[1]),
+    )
 end
 
 # A `\\uXXXX` pair of UTF-16 surrogates (how Python's json.dumps writes any character outside
@@ -275,11 +303,11 @@ function json_unescape(s::AbstractString)
                 if u === nothing
                     write(io, "\\u")
                 elseif 0xd800 <= u <= 0xdbff && checkbounds(Bool, codeunits(s), i + 5) && codeunit(s, i + 5) == UInt8('\\') &&
-                       (lo = utf16_escape(s, i + 6)) !== nothing && 0xdc00 <= lo <= 0xdfff
-                    write(io, Char(0x10000 + ((u - 0xd800) << 10) + (lo - 0xdc00)))
+                        (lo = utf16_escape(s, i + 6)) !== nothing && 0xdc00 <= lo <= 0xdfff
+                    write(io, Char(0x00010000 + ((u - 0xd800) << 10) + (lo - 0xdc00)))
                     i += 10
                 elseif 0xd800 <= u <= 0xdfff
-                    write(io, "\\u", s[i+1:i+4])
+                    write(io, "\\u", s[(i + 1):(i + 4)])
                     i += 4
                 else
                     write(io, Char(u))
@@ -299,9 +327,9 @@ end
 # The UTF-16 code unit spelled by the four hex digits after a `u` at byte `i` of `s`, or
 # `nothing` when there is no `u` there or fewer than four hex digits follow it.
 function utf16_escape(s::AbstractString, i::Integer)
-    checkbounds(Bool, codeunits(s), i:i+4) && codeunit(s, i) == UInt8('u') || return nothing
+    checkbounds(Bool, codeunits(s), i:(i + 4)) && codeunit(s, i) == UInt8('u') || return nothing
     u = UInt32(0)
-    for j in i+1:i+4
+    for j in (i + 1):(i + 4)
         d = Char(codeunit(s, j))
         isascii(d) && isxdigit(d) || return nothing
         u = u << 4 | UInt32(parse(Int, d; base = 16))

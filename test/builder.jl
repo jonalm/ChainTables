@@ -11,7 +11,7 @@ end
 # A Tables.jl-style row without Tables.jl: propertynames and getproperty are the
 # whole interface the builder reads (Tables.AbstractRow, DataFrameRow, NamedTuple).
 struct BuilderTestRow
-    fields::Dict{Symbol,Any}
+    fields::Dict{Symbol, Any}
 end
 Base.propertynames(r::BuilderTestRow) = Tuple(sort!(collect(keys(getfield(r, :fields)))))
 Base.getproperty(r::BuilderTestRow, n::Symbol) = getfield(r, :fields)[n]
@@ -29,8 +29,16 @@ Base.getproperty(r::BuilderTestRow, n::Symbol) = getfield(r, :fields)[n]
         CT.primary_key!(t, :id)
     end
     # the WriteBuilderError a call raises, as its message; anything else is a bug
-    refused(f) = try f(); "no error" catch e; e isa WriteBuilderError ? e.msg : rethrow() end
-    applied(ops) = (c = Content(); for op in ops; Ops.apply!(c, op, 1); end; c)
+    refused(f) = try
+        f(); "no error"
+    catch e
+        e isa WriteBuilderError ? e.msg : rethrow()
+    end
+    applied(ops) = (
+        c = Content(); for op in ops
+            Ops.apply!(c, op, 1)
+        end; c
+    )
 
     # ------------------------------------------------------------------------
     # The README sequence, at the builder's level: every op function, in the
@@ -59,16 +67,18 @@ Base.getproperty(r::BuilderTestRow, n::Symbol) = getfield(r, :fields)[n]
         end === nothing
         @test CT.insert_rows!(w2, :tags, [(k = UInt8[1],), (k = UInt8[],)]) === nothing
         @test CT.drop_table!(w2, :tags) === nothing
-        @test isequal(w2.ops, Ops.Op[
-            Update("samples", ["mass"], [Any[2, 2.5]]),
-            Delete("samples", [Any[1]]),
-            AddColumn("samples", Column("note", "text", true), missing),
-            AddColumn("samples", Column("weight", "float64", false), 1.0),
-            DropColumn("samples", "label"),
-            CreateTable("tags", Shape([Column("k", "bytes", false)], ["k"])),
-            Insert("tags", [Any[UInt8[]], Any[UInt8[1]]]),
-            DropTable("tags"),
-        ])
+        @test isequal(
+            w2.ops, Ops.Op[
+                Update("samples", ["mass"], [Any[2, 2.5]]),
+                Delete("samples", [Any[1]]),
+                AddColumn("samples", Column("note", "text", true), missing),
+                AddColumn("samples", Column("weight", "float64", false), 1.0),
+                DropColumn("samples", "label"),
+                CreateTable("tags", Shape([Column("k", "bytes", false)], ["k"])),
+                Insert("tags", [Any[UInt8[]], Any[UInt8[1]]]),
+                DropTable("tags"),
+            ]
+        )
         # a scratch table holds a shape and never rows, so the placeholder slot its
         # column ops pass stamps nothing; one that held rows is a bug, and fails fast
         w3 = WriteBuilder(c)
@@ -79,8 +89,12 @@ Base.getproperty(r::BuilderTestRow, n::Symbol) = getfield(r, :fields)[n]
         for op in w2.ops
             Ops.apply!(c, op, 2)                     # the record after seeded()'s slot 1
         end
-        @test c["samples"].shape == Shape([Column("id", "int64", false), Column("mass", "float64", true),
-                                           Column("note", "text", true), Column("weight", "float64", false)], ["id"])
+        @test c["samples"].shape == Shape(
+            [
+                Column("id", "int64", false), Column("mass", "float64", true),
+                Column("note", "text", true), Column("weight", "float64", false),
+            ], ["id"]
+        )
         @test isequal(Model.getrow(c["samples"], (2,)), Any[2, 2.5, missing, 1.0])
         @test !haskey(c, "tags")
 
@@ -123,11 +137,13 @@ Base.getproperty(r::BuilderTestRow, n::Symbol) = getfield(r, :fields)[n]
     @testset "typed values" begin
         w = fresh()
         declare!(w)
-        CT.insert_rows!(w, :samples, [
-            (id = Int32(1), label = SubString("xa", 2), mass = 1.5f0),
-            (id = Int8(2), label = "b", mass = signbit_nan),
-            (id = Int16(3), label = "c", mass = Float16(2)),
-        ])
+        CT.insert_rows!(
+            w, :samples, [
+                (id = Int32(1), label = SubString("xa", 2), mass = 1.5f0),
+                (id = Int8(2), label = "b", mass = signbit_nan),
+                (id = Int16(3), label = "c", mass = Float16(2)),
+            ]
+        )
         rows = w.ops[end].rows
         @test isequal(rows, [Any[1, "a", 1.5], Any[2, "b", NaN], Any[3, "c", 2.0]])
         @test rows[1][1] isa Int64 && rows[1][2] isa String && rows[1][3] isa Float64
@@ -183,10 +199,18 @@ Base.getproperty(r::BuilderTestRow, n::Symbol) = getfield(r, :fields)[n]
             CT.column!(t, :x, Float64)
             CT.primary_key!(t, :x)
         end
-        CT.insert_rows!(w, :points, [(x = NaN, label = "nan"), (x = 0.0, label = "zero"), (x = Inf, label = missing),
-                                     (x = -0.0, label = "negative zero"), (x = 1.5, label = "one and a half"), (x = -Inf, label = "-inf")])
-        @test isequal(w.ops[end].rows, [Any["-inf", -Inf], Any["negative zero", -0.0], Any["zero", 0.0],
-                                        Any["one and a half", 1.5], Any[missing, Inf], Any["nan", NaN]])
+        CT.insert_rows!(
+            w, :points, [
+                (x = NaN, label = "nan"), (x = 0.0, label = "zero"), (x = Inf, label = missing),
+                (x = -0.0, label = "negative zero"), (x = 1.5, label = "one and a half"), (x = -Inf, label = "-inf"),
+            ]
+        )
+        @test isequal(
+            w.ops[end].rows, [
+                Any["-inf", -Inf], Any["negative zero", -0.0], Any["zero", 0.0],
+                Any["one and a half", 1.5], Any[missing, Inf], Any["nan", NaN],
+            ]
+        )
         # a composite key: key declaration order is primary_key!'s, not the columns'
         CT.create_table!(w, :grid) do t
             CT.column!(t, :a, Int64)
@@ -236,13 +260,17 @@ Base.getproperty(r::BuilderTestRow, n::Symbol) = getfield(r, :fields)[n]
         @test_throws "delete_rows!(w, :samples): unknown column \"colour\"" CT.delete_rows!(w, :samples, rows(id = 1, colour = "red"))
         @test_throws "drop_column!(w, :samples, :colour): unknown column \"colour\"" CT.drop_column!(w, :samples, :colour)
         # refused type tags: exactly the four, by identity
-        bad_tag(T) = refused(() -> CT.create_table!(w, :t) do t; CT.column!(t, :c, T); CT.primary_key!(t, :c); end)
+        bad_tag(T) = refused(
+            () -> CT.create_table!(w, :t) do t
+                CT.column!(t, :c, T); CT.primary_key!(t, :c)
+            end
+        )
         @test bad_tag(Bool) == "column!(t, :c, Bool): type tag Bool for column \"c\" is not one of Int64, Float64, String, Vector{UInt8}"
         @test bad_tag(AbstractString) == "column!(t, :c, AbstractString): type tag AbstractString for column \"c\" is not one of Int64, Float64, String, Vector{UInt8}; a text column's tag is String"
         @test bad_tag(Int32) == "column!(t, :c, Int32): type tag Int32 for column \"c\" is not one of Int64, Float64, String, Vector{UInt8}; Int32 values widen at insert, the tag is Int64"
         @test bad_tag(Float32) == "column!(t, :c, Float32): type tag Float32 for column \"c\" is not one of Int64, Float64, String, Vector{UInt8}; Float32 values widen at insert, the tag is Float64"
         @test startswith(bad_tag(BuilderTestDateTime), "column!(t, :c, BuilderTestDateTime): type tag BuilderTestDateTime for column \"c\" is not one of")
-        for T in (Any, Union{Missing,Int64}, Missing, Nothing, Vector{Int64}, SubString{String}, UInt8, Int128, Integer, Real, Symbol, Char)
+        for T in (Any, Union{Missing, Int64}, Missing, Nothing, Vector{Int64}, SubString{String}, UInt8, Int128, Integer, Real, Symbol, Char)
             @test occursin("type tag $T for column \"c\" is not one of", bad_tag(T))
         end
         @test bad_tag("int64") == "column!(t, :c, \"int64\"): type tag \"int64\" for column \"c\" is not one of Int64, Float64, String, Vector{UInt8}"
@@ -342,7 +370,7 @@ Base.getproperty(r::BuilderTestRow, n::Symbol) = getfield(r, :fields)[n]
         # the binding step 7 attaches rides along, typed
         w2 = WriteBuilder(Content(); copy = :the_copy, head = (; slot = 3))
         @test w2.copy === :the_copy && w2.head.slot == 3
-        @test w2 isa WriteBuilder{Symbol,<:NamedTuple}
+        @test w2 isa WriteBuilder{Symbol, <:NamedTuple}
         # write_builder's one method is over a LocalCopy (chain.jl); a builder over bare content is the tests' own
         @test length(methods(CT.write_builder)) == 1
         @test_throws "commit!(w): this builder was not taken over a local copy" CT.commit!(WriteBuilder(Content()))

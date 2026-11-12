@@ -19,7 +19,7 @@ using .Model: Content
 function cached_chain_hashes(copy::LocalCopy, chain::Chain, call; fetch = false)
     hashes = Vector{Vector{UInt8}}(undef, copy.head.slot + 1)
     walk_back(copy, chain, call; fetch) do s, record, th
-        hashes[s+1] = th
+        hashes[s + 1] = th
         return false
     end
     return hashes
@@ -38,28 +38,40 @@ function walk_back(f, copy::LocalCopy, chain::Chain, call; fetch = false)
         bytes = cached_record(chain, s)
         th = bytes === nothing ? nothing : Ops.transaction_hash(bytes)
         if th != expected && !fetch
-            throw(RecordCacheError(th === nothing ?
-                "$call: slot $s of chain $(h.chain_id) is not in the record cache ($path), and the check is local. " *
-                "repair!(copy) fetches what the cache lacks and replaces what is damaged; a fresh local copy sync!ed " *
-                "from the chain fetches every record." :
-                "$call: the record cache's copy of slot $s ($path) hashes to $(bytes2hex(th)); $named_by " *
-                "$(bytes2hex(expected)). The record cache is damaged, not the chain: repair!(copy) fetches the record " *
-                "again and replaces the file.";
-                chain_id = h.chain_id, slot = s, path, expected, found = th))
+            throw(
+                RecordCacheError(
+                    th === nothing ?
+                        "$call: slot $s of chain $(h.chain_id) is not in the record cache ($path), and the check is local. " *
+                        "repair!(copy) fetches what the cache lacks and replaces what is damaged; a fresh local copy sync!ed " *
+                        "from the chain fetches every record." :
+                        "$call: the record cache's copy of slot $s ($path) hashes to $(bytes2hex(th)); $named_by " *
+                        "$(bytes2hex(expected)). The record cache is damaged, not the chain: repair!(copy) fetches the record " *
+                        "again and replaces the file.";
+                    chain_id = h.chain_id, slot = s, path, expected, found = th
+                )
+            )
         elseif th != expected
             bytes = fetch_object(chain.store, key)
             th = bytes === nothing ? nothing : Ops.transaction_hash(bytes)
             th == expected && heal_record!(chain.cache, chain.store, chain.bucket, key, bytes)
-            th == expected || throw(RewrittenChainError("rewritten chain: slot $s of chain $(h.chain_id) at " *
-                "$(location(chain)) " * (th === nothing ? "is absent" : "holds a record hashing to $(bytes2hex(th))") *
-                "; $named_by $(bytes2hex(expected)). The bucket was written from outside the protocol and nothing heals " *
-                "it. Nothing was written; the local copy stays readable and never commits onto this chain.";
-                chain_id = h.chain_id, slot = s, expected, found = th))
+            th == expected || throw(
+                RewrittenChainError(
+                    "rewritten chain: slot $s of chain $(h.chain_id) at " *
+                        "$(location(chain)) " * (th === nothing ? "is absent" : "holds a record hashing to $(bytes2hex(th))") *
+                        "; $named_by $(bytes2hex(expected)). The bucket was written from outside the protocol and nothing heals " *
+                        "it. Nothing was written; the local copy stays readable and never commits onto this chain.";
+                    chain_id = h.chain_id, slot = s, expected, found = th
+                )
+            )
         end
         record = Ops.decode_record(bytes; slot = s)
-        chain_id_string(record.chain_id) == h.chain_id || throw(MalformedRecordError("malformed record at slot $s: it " *
-            "carries chain id $(chain_id_string(record.chain_id)), the chain is $(h.chain_id) (a record of another chain " *
-            "was written into this prefix). No client can apply it (ADR-0025)."; chain_id = h.chain_id, slot = s))
+        chain_id_string(record.chain_id) == h.chain_id || throw(
+            MalformedRecordError(
+                "malformed record at slot $s: it " *
+                    "carries chain id $(chain_id_string(record.chain_id)), the chain is $(h.chain_id) (a record of another chain " *
+                    "was written into this prefix). No client can apply it (ADR-0025)."; chain_id = h.chain_id, slot = s
+            )
+        )
         f(s, record, th) === true && return nothing
         s == 0 || (expected = record.prev_hash; named_by = "slot $s names its parent as")
     end
@@ -71,9 +83,13 @@ function cached_record_at(chain::Chain, chain_id, slot, hashes, call)
     path = record_path(chain.cache, chain.store, chain.bucket, slot_key(chain, slot))
     bytes = cached_record(chain, slot)
     th = bytes === nothing ? nothing : Ops.transaction_hash(bytes)
-    th == hashes[slot+1] || throw(RecordCacheError("$call: the record cache's copy of slot $slot ($path) changed while " *
-        "it was being read: another process is writing the record cache, or the disk damaged the file. Run $call again.";
-        chain_id, slot, path, expected = hashes[slot+1], found = th))
+    th == hashes[slot + 1] || throw(
+        RecordCacheError(
+            "$call: the record cache's copy of slot $slot ($path) changed while " *
+                "it was being read: another process is writing the record cache, or the disk damaged the file. Run $call again.";
+            chain_id, slot, path, expected = hashes[slot + 1], found = th
+        )
+    )
     return Ops.decode_record(bytes; slot)
 end
 
@@ -115,16 +131,24 @@ damage: deleting an entry is always safe, and the next read fetches it again.
 function verify(copy::LocalCopy; full = false)
     check_open(copy)
     h = copy.head
-    h === nothing && throw(ArgumentError("verify(copy): the local copy at $(copy.path) has no head yet, so there is " *
-        "nothing to verify; sync!(copy) binds it"))
+    h === nothing && throw(
+        ArgumentError(
+            "verify(copy): the local copy at $(copy.path) has no head yet, so there is " *
+                "nothing to verify; sync!(copy) binds it"
+        )
+    )
     verify_files(copy)
     full || return nothing
     chain = chain_of(copy, "verify")
     call = "verify(copy; full = true)"
     hashes = cached_chain_hashes(copy, chain, call)
     records = [cached_record_at(chain, h.chain_id, s, hashes, call) for s in 0:h.slot]
-    replay_to(content, from, to) = (for s in from:to; Ops.apply!(content, records[s+1]); end; content)
-    reproduces(content, s) = Model.state_fingerprint(content) == records[s+1].state_fingerprint
+    replay_to(content, from, to) = (
+        for s in from:to
+            Ops.apply!(content, records[s + 1])
+        end; content
+    )
+    reproduces(content, s) = Model.state_fingerprint(content) == records[s + 1].state_fingerprint
     top = replay_to(Content(), 0, h.slot)
     reproduces(top, h.slot) && (verify_attachments(copy, chain); return nothing)
     # bisect: `lo` reproduces (or is -1), `hi` does not; `base` is the content at `lo`
@@ -140,24 +164,28 @@ function verify(copy::LocalCopy; full = false)
     end
     content = replay_to(deepcopy(base), lo + 1, hi)
     computed = Model.state_fingerprint(content)
-    record = records[hi+1]
+    record = records[hi + 1]
     here = written_by_here()
     below = hi == 0 ? "it is the first record" : "slots 0 to $(hi - 1) reproduce"
-    throw(FingerprintMismatchError("state fingerprint mismatch at slot $hi (chain $(h.chain_id)): replaying the record " *
-        "cache from slot 0, the record's state_fingerprint is $(bytes2hex(record.state_fingerprint)), this client computes " *
-        "$(bytes2hex(computed)) after applying it; $below. The record was written by $(record.client.lib) on Julia " *
-        "$(record.client.julia); this client is $(here.lib) on Julia $(here.julia). The local copy at $(copy.path) is at " *
-        "slot $(h.slot) and stays readable. This machine cannot reproduce the chain from slot $hi, or the committer of " *
-        "slot $hi wrote a wrong fingerprint: repair!(copy) confirms whether the head reproduces.";
-        chain_id = h.chain_id, slot = Int64(hi), expected = record.state_fingerprint, computed,
-        record_client = (; lib = record.client.lib, julia = record.client.julia), this_client = here))
+    throw(
+        FingerprintMismatchError(
+            "state fingerprint mismatch at slot $hi (chain $(h.chain_id)): replaying the record " *
+                "cache from slot 0, the record's state_fingerprint is $(bytes2hex(record.state_fingerprint)), this client computes " *
+                "$(bytes2hex(computed)) after applying it; $below. The record was written by $(record.client.lib) on Julia " *
+                "$(record.client.julia); this client is $(here.lib) on Julia $(here.julia). The local copy at $(copy.path) is at " *
+                "slot $(h.slot) and stays readable. This machine cannot reproduce the chain from slot $hi, or the committer of " *
+                "slot $hi wrote a wrong fingerprint: repair!(copy) confirms whether the head reproduces.";
+            chain_id = h.chain_id, slot = Int64(hi), expected = record.state_fingerprint, computed,
+            record_client = (; lib = record.client.lib, julia = record.client.julia), this_client = here
+        )
+    )
 end
 
 # Every table file the head names hashed against its name, and the fingerprint over
 # what they hash to against the head's (ADR-0007, ADR-0023).
 function verify_files(copy::LocalCopy)
     h = copy.head
-    hashed = Dict{Vector{UInt8},Union{Nothing,Vector{UInt8}}}()   # named hash => what the file hashes to
+    hashed = Dict{Vector{UInt8}, Union{Nothing, Vector{UInt8}}}()   # named hash => what the file hashes to
     problems = String[]
     for (hash, names) in files_of(h)
         file = table_path(copy, hash)
@@ -165,24 +193,30 @@ function verify_files(copy::LocalCopy)
         hashed[hash] = got
         got == hash && continue
         which = length(names) == 1 ? "table $(repr(names[1]))" : "tables " * join(repr.(names), ", ")
-        push!(problems, "table file tables/$(bytes2hex(hash)) ($which) " *
-                        (got === nothing ? "is missing" : "hashes to $(bytes2hex(got)), not its name"))
+        push!(
+            problems, "table file tables/$(bytes2hex(hash)) ($which) " *
+                (got === nothing ? "is missing" : "hashes to $(bytes2hex(got)), not its name")
+        )
     end
     isempty(problems) && Model.state_fingerprint(h.tables) == h.state_fingerprint && return nothing
     computed = any(isnothing, values(hashed)) ? nothing :
         Model.state_fingerprint(name => hashed[hash] for (name, hash) in h.tables)
     files = computed === nothing ? "" : "its table files hash to $(bytes2hex(computed)): "
-    throw(FingerprintMismatchError("state fingerprint mismatch at slot $(h.slot) (chain $(h.chain_id)): the head of the " *
-        "local copy at $(copy.path) holds state_fingerprint $(bytes2hex(h.state_fingerprint)), $files" *
-        join(problems, "; ") * ". The local copy is damaged (its files, not the chain): repair!(copy) rewrites every file " *
-        "whose bytes do not hash to its name from the record cache.";
-        chain_id = h.chain_id, slot = h.slot, expected = h.state_fingerprint, computed))
+    throw(
+        FingerprintMismatchError(
+            "state fingerprint mismatch at slot $(h.slot) (chain $(h.chain_id)): the head of the " *
+                "local copy at $(copy.path) holds state_fingerprint $(bytes2hex(h.state_fingerprint)), $files" *
+                join(problems, "; ") * ". The local copy is damaged (its files, not the chain): repair!(copy) rewrites every file " *
+                "whose bytes do not hash to its name from the record cache.";
+            chain_id = h.chain_id, slot = h.slot, expected = h.state_fingerprint, computed
+        )
+    )
 end
 
 # The head's files with the tables that name each, in name order: two identical tables
 # share one file (ADR-0023).
 function files_of(h::Head)
-    files = Pair{Vector{UInt8},Vector{String}}[]
+    files = Pair{Vector{UInt8}, Vector{String}}[]
     for (name, hash) in h.tables
         i = findfirst(p -> first(p) == hash, files)
         i === nothing ? push!(files, hash => [name]) : push!(files[i].second, name)
@@ -227,8 +261,12 @@ says to delete the directory and sync again. A fresh, unbound copy has nothing t
 function repair!(copy::LocalCopy)
     check_open(copy)
     h = copy.head
-    h === nothing && throw(ArgumentError("repair!(copy): the local copy at $(copy.path) has no head yet, so there is " *
-        "nothing to repair; sync!(copy) binds it"))
+    h === nothing && throw(
+        ArgumentError(
+            "repair!(copy): the local copy at $(copy.path) has no head yet, so there is " *
+                "nothing to repair; sync!(copy) binds it"
+        )
+    )
     chain = chain_of(copy, "repair!")
     call = "repair!(copy)"
     hashes = cached_chain_hashes(copy, chain, call; fetch = true)
@@ -246,12 +284,16 @@ function repair!(copy::LocalCopy)
             a == b && continue
             push!(differ, "$name (replay $(a === nothing ? "absent" : bytes2hex(a)), head $(b === nothing ? "absent" : bytes2hex(b)))")
         end
-        throw(DivergenceError("divergence at slot $(h.slot) (chain $(h.chain_id)): a fresh replay of the record cache from " *
-            "slot 0 to slot $(h.slot) yields state fingerprint $(bytes2hex(computed)), the head of the local copy at " *
-            "$(copy.path) carries $(bytes2hex(h.state_fingerprint)); tables that differ: $(join(differ, ", ")). This machine " *
-            "cannot reproduce the chain — whether this client or the chain's committers are right is not decided here. " *
-            "Nothing was written; the local copy stays readable and never commits onto this chain.";
-            chain_id = h.chain_id, slot = h.slot, expected = h.state_fingerprint, computed))
+        throw(
+            DivergenceError(
+                "divergence at slot $(h.slot) (chain $(h.chain_id)): a fresh replay of the record cache from " *
+                    "slot 0 to slot $(h.slot) yields state fingerprint $(bytes2hex(computed)), the head of the local copy at " *
+                    "$(copy.path) carries $(bytes2hex(h.state_fingerprint)); tables that differ: $(join(differ, ", ")). This machine " *
+                    "cannot reproduce the chain — whether this client or the chain's committers are right is not decided here. " *
+                    "Nothing was written; the local copy stays readable and never commits onto this chain.";
+                chain_id = h.chain_id, slot = h.slot, expected = h.state_fingerprint, computed
+            )
+        )
     end
     rewritten = 0
     for (hash, names) in files_of(h)
@@ -269,8 +311,12 @@ function rewrite_table_file!(copy::LocalCopy, t::Model.Table, hash)
     dir = tables_dir(copy)
     tmp = joinpath(dir, bytes2hex(rand(UInt8, 8)) * ".tmp")
     got = Base.open(io -> Model.write_table(io, t), tmp, "w")
-    got == hash || (rm(tmp; force = true); error("repair!(copy): the replayed table encodes to $(bytes2hex(got)), the head " *
-        "names $(bytes2hex(hash)); the replay was held against the head a moment ago, so the model changed under repair!"))
+    got == hash || (
+        rm(tmp; force = true); error(
+            "repair!(copy): the replayed table encodes to $(bytes2hex(got)), the head " *
+                "names $(bytes2hex(hash)); the replay was held against the head a moment ago, so the model changed under repair!"
+        )
+    )
     mv(tmp, joinpath(dir, bytes2hex(hash)); force = true)
     return nothing
 end
@@ -319,10 +365,18 @@ function as_of(chain::Chain, target; path = nothing)
     try
         h = copy.head
         if h !== nothing
-            ispinned(copy) || throw(ArgumentError("$call: the local copy at $(copy.path) is live (slot $(h.slot), not " *
-                "pinned); as_of never touches a live local copy. Give another path, or none for a temporary one."))
-            h.slot > slot && throw(ArgumentError("$call: the local copy at $(copy.path) is pinned at slot $(h.slot), above " *
-                "$slot; a local copy never moves backwards. Give another path, or delete this one."))
+            ispinned(copy) || throw(
+                ArgumentError(
+                    "$call: the local copy at $(copy.path) is live (slot $(h.slot), not " *
+                        "pinned); as_of never touches a live local copy. Give another path, or none for a temporary one."
+                )
+            )
+            h.slot > slot && throw(
+                ArgumentError(
+                    "$call: the local copy at $(copy.path) is pinned at slot $(h.slot), above " *
+                        "$slot; a local copy never moves backwards. Give another path, or delete this one."
+                )
+            )
         end
         pin!(copy)
         if h === nothing || h.slot < slot
@@ -330,8 +384,10 @@ function as_of(chain::Chain, target; path = nothing)
             h === nothing || check_head_slot(copy, chain)
             replay!(copy, h === nothing ? 0 : h.slot + 1, slot)      # the checkpoint at `slot` verifies its record
         else
-            check_head_record(copy, chain, "The pinned copy does not match the record it claims to be the result of: " *
-                "delete the directory, or repair!(copy) confirms whether this machine reproduces the chain.")
+            check_head_record(
+                copy, chain, "The pinned copy does not match the record it claims to be the result of: " *
+                    "delete the directory, or repair!(copy) confirms whether this machine reproduces the chain."
+            )
         end
     catch
         close(copy)
@@ -355,24 +411,42 @@ function target_slot(chain::Chain, target::TransactionHash)
         return found !== nothing
     end
     found === nothing || return Int64(found)
-    throw(ArgumentError("as_of(chain, $(repr(target))): no record of the chain at $(location(chain)) hashes to it " *
-        "(slots 0 to $top scanned)"))
+    throw(
+        ArgumentError(
+            "as_of(chain, $(repr(target))): no record of the chain at $(location(chain)) hashes to it " *
+                "(slots 0 to $top scanned)"
+        )
+    )
 end
-target_slot(chain::Chain, ::StateFingerprint) = throw(ArgumentError("as_of(chain, target): a StateFingerprint is not an " *
-    "address; give a slot (an Integer) or a TransactionHash"))
-target_slot(chain::Chain, target) = throw(ArgumentError("as_of(chain, target): target is a $(typeof(target)); give a slot " *
-    "(an Integer) or a TransactionHash"))
+target_slot(chain::Chain, ::StateFingerprint) = throw(
+    ArgumentError(
+        "as_of(chain, target): a StateFingerprint is not an " *
+            "address; give a slot (an Integer) or a TransactionHash"
+    )
+)
+target_slot(chain::Chain, target) = throw(
+    ArgumentError(
+        "as_of(chain, target): target is a $(typeof(target)); give a slot " *
+            "(an Integer) or a TransactionHash"
+    )
+)
 
 function check_slot_exists(chain::Chain, slot, call)
     stat_object(chain.store, slot_key(chain, slot)) === nothing || return nothing
     (slot == 0 || stat_object(chain.store, slot_key(chain, 0)) === nothing) && throw(chain_not_found(chain, call))
-    throw(ArgumentError("$call: the chain at $(location(chain)) has no slot $slot; its head is below it. " *
-        "slot_at(chain, time_ms) finds a slot by time, and head(copy) after sync!(copy) is the chain's head"))
+    throw(
+        ArgumentError(
+            "$call: the chain at $(location(chain)) has no slot $slot; its head is below it. " *
+                "slot_at(chain, time_ms) finds a slot by time, and head(copy) after sync!(copy) is the chain's head"
+        )
+    )
 end
 
-chain_not_found(chain::Chain, call) = ChainNotFoundError("chain not found: no slot 0 at $(location(chain)), so $call has " *
-    "no chain to read. Either the bucket or prefix is not the chain's, or no chain was created there — create_chain(chain) " *
-    "writes slot 0, and only that. The two cannot be told apart from here."; bucket = chain.bucket, prefix = chain.prefix)
+chain_not_found(chain::Chain, call) = ChainNotFoundError(
+    "chain not found: no slot 0 at $(location(chain)), so $call has " *
+        "no chain to read. Either the bucket or prefix is not the chain's, or no chain was created there — create_chain(chain) " *
+        "writes slot 0, and only that. The two cannot be told apart from here."; bucket = chain.bucket, prefix = chain.prefix
+)
 
 """
     slot_at(chain, time_ms) -> Int64
@@ -387,8 +461,12 @@ returns a slot for [`as_of`](@ref) rather than an address of its own. A time bef
 genesis record's is an error: there is no state before slot 0.
 """
 function slot_at(chain::Chain, time_ms)
-    time_ms isa Integer || throw(ArgumentError("slot_at(chain, time_ms): time_ms is a $(typeof(time_ms)), not an Integer " *
-        "of milliseconds since the Unix epoch"))
+    time_ms isa Integer || throw(
+        ArgumentError(
+            "slot_at(chain, time_ms): time_ms is a $(typeof(time_ms)), not an Integer " *
+                "of milliseconds since the Unix epoch"
+        )
+    )
     top = gallop(chain.store, s -> slot_key(chain, s), -1)
     top == -1 && throw(chain_not_found(chain, "slot_at"))
     best = nothing
@@ -398,8 +476,12 @@ function slot_at(chain::Chain, time_ms)
         record.client.time_ms <= time_ms && (best = s)
         return false
     end
-    best === nothing && throw(ArgumentError("slot_at(chain, $time_ms): the time is before the genesis record's " *
-        "client.time_ms, $genesis_ms; there is no state before slot 0 (ADR-0015)"))
+    best === nothing && throw(
+        ArgumentError(
+            "slot_at(chain, $time_ms): the time is before the genesis record's " *
+                "client.time_ms, $genesis_ms; there is no state before slot 0 (ADR-0015)"
+        )
+    )
     return Int64(best)
 end
 
@@ -428,19 +510,33 @@ is read with no network I/O.
 """
 function commit_log(copy::LocalCopy; last = nothing)
     check_open(copy)
-    last === nothing || (last isa Integer && last >= 1) || throw(ArgumentError("commit_log(copy; last = $(repr(last))): " *
-        "last is the number of newest records to return, an Integer of at least 1, or nothing for all"))
+    last === nothing || (last isa Integer && last >= 1) || throw(
+        ArgumentError(
+            "commit_log(copy; last = $(repr(last))): " *
+                "last is the number of newest records to return, an Integer of at least 1, or nothing for all"
+        )
+    )
     h = copy.head
-    h === nothing && throw(ArgumentError("commit_log(copy): the local copy at $(copy.path) has no head yet, so it has " *
-        "no history; sync!(copy) binds it"))
+    h === nothing && throw(
+        ArgumentError(
+            "commit_log(copy): the local copy at $(copy.path) has no head yet, so it has " *
+                "no history; sync!(copy) binds it"
+        )
+    )
     chain = chain_of(copy, "commit_log")
     n = last === nothing ? h.slot + 1 : min(Int64(last), h.slot + 1)
-    log = @NamedTuple{slot::Int64, transaction_hash::TransactionHash, author::Union{Nothing,String},
-                      host::Union{Nothing,String}, time_ms::Int64, comment::Union{Nothing,String}}[]
+    log = @NamedTuple{
+        slot::Int64, transaction_hash::TransactionHash, author::Union{Nothing, String},
+        host::Union{Nothing, String}, time_ms::Int64, comment::Union{Nothing, String},
+    }[]
     walk_back(copy, chain, "commit_log(copy)"; fetch = true) do s, record, th
         c = record.client
-        push!(log, (; slot = s, transaction_hash = TransactionHash(th), author = c.user, host = c.host,
-                    time_ms = c.time_ms, record.comment))
+        push!(
+            log, (;
+                slot = s, transaction_hash = TransactionHash(th), author = c.user, host = c.host,
+                time_ms = c.time_ms, record.comment,
+            )
+        )
         return length(log) == n
     end
     return log

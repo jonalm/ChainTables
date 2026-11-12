@@ -217,7 +217,7 @@ end
 
 encode(io::IO, x::AbstractVector{UInt8}) = write_head(io, MT_BYTES, length(x)) + write(io, x)
 
-function encode(io::IO, x::Union{AbstractVector,Tuple})
+function encode(io::IO, x::Union{AbstractVector, Tuple})
     n = write_array_header(io, length(x))
     for item in x
         n += encode(io, item)
@@ -225,17 +225,17 @@ function encode(io::IO, x::Union{AbstractVector,Tuple})
     return n
 end
 
-encode_key(k::Union{AbstractString,Symbol}) = encode(string(k))
+encode_key(k::Union{AbstractString, Symbol}) = encode(string(k))
 encode_key(k) = throw(ArgumentError("map keys are text; got a key of type $(typeof(k))"))
 
 # Map keys sorted bytewise on their encoded form (§4.2.1 rule 3), which for
 # text keys is by length first and then by UTF-8 bytes, since the head byte
 # carries the length. The encoded key is the sort key, literally.
-function encode(io::IO, x::Union{AbstractDict,NamedTuple})
+function encode(io::IO, x::Union{AbstractDict, NamedTuple})
     entries = [(encode_key(k), v) for (k, v) in pairs(x)]
     sort!(entries; by = first)
     for i in 2:length(entries)
-        entries[i-1][1] == entries[i][1] &&
+        entries[i - 1][1] == entries[i][1] &&
             throw(ArgumentError("duplicate map key $(repr(String(entries[i][1][2:end])))"))
     end
     n = write_head(io, MT_MAP, length(entries))
@@ -247,15 +247,18 @@ end
 
 encode(io::IO, ::Nothing) =
     throw(ArgumentError("nothing is not a value of the format; null is spelled missing (ADR-0025)"))
-encode(io::IO, x) = throw(ArgumentError(
-    "cannot encode a value of type $(typeof(x)); the format carries int64, float64, text, bytes, bool, null, arrays and text-keyed maps"))
+encode(io::IO, x) = throw(
+    ArgumentError(
+        "cannot encode a value of type $(typeof(x)); the format carries int64, float64, text, bytes, bool, null, arrays and text-keyed maps"
+    )
+)
 
 # ---------------------------------------------------------------------------
 # Decoder
 # ---------------------------------------------------------------------------
 
 # Byte-counting reader so every rejection can name its offset.
-mutable struct Reader{T<:IO}
+mutable struct Reader{T <: IO}
     io::T
     pos::Int
 end
@@ -276,7 +279,7 @@ function readbytes(r::Reader, n::Integer)
     return b
 end
 
-read_be(r::Reader, ::Type{T}) where {T<:Unsigned} = ntoh(reinterpret(T, readbytes(r, sizeof(T)))[1])
+read_be(r::Reader, ::Type{T}) where {T <: Unsigned} = ntoh(reinterpret(T, readbytes(r, sizeof(T)))[1])
 
 """
     decode(bytes::AbstractVector{UInt8})
@@ -322,7 +325,7 @@ function read_head(r::Reader)
         return mt, UInt64(ai)
     elseif ai == 31
         mt == MT_SIMPLE ? throw(DecodeError("unexpected break (0xff); indefinite lengths are not in the format", at)) :
-                           throw(DecodeError("indefinite length is not in the format", at))
+            throw(DecodeError("indefinite length is not in the format", at))
     elseif ai > 27
         throw(DecodeError("reserved additional information $ai", at))
     end
@@ -331,7 +334,7 @@ function read_head(r::Reader)
         ai == 25 ? UInt64(read_be(r, UInt16)) :
         ai == 26 ? UInt64(read_be(r, UInt32)) : read_be(r, UInt64)
     floor = ai == 24 ? 24 : ai == 25 ? UInt64(typemax(UInt8)) + 1 :
-            ai == 26 ? UInt64(typemax(UInt16)) + 1 : UInt64(typemax(UInt32)) + 1
+        ai == 26 ? UInt64(typemax(UInt16)) + 1 : UInt64(typemax(UInt32)) + 1
     n >= floor || throw(DecodeError("integer argument $n is not in its shortest form", at))
     return mt, n
 end
@@ -384,7 +387,7 @@ end
 # decreasing is unsorted. Because a valid key is in shortest form, re-encoding
 # the decoded key reproduces its stored bytes, which is the sort key.
 function decode_map(r::Reader, n::UInt64, depth::Int)
-    m = Dict{String,Any}()
+    m = Dict{String, Any}()
     prev = UInt8[]
     for i in 1:n
         at = r.pos

@@ -50,8 +50,10 @@ function live_config(test)
     values = map(names) do name
         variable = live_variable(test, name)
         value = get(ENV, variable, "")
-        isempty(value) && error("live $test test: $variable is not set. Set it in env/live.env (or the file " *
-            "CHAINTABLES_LIVE_ENV names) and run test/live/run.sh; $LIVE_EXAMPLE lists every variable")
+        isempty(value) && error(
+            "live $test test: $variable is not set. Set it in env/live.env (or the file " *
+                "CHAINTABLES_LIVE_ENV names) and run test/live/run.sh; $LIVE_EXAMPLE lists every variable"
+        )
         value
     end
     return NamedTuple{names}(values)

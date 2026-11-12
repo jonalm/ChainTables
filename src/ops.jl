@@ -136,8 +136,8 @@ struct Delete <: Op
     keys::Vector{Vector{Any}}
 end
 
-Base.:(==)(a::T, b::T) where {T<:Op} = all(isequal(getfield(a, f), getfield(b, f)) for f in fieldnames(T))
-Base.isequal(a::T, b::T) where {T<:Op} = a == b
+Base.:(==)(a::T, b::T) where {T <: Op} = all(isequal(getfield(a, f), getfield(b, f)) for f in fieldnames(T))
+Base.isequal(a::T, b::T) where {T <: Op} = a == b
 
 const OP_NAMES = (
     CreateTable => "create_table", AddColumn => "add_column", DropColumn => "drop_column",
@@ -151,7 +151,7 @@ The op's wire discriminator: one of `create_table`, `add_column`, `drop_column`,
 `drop_table`, `insert`, `update`, `delete`.
 """
 op_name(op::Op) = op_name(typeof(op))
-op_name(::Type{T}) where {T<:Op} = last(OP_NAMES[findfirst(p -> first(p) === T, OP_NAMES)])
+op_name(::Type{T}) where {T <: Op} = last(OP_NAMES[findfirst(p -> first(p) === T, OP_NAMES)])
 
 rows_wire(rows) = Any[Any[r...] for r in rows]
 
@@ -160,15 +160,19 @@ rows_wire(rows) = Any[Any[r...] for r in rows]
 
 The op's wire form, ready for `CBOR.encode` (ADR-0025).
 """
-wire(op::CreateTable) = Dict{String,Any}("op" => op_name(op), "table" => op.table, "shape" => Model.wire(op.shape))
-wire(op::AddColumn) = Dict{String,Any}("op" => op_name(op), "table" => op.table,
-    "column" => Any[op.column.name, op.column.type, op.column.nullable], "fill" => op.fill)
-wire(op::DropColumn) = Dict{String,Any}("op" => op_name(op), "table" => op.table, "column" => op.column)
-wire(op::DropTable) = Dict{String,Any}("op" => op_name(op), "table" => op.table)
-wire(op::Insert) = Dict{String,Any}("op" => op_name(op), "table" => op.table, "rows" => rows_wire(op.rows))
-wire(op::Update) = Dict{String,Any}("op" => op_name(op), "table" => op.table,
-    "columns" => Any[op.columns...], "rows" => rows_wire(op.rows))
-wire(op::Delete) = Dict{String,Any}("op" => op_name(op), "table" => op.table, "keys" => rows_wire(op.keys))
+wire(op::CreateTable) = Dict{String, Any}("op" => op_name(op), "table" => op.table, "shape" => Model.wire(op.shape))
+wire(op::AddColumn) = Dict{String, Any}(
+    "op" => op_name(op), "table" => op.table,
+    "column" => Any[op.column.name, op.column.type, op.column.nullable], "fill" => op.fill
+)
+wire(op::DropColumn) = Dict{String, Any}("op" => op_name(op), "table" => op.table, "column" => op.column)
+wire(op::DropTable) = Dict{String, Any}("op" => op_name(op), "table" => op.table)
+wire(op::Insert) = Dict{String, Any}("op" => op_name(op), "table" => op.table, "rows" => rows_wire(op.rows))
+wire(op::Update) = Dict{String, Any}(
+    "op" => op_name(op), "table" => op.table,
+    "columns" => Any[op.columns...], "rows" => rows_wire(op.rows)
+)
+wire(op::Delete) = Dict{String, Any}("op" => op_name(op), "table" => op.table, "keys" => rows_wire(op.keys))
 
 # The fields each op carries besides "op" and "table"; a wire op has exactly these.
 op_fields(::Type{CreateTable}) = ("shape",)
@@ -291,8 +295,8 @@ version and `julia` the Julia version, both advisory and forensic (ADR-0022);
 [`local_client`](@ref) fills it in for this machine.
 """
 struct Client
-    host::Union{Nothing,String}
-    user::Union{Nothing,String}
+    host::Union{Nothing, String}
+    user::Union{Nothing, String}
     lib::String
     julia::String
     time_ms::Int64
@@ -319,8 +323,10 @@ host out, and `user = nothing` (or empty) the user (ADR-0006).
 function local_client(; record_host = true, user = nothing)
     host = record_host ? gethostname() : nothing
     user == "" && (user = nothing)
-    return Client(host, user, "ChainTables $(pkgversion(@__MODULE__))", string(VERSION),
-                  round(Int64, time() * 1000))
+    return Client(
+        host, user, "ChainTables $(pkgversion(@__MODULE__))", string(VERSION),
+        round(Int64, time() * 1000)
+    )
 end
 
 """
@@ -341,10 +347,10 @@ and [`decode_record`](@ref) share one check. A record never holds its own
 struct Record
     chain_id::Vector{UInt8}
     slot::Int64
-    prev_hash::Union{Nothing,Vector{UInt8}}
+    prev_hash::Union{Nothing, Vector{UInt8}}
     state_fingerprint::Vector{UInt8}
     client::Client
-    comment::Union{Nothing,String}
+    comment::Union{Nothing, String}
     ops::Vector{Op}
     function Record(chain_id, slot, prev_hash, state_fingerprint, client, comment, ops)
         length(chain_id) == 16 || fail("chain_id is $(length(chain_id)) bytes; a chain id is 16")
@@ -360,8 +366,10 @@ struct Record
         end
         slot == 0 || !isempty(ops) || fail("record has no ops; a record after genesis carries at least one (ADR-0019)")
         check_text("comment", comment)
-        return new(Vector{UInt8}(chain_id), slot, prev_hash === nothing ? nothing : Vector{UInt8}(prev_hash),
-                   Vector{UInt8}(state_fingerprint), client, comment, collect(Op, ops))
+        return new(
+            Vector{UInt8}(chain_id), slot, prev_hash === nothing ? nothing : Vector{UInt8}(prev_hash),
+            Vector{UInt8}(state_fingerprint), client, comment, collect(Op, ops)
+        )
     end
 end
 
@@ -375,10 +383,10 @@ The record's wire form, ready for `CBOR.encode`: `prev_hash`, `comment`,
 `client.host` and `client.user` are left out when absent, never spelt as null.
 """
 function wire(r::Record)
-    c = Dict{String,Any}("lib" => r.client.lib, "julia" => r.client.julia, "time_ms" => r.client.time_ms)
+    c = Dict{String, Any}("lib" => r.client.lib, "julia" => r.client.julia, "time_ms" => r.client.time_ms)
     r.client.host === nothing || (c["host"] = r.client.host)
     r.client.user === nothing || (c["user"] = r.client.user)
-    w = Dict{String,Any}(
+    w = Dict{String, Any}(
         "format_version" => FORMAT_VERSION, "chain_id" => r.chain_id, "slot" => r.slot,
         "state_fingerprint" => r.state_fingerprint, "client" => c,
         "ops" => Any[wire(op) for op in r.ops],
@@ -397,8 +405,11 @@ cap; the next move is to split the write.
 """
 function encode_record(r::Record)
     bytes = CBOR.encode(wire(r))
-    length(bytes) <= MAX_RECORD_BYTES || throw(WriteBuilderError(
-        "record is $(length(bytes)) bytes; the cap is $MAX_RECORD_BYTES bytes (64 MiB): split the write into more than one commit"))
+    length(bytes) <= MAX_RECORD_BYTES || throw(
+        WriteBuilderError(
+            "record is $(length(bytes)) bytes; the cap is $MAX_RECORD_BYTES bytes (64 MiB): split the write into more than one commit"
+        )
+    )
     return bytes
 end
 
@@ -421,10 +432,12 @@ function malformed(slot, chain_id, what; op = nothing)
     where = slot === nothing ? "at an unknown slot" : "at slot $slot"
     cid = chain_id === nothing ? nothing : ChainTables.chain_id_string(chain_id)
     evidence = cid === nothing ? "" : " (chain $cid)"
-    return MalformedRecordError("malformed record $where: $what$evidence. " *
-        "No client can apply it under format_version $FORMAT_VERSION: the committer had a bug, " *
-        "the chain is dead beyond this slot; a new chain is the recovery (ADR-0025).";
-        chain_id = cid, slot, op)
+    return MalformedRecordError(
+        "malformed record $where: $what$evidence. " *
+            "No client can apply it under format_version $FORMAT_VERSION: the committer had a bug, " *
+            "the chain is dead beyond this slot; a new chain is the recovery (ADR-0025).";
+        chain_id = cid, slot, op
+    )
 end
 
 function envelope_field(w, name)
@@ -444,8 +457,10 @@ function client_from_wire(c)
     for k in keys(c)
         k in CLIENT_FIELDS || fail("unknown client field $(repr(k))")
     end
-    text(name) = (haskey(c, name) || fail("client has no $(repr(name))"); x = c[name];
-                  x isa String || fail("client.$name is not text"); x)
+    text(name) = (
+        haskey(c, name) || fail("client has no $(repr(name))"); x = c[name];
+        x isa String || fail("client.$name is not text"); x
+    )
     opt(name) = haskey(c, name) ? text(name) : nothing
     haskey(c, "time_ms") || fail("client has no \"time_ms\"")
     c["time_ms"] isa Int64 || fail("client.time_ms is not an integer")

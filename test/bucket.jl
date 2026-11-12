@@ -33,9 +33,11 @@ using ChainTables.Testing: InMemoryObjectStore
     end
 
     @testset "Chain(bucket, prefix) is the long form, field for field" begin
-        same(a, b) = all(f -> f === :cache ? getfield(a, f).dir == getfield(b, f).dir :
-                              f === :store ? sprint(show, getfield(a, f)) == sprint(show, getfield(b, f)) :
-                              getfield(a, f) == getfield(b, f), fieldnames(Chain))
+        same(a, b) = all(
+            f -> f === :cache ? getfield(a, f).dir == getfield(b, f).dir :
+                f === :store ? sprint(show, getfield(a, f)) == sprint(show, getfield(b, f)) :
+                getfield(a, f) == getfield(b, f), fieldnames(Chain)
+        )
         gated = Bucket("bkt"; region = "eu-north-1", gateway = url)
         short = Chain(gated, "p"; credentials = creds, cache_dir = "/c", read_ahead = 3, record_host = false)
         long = Chain("bkt", "p"; gateway = url, region = "eu-north-1", credentials = creds, cache_dir = "/c", read_ahead = 3, record_host = false)
@@ -78,8 +80,10 @@ using ChainTables.Testing: InMemoryObjectStore
         chain = Chain(b, "p"; store, cache_dir = "/c")
         @test chain.credentials isa Function
         @test_throws "aws sso login --profile chaintables-test-no-such-profile" chain.credentials()
-        @test_throws "aws sso login --profile chaintables-test-mine" Chain(b, "p"; store, cache_dir = "/c",
-            profile = "chaintables-test-mine").credentials()
+        @test_throws "aws sso login --profile chaintables-test-mine" Chain(
+            b, "p"; store, cache_dir = "/c",
+            profile = "chaintables-test-mine"
+        ).credentials()
         @test Chain(b, "p"; store, cache_dir = "/c", profile = nothing).credentials === nothing
         @test Chain(b, "p"; store, cache_dir = "/c", credentials = creds).credentials === creds
         # without a store the credentials resolve at construction (ADR-0019), so a dead profile fails there

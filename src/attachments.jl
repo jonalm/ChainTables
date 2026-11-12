@@ -19,8 +19,12 @@ const ATTACHMENT_KEY = r"(?:\A|/)_attachments/([0-9a-f]{64})\z"
 # The `<h>` of an attachment key, `[<prefix>/]_attachments/<h>`; anything else is a caller's bug.
 function attachment_hash(key::AbstractString)
     m = match(ATTACHMENT_KEY, key)
-    m === nothing && throw(ArgumentError("$(repr(key)) is not an attachment key, [<prefix>/]_attachments/<SHA-256 in 64 " *
-                                         "lowercase hex> (ADR-0046)"))
+    m === nothing && throw(
+        ArgumentError(
+            "$(repr(key)) is not an attachment key, [<prefix>/]_attachments/<SHA-256 in 64 " *
+                "lowercase hex> (ADR-0046)"
+        )
+    )
     return String(m.captures[1])
 end
 
@@ -30,8 +34,12 @@ function stream_size(io::IO)
     position(io) == 0 || throw(ArgumentError("an attachment's IO must stand at its start, not at byte $(position(io))"))
     size = position(seekend(io))
     seekstart(io)
-    size <= ATTACHMENT_MAX_BYTES || throw(ArgumentError("an attachment of $size bytes is over the 5 GiB that one S3 PUT " *
-        "takes ($ATTACHMENT_MAX_BYTES bytes; ADR-0046)"))
+    size <= ATTACHMENT_MAX_BYTES || throw(
+        ArgumentError(
+            "an attachment of $size bytes is over the 5 GiB that one S3 PUT " *
+                "takes ($ATTACHMENT_MAX_BYTES bytes; ADR-0046)"
+        )
+    )
     return Int64(size)
 end
 
@@ -60,9 +68,13 @@ function put_attachment end
 function put_attachment(store::S3ObjectStore, key::AbstractString, io::IO)
     h = attachment_hash(key)
     size = stream_size(io)
-    req = request_headers(store, "PUT", key; payload_hash = h, content_length = size,
-                          headers = ["content-type" => "application/octet-stream", "if-none-match" => "*",
-                                     "x-amz-checksum-sha256" => checksum_sha256(h)])
+    req = request_headers(
+        store, "PUT", key; payload_hash = h, content_length = size,
+        headers = [
+            "content-type" => "application/octet-stream", "if-none-match" => "*",
+            "x-amz-checksum-sha256" => checksum_sha256(h),
+        ]
+    )
     output = IOBuffer()
     response = http_stream(req.url, "PUT", req.headers; input = io, output, stall = store.timeout)
     response.status == 200 && return true
@@ -77,9 +89,11 @@ end
 # `XAmzContentSHA256Mismatch` for a signed payload hash, which a direct PUT also sends.
 bad_digest(status, body) = status == 400 && occursin(r"<Code>(?:BadDigest|XAmzContentSHA256Mismatch)</Code>", String(copy(body)))
 
-changed(key, where) = AttachmentChangedError("attachment changed: the upload of $key to $where was refused as BadDigest — " *
-    "the bytes sent do not hash to the key's SHA-256, so the file changed between hashing and upload. Nothing was " *
-    "stored. Stop whatever writes the file, then put the attachment again (ADR-0046)."; key = String(key))
+changed(key, where) = AttachmentChangedError(
+    "attachment changed: the upload of $key to $where was refused as BadDigest — " *
+        "the bytes sent do not hash to the key's SHA-256, so the file changed between hashing and upload. Nothing was " *
+        "stored. Stop whatever writes the file, then put the attachment again (ADR-0046)."; key = String(key)
+)
 
 # ---------------------------------------------------------------------------
 # A gateway bucket (ADR-0046): mint, check the URL, stream the bytes to it with exactly
@@ -127,11 +141,15 @@ function put_attachment(store::GatewayObjectStore, key::AbstractString, io::IO)
         uploaded = upload_minted(store, key, io, size, reply)
         if !uploaded
             again = mint(store, key, size)
-            again.code == "present" || throw(GatewayMismatchError("gateway mismatch: S3 refused the upload of $key to " *
-                "bucket $(store.s3.bucket) as already present (412), and the gateway at $(store.function_url) then found " *
-                "it absent and minted another URL: the gateway checks another bucket than the one its URLs and this " *
-                "chain write. Pair the bucket with its own gateway — one ChainTables.Bucket value holds both (ADR-0029, " *
-                "ADR-0046)."; key, bucket = store.s3.bucket, gateway = store.function_url))
+            again.code == "present" || throw(
+                GatewayMismatchError(
+                    "gateway mismatch: S3 refused the upload of $key to " *
+                        "bucket $(store.s3.bucket) as already present (412), and the gateway at $(store.function_url) then found " *
+                        "it absent and minted another URL: the gateway checks another bucket than the one its URLs and this " *
+                        "chain write. Pair the bucket with its own gateway — one ChainTables.Bucket value holds both (ADR-0029, " *
+                        "ADR-0046)."; key, bucket = store.s3.bucket, gateway = store.function_url
+                )
+            )
         end
         confirm_attachment(store, key, size)
         return uploaded
@@ -143,7 +161,7 @@ end
 # The mint route's reply, `(; code, url, expires, headers)` with the last three `nothing`
 # when `present`; a refusal raises.
 function mint(store::GatewayObjectStore, key::String, size::Int64)
-    query = Pair{String,String}["key" => key, "size" => string(size)]
+    query = Pair{String, String}["key" => key, "size" => string(size)]
     headers = signed_headers(current_credentials(store.s3), store.s3.region, "lambda", store.host, "POST", "/mint"; query)
     url = store.function_url * "/mint" * query_string(query)
     response = http_request(url, "POST", headers, UInt8[], store.timeout)
@@ -152,26 +170,38 @@ function mint(store::GatewayObjectStore, key::String, size::Int64)
     if status == 200
         code == "present" && return (; code, url = nothing, expires = nothing, headers = nothing)
         code == "minted" && return minted_reply(url, response.body)
-        throw(TransportError("POST $url: HTTP 200 with code $(repr(code)), neither present nor minted; this gateway " *
-                             "speaks a mint route this client does not know"; status))
+        throw(
+            TransportError(
+                "POST $url: HTTP 200 with code $(repr(code)), neither present nor minted; this gateway " *
+                    "speaks a mint route this client does not know"; status
+            )
+        )
     end
     if status == 403 || code == "s3_refused"
         reason = something(code, "forbidden")
         throw(WriteRefusedError(refusal_message(store, key, reason, message; mint = true); key, caller = store.author, reason))
     end
     if status == 400 && code == "bad_request" && message !== nothing && occursin("is not the gateway's one route", message)
-        throw(WriteRefusedError("write refused: the gateway at $(store.function_url) has no mint route, so it cannot " *
-            "store the attachment $key — it answered POST /mint with bad_request: $message. It was deployed before " *
-            "attachments (ADR-0046): ask the bucket's operator to redeploy it (gateway/deploy.sh)."; key,
-            reason = "no_mint_route"))
+        throw(
+            WriteRefusedError(
+                "write refused: the gateway at $(store.function_url) has no mint route, so it cannot " *
+                    "store the attachment $key — it answered POST /mint with bad_request: $message. It was deployed before " *
+                    "attachments (ADR-0046): ask the bucket's operator to redeploy it (gateway/deploy.sh)."; key,
+                reason = "no_mint_route"
+            )
+        )
     end
     if status == 503 && code == "session_ending"
-        throw(GatewaySessionEndingError("gateway session ending: the gateway at $(store.function_url) did not mint the " *
-            "upload of $key — session_ending: $(something(message, "no message")). The Lambda execution environment " *
-            "that answered is too old: its AWS session ends within 15 min, too soon to sign a URL. A retry now most " *
-            "likely reaches the same environment, so put_attachment did not retry. Nothing was stored. Put the " *
-            "attachment again later, once Lambda has replaced that environment (ADR-0046, #94)."; key,
-            gateway = store.function_url))
+        throw(
+            GatewaySessionEndingError(
+                "gateway session ending: the gateway at $(store.function_url) did not mint the " *
+                    "upload of $key — session_ending: $(something(message, "no message")). The Lambda execution environment " *
+                    "that answered is too old: its AWS session ends within 15 min, too soon to sign a URL. A retry now most " *
+                    "likely reaches the same environment, so put_attachment did not retry. Nothing was stored. Put the " *
+                    "attachment again later, once Lambda has replaced that environment (ADR-0046, #94)."; key,
+                gateway = store.function_url
+            )
+        )
     end
     detail = code === nothing ? "" : " " * code * (message === nothing ? "" : ": " * message)
     throw(TransportError("POST $url: HTTP $status$detail"; status))    # 409, 429 and 5xx are retryable
@@ -191,15 +221,17 @@ function minted_reply(url, body::Vector{UInt8})
     received = Int64(time_ns())
     text = String(copy(body))
     unreadable(what) = TransportError("POST $url: the gateway's minted reply has $what: $(first(text, 500))"; status = 200)
-    field(name) = (m = match(Regex("\"$name\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\""), text);
-                   m === nothing ? throw(unreadable("no \"$name\"")) : json_unescape(m.captures[1]))
+    field(name) = (
+        m = match(Regex("\"$name\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\""), text);
+        m === nothing ? throw(unreadable("no \"$name\"")) : json_unescape(m.captures[1])
+    )
     minted_url, expires = field("url"), field("expires")
     object = match(r"\"headers\"\s*:\s*\{([^{}]*)\}", text)
     object === nothing && throw(unreadable("no \"headers\" object"))
     inner = object.captures[1]
     occursin(MINTED_HEADERS, inner) ||
         throw(unreadable("a \"headers\" object that is not a flat map of lowercase names to plain ASCII strings"))
-    headers = Pair{String,String}[String(m.captures[1]) => String(m.captures[2]) for m in eachmatch(MINTED_HEADER, inner)]
+    headers = Pair{String, String}[String(m.captures[1]) => String(m.captures[2]) for m in eachmatch(MINTED_HEADER, inner)]
     isempty(headers) && throw(unreadable("an empty \"headers\" object"))
     has(name) = occursin(Regex("\"$name\"\\s*:"), text)
     seconds = capped = nothing
@@ -233,9 +265,11 @@ bare_url(url::AbstractString) = first(split(url, '?'; limit = 2))
 # that predates them — is refused before a byte is sent, since an upload without them
 # could store bytes no hash vouches for, or replace the key.
 function check_minted_headers(store::GatewayObjectStore, key::String, headers, size::Int64)
-    wanted = (("x-amz-checksum-sha256", checksum_sha256(key[end-63:end]), "check the bytes against the hash"),
-              ("if-none-match", "*", "refuse to overwrite the key"),
-              ("content-length", string(size), "bound the upload to the attachment's size"))
+    wanted = (
+        ("x-amz-checksum-sha256", checksum_sha256(key[(end - 63):end]), "check the bytes against the hash"),
+        ("if-none-match", "*", "refuse to overwrite the key"),
+        ("content-length", string(size), "bound the upload to the attachment's size"),
+    )
     for (name, value, guards) in wanted
         got = [last(kv) for kv in headers if first(kv) == name]
         length(got) == 1 && only(got) == value && continue
@@ -245,61 +279,87 @@ function check_minted_headers(store::GatewayObjectStore, key::String, headers, s
             "$name $(repr(only(got))), where $(repr(value)). Nothing was sent. Without it S3 would not $guards"
         else
             "$name $(length(got) == 2 ? "twice" : "$(length(got)) times") ($(join(repr.(got), ", "))), where once, " *
-            "$(repr(value)). Nothing was sent. A header minted more than once leaves it to S3 which one counts, so it " *
-            "might not $guards"
+                "$(repr(value)). Nothing was sent. A header minted more than once leaves it to S3 which one counts, so it " *
+                "might not $guards"
         end
-        throw(GatewayMismatchError("gateway mismatch: the gateway at $(store.function_url) minted the upload of $key " *
-            "with $problem: this gateway is not the one ADR-0046 specifies; ask the bucket's operator to redeploy it " *
-            "(gateway/deploy.sh)."; key, bucket = store.s3.bucket, gateway = store.function_url))
+        throw(
+            GatewayMismatchError(
+                "gateway mismatch: the gateway at $(store.function_url) minted the upload of $key " *
+                    "with $problem: this gateway is not the one ADR-0046 specifies; ask the bucket's operator to redeploy it " *
+                    "(gateway/deploy.sh)."; key, bucket = store.s3.bucket, gateway = store.function_url
+            )
+        )
     end
     return nothing
 end
 
-whole_seconds(ns) = max(0, round(Int64, ns / 1e9))
+whole_seconds(ns) = max(0, round(Int64, ns / 1.0e9))
 
 # An upload still running at its URL's end (ADR-0046). The rate is what the size needs in
 # the URL's life, so the advice is concrete; a capped URL may be longer from another
 # gateway environment.
 function outlasted(key, size, reply, started)
     rate = cld(size, 1024 * max(reply.seconds, 1))
-    return AttachmentURLExpiredError("attachment URL expired: the upload of $key ran " *
-        "$(whole_seconds(Int64(time_ns()) - started)) s, past the $(reply.seconds) s life of the URL the gateway minted " *
-        "(until $(reply.expires)), and S3 refuses an upload still running when its URL expires. Nothing was stored. " *
-        "Its $size bytes need $(max(rate, 1)) KiB/s or more. Put the attachment again over a faster link (ADR-0046)." *
-        (reply.capped ? " The gateway's AWS session shortened this URL (capped): another put may reach a younger " *
-                        "gateway environment, which mints a longer one." : ""); key, expires = reply.expires)
+    return AttachmentURLExpiredError(
+        "attachment URL expired: the upload of $key ran " *
+            "$(whole_seconds(Int64(time_ns()) - started)) s, past the $(reply.seconds) s life of the URL the gateway minted " *
+            "(until $(reply.expires)), and S3 refuses an upload still running when its URL expires. Nothing was stored. " *
+            "Its $size bytes need $(max(rate, 1)) KiB/s or more. Put the attachment again over a faster link (ADR-0046)." *
+            (
+            reply.capped ? " The gateway's AWS session shortened this URL (capped): another put may reach a younger " *
+                "gateway environment, which mints a longer one." : ""
+        ); key, expires = reply.expires
+    )
 end
 
 # The streamed PUT to a minted URL: `true` when stored, `false` on `412`.
 function upload_minted(store::GatewayObjectStore, key::String, io::IO, size::Int64, reply)
     expected = expected_attachment_url(store, key)
     where = bare_url(reply.url)
-    where == expected || throw(GatewayMismatchError("gateway mismatch: the gateway " *
-        "at $(store.function_url) minted a URL for $key at $where, not at $expected, the attachment's place in bucket " *
-        "$(store.s3.bucket) on its regional host. Nothing was sent. This gateway fronts another bucket or region than " *
-        "the one this chain reads: pair the bucket with its own gateway, as one ChainTables.Bucket value (ADR-0029, " *
-        "ADR-0046)."; key, bucket = store.s3.bucket, gateway = store.function_url))
-    length(reply.url) > length(where) + 1 || throw(GatewayMismatchError("gateway mismatch: the gateway at " *
-        "$(store.function_url) minted a URL for $key with no query, so no signature. Nothing was sent. This gateway's " *
-        "mint is broken: ask the bucket's operator to redeploy it (gateway/deploy.sh) (ADR-0046)."; key,
-        bucket = store.s3.bucket, gateway = store.function_url))
+    where == expected || throw(
+        GatewayMismatchError(
+            "gateway mismatch: the gateway " *
+                "at $(store.function_url) minted a URL for $key at $where, not at $expected, the attachment's place in bucket " *
+                "$(store.s3.bucket) on its regional host. Nothing was sent. This gateway fronts another bucket or region than " *
+                "the one this chain reads: pair the bucket with its own gateway, as one ChainTables.Bucket value (ADR-0029, " *
+                "ADR-0046)."; key, bucket = store.s3.bucket, gateway = store.function_url
+        )
+    )
+    length(reply.url) > length(where) + 1 || throw(
+        GatewayMismatchError(
+            "gateway mismatch: the gateway at " *
+                "$(store.function_url) minted a URL for $key with no query, so no signature. Nothing was sent. This gateway's " *
+                "mint is broken: ask the bucket's operator to redeploy it (gateway/deploy.sh) (ADR-0046)."; key,
+            bucket = store.s3.bucket, gateway = store.function_url
+        )
+    )
     check_minted_headers(store, key, reply.headers, size)
-    reply.seconds === nothing && throw(GatewayMismatchError("gateway mismatch: the gateway at $(store.function_url) " *
-        "minted a URL for $key without its lifetime (\"seconds\", \"capped\"), which it gives since S3 was found to " *
-        "refuse an upload still running when its URL expires. Nothing was sent. Ask the bucket's operator to redeploy " *
-        "it (gateway/deploy.sh) (ADR-0046)."; key, bucket = store.s3.bucket, gateway = store.function_url))
+    reply.seconds === nothing && throw(
+        GatewayMismatchError(
+            "gateway mismatch: the gateway at $(store.function_url) " *
+                "minted a URL for $key without its lifetime (\"seconds\", \"capped\"), which it gives since S3 was found to " *
+                "refuse an upload still running when its URL expires. Nothing was sent. Ask the bucket's operator to redeploy " *
+                "it (gateway/deploy.sh) (ADR-0046)."; key, bucket = store.s3.bucket, gateway = store.function_url
+        )
+    )
     # S3 refuses an upload still running when its URL expires (ADR-0046), so the PUT stops at
     # the URL's end: `deadline`, on this process's monotonic clock, is no earlier than S3's.
     deadline = reply.received + reply.seconds * 1_000_000_000
     started = Int64(time_ns())
-    started < deadline || throw(AttachmentURLExpiredError("attachment URL expired: the URL the gateway at " *
-        "$(store.function_url) minted for $key lived $(reply.seconds) s (until $(reply.expires)), and this process " *
-        "waited $(whole_seconds(started - reply.received)) s after the mint before uploading. Nothing was sent. Put " *
-        "the attachment again, which mints a new URL (ADR-0046)."; key, expires = reply.expires))
+    started < deadline || throw(
+        AttachmentURLExpiredError(
+            "attachment URL expired: the URL the gateway at " *
+                "$(store.function_url) minted for $key lived $(reply.seconds) s (until $(reply.expires)), and this process " *
+                "waited $(whole_seconds(started - reply.received)) s after the mint before uploading. Nothing was sent. Put " *
+                "the attachment again, which mints a new URL (ADR-0046)."; key, expires = reply.expires
+        )
+    )
     output = IOBuffer()
     response = try
-        http_stream(reply.url, "PUT", reply.headers; input = io, output, stall = store.timeout,
-                    deadline = (deadline - started) / 1e9)
+        http_stream(
+            reply.url, "PUT", reply.headers; input = io, output, stall = store.timeout,
+            deadline = (deadline - started) / 1.0e9
+        )
     catch e
         e isa TransportError && Int64(time_ns()) >= deadline || rethrow()
         throw(outlasted(key, size, reply, started))
@@ -311,10 +371,14 @@ function upload_minted(store::GatewayObjectStore, key::String, io::IO, size::Int
     if response.status == 403 && occursin("Request has expired", String(copy(body)))
         ran = Int64(time_ns()) - started
         ran + 1_000_000_000 >= deadline - started && throw(outlasted(key, size, reply, started))
-        throw(AttachmentURLExpiredError("attachment URL expired: S3 refused the upload of $key as expired after " *
-            "$(whole_seconds(ran)) s, though the gateway gave its URL $(reply.seconds) s (until $(reply.expires)): the " *
-            "gateway's clock is off, or S3's. Nothing was stored. Put the attachment again; if this recurs, report it " *
-            "to the bucket's operator (ADR-0046)."; key, expires = reply.expires))
+        throw(
+            AttachmentURLExpiredError(
+                "attachment URL expired: S3 refused the upload of $key as expired after " *
+                    "$(whole_seconds(ran)) s, though the gateway gave its URL $(reply.seconds) s (until $(reply.expires)): the " *
+                    "gateway's clock is off, or S3's. Nothing was stored. Put the attachment again; if this recurs, report it " *
+                    "to the bucket's operator (ADR-0046)."; key, expires = reply.expires
+            )
+        )
     end
     throw(failure("PUT", where, (; response.status, body)))
 end
@@ -326,11 +390,15 @@ function confirm_attachment(store::GatewayObjectStore, key::String, size::Int64)
     meta = stat_object(store.s3, key)
     meta !== nothing && meta.size == size && return nothing
     bucket = store.s3.bucket
-    throw(GatewayMismatchError("gateway mismatch: the gateway at $(store.function_url) has stored the attachment $key, " *
-        "and bucket $bucket $(meta === nothing ? "does not hold it" : "holds $(meta.size) bytes there, not $size"): this " *
-        "gateway fronts another bucket than the one this chain reads. Pair the bucket with its own gateway — one " *
-        "ChainTables.Bucket value holds both (ADR-0029) — and put the attachment again."; key, bucket,
-        gateway = store.function_url))
+    throw(
+        GatewayMismatchError(
+            "gateway mismatch: the gateway at $(store.function_url) has stored the attachment $key, " *
+                "and bucket $bucket $(meta === nothing ? "does not hold it" : "holds $(meta.size) bytes there, not $size"): this " *
+                "gateway fronts another bucket than the one this chain reads. Pair the bucket with its own gateway — one " *
+                "ChainTables.Bucket value holds both (ADR-0029) — and put the attachment again."; key, bucket,
+            gateway = store.function_url
+        )
+    )
 end
 
 """
@@ -352,13 +420,14 @@ attachment_key(chain::Chain, h::AbstractString) = isempty(chain.prefix) ? "_atta
 # because each call is idempotent — a put whose upload landed finds the key present.
 function with_retries(f)
     for attempt in 1:PUT_ATTEMPTS
-        attempt == 1 || sleep(PUT_BACKOFF_S[attempt-1])
+        attempt == 1 || sleep(PUT_BACKOFF_S[attempt - 1])
         try
             return f()
         catch e
             (retryable(e) && attempt < PUT_ATTEMPTS) || rethrow()
         end
     end
+    return
 end
 
 """
@@ -388,8 +457,12 @@ function put_attachment(chain::Chain, path::AbstractString)
 end
 
 function put_attachment(chain::Chain, io::IO)
-    (applicable(position, io) && applicable(seekend, io)) || throw(ArgumentError("put_attachment takes a path or a " *
-        "seekable IO; a $(typeof(io)) cannot seek, so it cannot be hashed before the upload (ADR-0046)"))
+    (applicable(position, io) && applicable(seekend, io)) || throw(
+        ArgumentError(
+            "put_attachment takes a path or a " *
+                "seekable IO; a $(typeof(io)) cannot seek, so it cannot be hashed before the upload (ADR-0046)"
+        )
+    )
     stream_size(io)                            # at its start, at most 5 GiB: checked before the bytes are read
     h = bytes2hex(sha256(io))
     key = attachment_key(chain, h)
@@ -403,8 +476,12 @@ end
 const ATTACHMENT_HASH = r"\A[0-9a-f]{64}\z"
 
 function check_attachment_hash(h::AbstractString)
-    occursin(ATTACHMENT_HASH, h) || throw(ArgumentError("$(repr(h)) is not an attachment hash, the SHA-256 of its " *
-                                                        "bytes in 64 lowercase hex (ADR-0046)"))
+    occursin(ATTACHMENT_HASH, h) || throw(
+        ArgumentError(
+            "$(repr(h)) is not an attachment hash, the SHA-256 of its " *
+                "bytes in 64 lowercase hex (ADR-0046)"
+        )
+    )
     return String(h)
 end
 
@@ -428,10 +505,14 @@ function touch_attachment(store::GatewayObjectStore, key::AbstractString)
     reply = mint(store, key, Int64(meta.size))
     reply.code == "present" && return true
     bucket = store.s3.bucket
-    throw(GatewayMismatchError("gateway mismatch: bucket $bucket holds the attachment $key, but the gateway at " *
-        "$(store.function_url) found it absent and minted a URL to upload it, so it extended no retention. This " *
-        "gateway fronts another bucket than the one this chain reads: pair the bucket with its own gateway, as one " *
-        "ChainTables.Bucket value (ADR-0029, ADR-0046)."; key, bucket, gateway = store.function_url))
+    throw(
+        GatewayMismatchError(
+            "gateway mismatch: bucket $bucket holds the attachment $key, but the gateway at " *
+                "$(store.function_url) found it absent and minted a URL to upload it, so it extended no retention. This " *
+                "gateway fronts another bucket than the one this chain reads: pair the bucket with its own gateway, as one " *
+                "ChainTables.Bucket value (ADR-0029, ADR-0046)."; key, bucket, gateway = store.function_url
+        )
+    )
 end
 
 """
@@ -453,9 +534,13 @@ function touch_attachment(chain::Chain, h::AbstractString)
     h = check_attachment_hash(h)
     key = attachment_key(chain, h)
     with_retries(() -> touch_attachment(chain.store, key)) && return nothing
-    throw(AttachmentAbsentError("attachment absent: the store of the chain at $(location(chain)) holds no attachment " *
-        "$key — it was never put, or its retention ended and it was deleted. A row cannot refer to it until it is put " *
-        "again: put_attachment(chain, file) (ADR-0046)."; key))
+    throw(
+        AttachmentAbsentError(
+            "attachment absent: the store of the chain at $(location(chain)) holds no attachment " *
+                "$key — it was never put, or its retention ended and it was deleted. A row cannot refer to it until it is put " *
+                "again: put_attachment(chain, file) (ADR-0046)."; key
+        )
+    )
 end
 
 # ---------------------------------------------------------------------------
@@ -522,17 +607,21 @@ end
 
 function damaged_entry(chain_id, key, path, recorded, found)
     st = stat(path)
-    return AttachmentCacheError("attachment cache: the cached file $path is $(st.size) bytes modified at $(st.mtime) " *
-        "and hashes to $found, not to its name; its sidecar $path.meta records $(repr(recorded)). The file was " *
-        "changed after it was cached. The cache is damaged, not the chain: deleting $path and $path.meta is always " *
-        "safe, and the next read fetches it again (ADR-0046)."; chain_id, key, path)
+    return AttachmentCacheError(
+        "attachment cache: the cached file $path is $(st.size) bytes modified at $(st.mtime) " *
+            "and hashes to $found, not to its name; its sidecar $path.meta records $(repr(recorded)). The file was " *
+            "changed after it was cached. The cache is damaged, not the chain: deleting $path and $path.meta is always " *
+            "safe, and the next read fetches it again (ADR-0046)."; chain_id, key, path
+    )
 end
 
 function changed_entry(chain_id, key, path)
-    return AttachmentCacheError("attachment cache: the cached file $path changed while it was being hashed, so " *
-        "something other than ChainTables writes to this cache, which ChainTables keeps read-only: stop it. The cache " *
-        "is damaged, not the chain: deleting $path and $path.meta is always safe, and the next read fetches it again " *
-        "(ADR-0046)."; chain_id, key, path)
+    return AttachmentCacheError(
+        "attachment cache: the cached file $path changed while it was being hashed, so " *
+            "something other than ChainTables writes to this cache, which ChainTables keeps read-only: stop it. The cache " *
+            "is damaged, not the chain: deleting $path and $path.meta is always safe, and the next read fetches it again " *
+            "(ADR-0046)."; chain_id, key, path
+    )
 end
 
 # A cache hit whose HEAD gives another size than the cached file's: one side is wrong, and
@@ -540,22 +629,28 @@ end
 function size_mismatch(chain::Chain, chain_id, key, h, path, stored)
     cached = filesize(path)
     found = bytes2hex(hash_file(path))
-    found == h && return AttachmentDigestError("attachment digest: the store of the chain at $(location(chain)) holds " *
-        "$stored bytes at $key, but the cached file $path, which hashes to the key's hash, is $cached bytes, so the " *
-        "store's bytes cannot hash to it. Nothing was confirmed, and the cached file was kept. S3 checked the hash when " *
-        "the attachment was stored, so the bucket was written from outside the protocol: stop and report it (ADR-0046).";
-        chain_id, key, size = stored)
-    return AttachmentCacheError("attachment cache: the cached file $path is $cached bytes and hashes to $found, not to " *
-        "its name, while the store of the chain at $(location(chain)) holds $stored bytes at $key. The cache is damaged, " *
-        "not the chain: deleting $path and $path.meta is always safe, and the next read fetches it again (ADR-0046).";
-        chain_id, key, path)
+    found == h && return AttachmentDigestError(
+        "attachment digest: the store of the chain at $(location(chain)) holds " *
+            "$stored bytes at $key, but the cached file $path, which hashes to the key's hash, is $cached bytes, so the " *
+            "store's bytes cannot hash to it. Nothing was confirmed, and the cached file was kept. S3 checked the hash when " *
+            "the attachment was stored, so the bucket was written from outside the protocol: stop and report it (ADR-0046).";
+        chain_id, key, size = stored
+    )
+    return AttachmentCacheError(
+        "attachment cache: the cached file $path is $cached bytes and hashes to $found, not to " *
+            "its name, while the store of the chain at $(location(chain)) holds $stored bytes at $key. The cache is damaged, " *
+            "not the chain: deleting $path and $path.meta is always safe, and the next read fetches it again (ADR-0046).";
+        chain_id, key, path
+    )
 end
 
 function absent_for_reader(chain::Chain, chain_id, key)
-    return AttachmentAbsentError("attachment absent: the store of the chain at $(location(chain)) holds no attachment " *
-        "$key — it was never put to this chain, or its retention ended and it was deleted — so attachment(copy, hash) " *
-        "has nothing to serve, whatever this machine has cached. Only someone holding the file can bring it back, with " *
-        "put_attachment(chain, file) (ADR-0046)."; chain_id, key)
+    return AttachmentAbsentError(
+        "attachment absent: the store of the chain at $(location(chain)) holds no attachment " *
+            "$key — it was never put to this chain, or its retention ended and it was deleted — so attachment(copy, hash) " *
+            "has nothing to serve, whatever this machine has cached. Only someone holding the file can bring it back, with " *
+            "put_attachment(chain, file) (ADR-0046)."; chain_id, key
+    )
 end
 
 # Rename `from` onto `to`. Windows refuses to rename over a read-only file, so there the
@@ -589,10 +684,14 @@ function fill_attachment!(chain::Chain, chain_id, key::String, h::String, path::
         size = with_retries(() -> fetch_object_to(chain.store, key, tmp))
         size === nothing && return false
         found = bytes2hex(hash_file(tmp))
-        found == h || throw(AttachmentDigestError("attachment digest: the store of the chain at $(location(chain)) " *
-            "returned $size bytes for $key, which hash to $found, not to the key's hash. Nothing was cached. S3 checked " *
-            "the hash when the attachment was stored, so the bucket was written from outside the protocol: stop and " *
-            "report it (ADR-0046)."; chain_id, key, found, size))
+        found == h || throw(
+            AttachmentDigestError(
+                "attachment digest: the store of the chain at $(location(chain)) " *
+                    "returned $size bytes for $key, which hash to $found, not to the key's hash. Nothing was cached. S3 checked " *
+                    "the hash when the attachment was stored, so the bucket was written from outside the protocol: stop and " *
+                    "report it (ADR-0046)."; chain_id, key, found, size
+            )
+        )
         cache_entry(path) === :ok && return true
         chmod(tmp, 0o444)
         write_sidecar(path, stat(tmp))
@@ -645,8 +744,12 @@ attachment(copy::LocalCopy, h::AbstractString) = read_attachment(copy, h)
 # `attachment`'s body; `hasher` is for the tests.
 function read_attachment(copy::LocalCopy, h::AbstractString; hasher = hash_file)
     check_open(copy)
-    copy.head === nothing && throw(ArgumentError("attachment(copy, hash): the local copy at $(copy.path) has no head " *
-        "yet, so it belongs to no chain whose attachment it could read; sync!(copy) binds it"))
+    copy.head === nothing && throw(
+        ArgumentError(
+            "attachment(copy, hash): the local copy at $(copy.path) has no head " *
+                "yet, so it belongs to no chain whose attachment it could read; sync!(copy) binds it"
+        )
+    )
     h = check_attachment_hash(h)
     chain = chain_of(copy, "attachment(copy, hash)")
     chain_id = copy.head.chain_id
@@ -675,8 +778,10 @@ end
 # verify and repair! over the attachments a copy confirmed (ADR-0046).
 # ---------------------------------------------------------------------------
 
-confirmed_hashes(copy::LocalCopy) = (d = joinpath(copy.path, "confirmed");
-    isdir(d) ? sort!(filter(f -> occursin(ATTACHMENT_HASH, f), readdir(d))) : String[])
+confirmed_hashes(copy::LocalCopy) = (
+    d = joinpath(copy.path, "confirmed");
+    isdir(d) ? sort!(filter(f -> occursin(ATTACHMENT_HASH, f), readdir(d))) : String[]
+)
 
 # What is wrong with the cache entry of `h`, hashing the file, or `nothing`. A file that
 # hashes right is sound whatever its sidecar says: the next read rewrites the sidecar. An
@@ -698,9 +803,13 @@ function verify_attachments(copy::LocalCopy, chain::Chain)
         problem === nothing || push!(problems, problem)
     end
     isempty(problems) && return nothing
-    throw(AttachmentCacheError("verify(copy; full = true): the attachment cache is damaged for attachments this copy " *
-        "confirmed: $(join(problems, "; ")). The cache is damaged, not the chain: repair!(copy) fetches them again " *
-        "(ADR-0046)."; chain_id = copy.head.chain_id))
+    throw(
+        AttachmentCacheError(
+            "verify(copy; full = true): the attachment cache is damaged for attachments this copy " *
+                "confirmed: $(join(problems, "; ")). The cache is damaged, not the chain: repair!(copy) fetches them again " *
+                "(ADR-0046)."; chain_id = copy.head.chain_id
+        )
+    )
 end
 
 # `repair!(copy)`'s pass: an entry whose file hashes right gets its sidecar rewritten;
@@ -738,11 +847,13 @@ end
 
 function gone_from_store(chain::Chain, chain_id, keys::Vector{String})
     one = length(keys) == 1
-    return AttachmentAbsentError("attachment absent: repair!(copy) found that the store of the chain at " *
-        "$(location(chain)) no longer holds $(length(keys)) attachment$(one ? "" : "s") this copy had confirmed: " *
-        "$(join(keys, ", ")). $(one ? "Its retention ended and it was" : "Their retention ended and they were") " *
-        "deleted, or the bucket was written from outside the protocol. $(one ? "Its" : "Their") confirmed " *
-        "marker$(one ? " was" : "s were") removed, so a read of one raises this again and verify no longer covers " *
-        "$(one ? "it" : "them"); the rest of the repair ran. Only someone holding a file can bring it back, with " *
-        "put_attachment(chain, file) (ADR-0046)."; chain_id, key = one ? only(keys) : nothing)
+    return AttachmentAbsentError(
+        "attachment absent: repair!(copy) found that the store of the chain at " *
+            "$(location(chain)) no longer holds $(length(keys)) attachment$(one ? "" : "s") this copy had confirmed: " *
+            "$(join(keys, ", ")). $(one ? "Its retention ended and it was" : "Their retention ended and they were") " *
+            "deleted, or the bucket was written from outside the protocol. $(one ? "Its" : "Their") confirmed " *
+            "marker$(one ? " was" : "s were") removed, so a read of one raises this again and verify no longer covers " *
+            "$(one ? "it" : "them"); the rest of the repair ran. Only someone holding a file can bring it back, with " *
+            "put_attachment(chain, file) (ADR-0046)."; chain_id, key = one ? only(keys) : nothing
+    )
 end

@@ -8,7 +8,11 @@ using ChainTables.Testing: InMemoryObjectStore
 
 @testset "views" begin
     CT = ChainTables
-    caught(f) = try; f(); nothing; catch e; e; end
+    caught(f) = try
+        f(); nothing
+    catch e
+        e
+    end
     function fixture(dir)
         store = InMemoryObjectStore()
         chain = Chain("bkt", "p"; store, cache_dir = joinpath(dir, "cache"), record_host = false, record_user = false)
@@ -57,7 +61,7 @@ using ChainTables.Testing: InMemoryObjectStore
             @test v.transaction_hash == r.transaction_hash && v.transaction_hash isa TransactionHash
             @test length(v) == 2 && keys(v) == [1, 2]                       # key order, not insertion order
             @test isequal(collect(v), [(id = 1, label = "a", mass = 1.5), (id = 2, label = "b", mass = missing)])
-            @test eltype(v) == NamedTuple{(:id, :label, :mass),Tuple{Int64,String,Union{Missing,Float64}}}
+            @test eltype(v) == NamedTuple{(:id, :label, :mass), Tuple{Int64, String, Union{Missing, Float64}}}
             @test isequal(v[2], (id = 2, label = "b", mass = missing)) && v[2] isa eltype(v)
             @test v[2].mass === missing                                      # null is missing
             @test isequal(v[(2,)], v[2])                                     # a one-column key as a tuple too
@@ -71,11 +75,11 @@ using ChainTables.Testing: InMemoryObjectStore
             @test Tables.columnaccess(typeof(v)) && Tables.rowaccess(typeof(v))
             @test Tables.columns(v) === v.columns                           # native: no copy (ADR-0043)
             @test Tables.columns(v).label == ["a", "b"]
-            @test Tables.schema(v) == Tables.Schema((:id, :label, :mass), (Int64, String, Union{Missing,Float64}))
-            @test Tables.columntable(v).mass isa AbstractVector{Union{Missing,Float64}}
-            @test isequal(Tables.columntable(v), (id = [1, 2], label = ["a", "b"], mass = Union{Missing,Float64}[1.5, missing]))
+            @test Tables.schema(v) == Tables.Schema((:id, :label, :mass), (Int64, String, Union{Missing, Float64}))
+            @test Tables.columntable(v).mass isa AbstractVector{Union{Missing, Float64}}
+            @test isequal(Tables.columntable(v), (id = [1, 2], label = ["a", "b"], mass = Union{Missing, Float64}[1.5, missing]))
             @test isequal(Tables.rowtable(v), collect(v))
-            @test Tables.schema(Tables.rows(v)).types == (Int64, String, Union{Missing,Float64})
+            @test Tables.schema(Tables.rows(v)).types == (Int64, String, Union{Missing, Float64})
             @test sprint(show, v) == "TableView(:samples at slot 1 of chain $(copy.head.chain_id); 2 rows, columns id, label, mass)"
             # a composite key is a tuple in key declaration order; the bare value is refused
             p = CT.table(copy, :pairs)
@@ -161,7 +165,7 @@ using ChainTables.Testing: InMemoryObjectStore
             v = CT.table(copy, :samples)
             before = CT.head(copy)
             msg = "a table view's columns are read-only: every table(copy, :t) at one head returns the same view (ADR-0043); " *
-                  "copy(column) is a vector of your own"
+                "copy(column) is a vector of your own"
             @test_throws msg Tables.columns(v).label[1] = "zzz"
             @test_throws msg v.columns.mass[1] = 99.0
             @test_throws msg CT.table_with_slots(v).label[2] = "yyy"
@@ -205,9 +209,9 @@ using ChainTables.Testing: InMemoryObjectStore
             CT.commit!(w)
             e = CT.table(copy, :none)
             @test length(e) == 0 && isempty(collect(e)) && isempty(keys(e))
-            @test eltype(e) == NamedTuple{(:a, :b, :c),Tuple{Int64,String,Union{Missing,Float64}}}
-            @test Tables.schema(e) == Tables.Schema((:a, :b, :c), (Int64, String, Union{Missing,Float64}))
-            @test isempty(Tables.columns(e).a) && eltype(Tables.columns(e).c) == Union{Missing,Float64}
+            @test eltype(e) == NamedTuple{(:a, :b, :c), Tuple{Int64, String, Union{Missing, Float64}}}
+            @test Tables.schema(e) == Tables.Schema((:a, :b, :c), (Int64, String, Union{Missing, Float64}))
+            @test isempty(Tables.columns(e).a) && eltype(Tables.columns(e).c) == Union{Missing, Float64}
             @test Tables.rowtable(e) == eltype(e)[]
             @test CT.table_with_slots(e)._slot == Int64[]
             @test !haskey(e, (1, "x")) && get(e, (1, "x"), :none) === :none
@@ -249,19 +253,31 @@ using ChainTables.Testing: InMemoryObjectStore
         mktempdir() do dir
             store, chain, copy, r = fixture(dir)
             @test CT.tables(copy) == ["blobs", "pairs", "samples"]
-            declared = (; columns = [(name = :id, type = Int64, nullable = false), (name = :label, type = String, nullable = false),
-                                     (name = :mass, type = Float64, nullable = true)], key = [:id])
+            declared = (;
+                columns = [
+                    (name = :id, type = Int64, nullable = false), (name = :label, type = String, nullable = false),
+                    (name = :mass, type = Float64, nullable = true),
+                ], key = [:id],
+            )
             @test CT.shape(copy, :samples) == declared
             @test CT.shape(CT.table(copy, :samples)) == declared
-            @test CT.shape(copy, :pairs) == (; columns = [(name = :n, type = Float64, nullable = false), (name = :a, type = Int64, nullable = false),
-                                                          (name = :b, type = String, nullable = false)], key = [:a, :b])
+            @test CT.shape(copy, :pairs) == (;
+                columns = [
+                    (name = :n, type = Float64, nullable = false), (name = :a, type = Int64, nullable = false),
+                    (name = :b, type = String, nullable = false),
+                ], key = [:a, :b],
+            )
             @test CT.shape(copy, :blobs).columns[1] == (name = :k, type = Vector{UInt8}, nullable = false)
             w = CT.write_builder(copy)
             CT.add_column!(w, :samples, :note, String; nullable = true, fill = missing)
             CT.drop_column!(w, :samples, :label)
             CT.commit!(w)
-            @test CT.shape(copy, :samples) == (; columns = [(name = :id, type = Int64, nullable = false), (name = :mass, type = Float64, nullable = true),
-                                                            (name = :note, type = String, nullable = true)], key = [:id])
+            @test CT.shape(copy, :samples) == (;
+                columns = [
+                    (name = :id, type = Int64, nullable = false), (name = :mass, type = Float64, nullable = true),
+                    (name = :note, type = String, nullable = true),
+                ], key = [:id],
+            )
             @test isequal(CT.table(copy, :samples)[1], (id = 1, mass = 1.5, note = missing))
             @test_throws "shape(copy, :nope): unknown table \"nope\"" CT.shape(copy, :nope)
             close(copy)

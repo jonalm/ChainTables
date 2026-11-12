@@ -65,13 +65,23 @@ const ATT = ChainTables
             # always failing: PUT_ATTEMPTS attempts, then the last failure
             empty!(store.calls); delete!(store.objects, key)
             store.fault = (verb, k, phase) -> verb == :put_attachment && phase == :before && throw(TransportError("down"; status = 429))
-            e = try ATT.put_attachment(chain, IOBuffer(bytes)); nothing catch e; e end
+            e = try
+                ATT.put_attachment(chain, IOBuffer(bytes)); nothing
+            catch e
+                e
+            end
             @test e isa TransportError && e.status == 429 && attempts() == ATT.PUT_ATTEMPTS
             # not retryable: one attempt
             for thrown in (TransportError("forbidden"; status = 403), ATT.AttachmentChangedError("changed"), ErrorException("bug"))
                 empty!(store.calls)
                 store.fault = (verb, k, phase) -> verb == :put_attachment && phase == :before && throw(thrown)
-                @test (try ATT.put_attachment(chain, IOBuffer(bytes)); nothing catch e; e end) === thrown
+                @test (
+                    try
+                        ATT.put_attachment(chain, IOBuffer(bytes)); nothing
+                    catch e
+                        e
+                    end
+                ) === thrown
                 @test attempts() == 1
             end
         end
@@ -86,7 +96,11 @@ const ATT = ChainTables
             @test ATT.touch_attachment(chain, h) === nothing
             @test store.calls == [(:stat_object, "p/_attachments/$h")]
             absent = bytes2hex(sha256(b"never stored"))
-            e = try ATT.touch_attachment(chain, absent); nothing catch e; e end
+            e = try
+                ATT.touch_attachment(chain, absent); nothing
+            catch e
+                e
+            end
             @test e isa ATT.AttachmentAbsentError && e.key == "p/_attachments/$absent"
             @test sprint(showerror, e) == "AttachmentAbsentError: attachment absent: the store of the chain at bkt/p holds no " *
                 "attachment p/_attachments/$absent — it was never put, or its retention ended and it was deleted. A row " *
@@ -110,8 +124,10 @@ const ATT = ChainTables
         gw = LoopbackServer(double)
         mktempdir() do dir
             try
-                store = GatewayObjectStore("bkt", loopback_url(gw); region = "eu-north-1", credentials = GWTEST_CREDS,
-                                           endpoint = s3test_endpoint(s3), path_style = true, timeout = 30)
+                store = GatewayObjectStore(
+                    "bkt", loopback_url(gw); region = "eu-north-1", credentials = GWTEST_CREDS,
+                    endpoint = s3test_endpoint(s3), path_style = true, timeout = 30
+                )
                 chain = Chain("bkt", "p"; store, cache_dir = joinpath(dir, "cache"))
                 mints() = filter(r -> r.rawpath == "/mint", gw.requests)
                 bytes = rand(UInt8, 3000)
@@ -121,7 +137,11 @@ const ATT = ChainTables
                 # old environment (#94); nothing is stored, and a later put mints again
                 double.respond = req -> req.rawpath == "/mint" ?
                     gwtest_json(503, "session_ending", "this environment's session ends too soon") : nothing
-                e = try ATT.put_attachment(chain, IOBuffer(bytes)); nothing catch e; e end
+                e = try
+                    ATT.put_attachment(chain, IOBuffer(bytes)); nothing
+                catch e
+                    e
+                end
                 @test e isa ATT.GatewaySessionEndingError && e.key == key && e.gateway == loopback_url(gw) && !GWT.retryable(e)
                 @test sprint(showerror, e) == "GatewaySessionEndingError: gateway session ending: the gateway at " *
                     "$(loopback_url(gw)) did not mint the upload of $key — session_ending: this environment's session " *
@@ -142,7 +162,11 @@ const ATT = ChainTables
                 # absent from our bucket: no mint
                 absent = bytes2hex(sha256(b"absent"))
                 empty!(gw.requests)
-                e = try ATT.touch_attachment(chain, absent); nothing catch e; e end
+                e = try
+                    ATT.touch_attachment(chain, absent); nothing
+                catch e
+                    e
+                end
                 @test e isa ATT.AttachmentAbsentError && e.key == "p/_attachments/$absent"
                 @test sprint(showerror, e) == "AttachmentAbsentError: attachment absent: the store of the chain at bkt/p " *
                     "holds no attachment p/_attachments/$absent — it was never put, or its retention ended and it was " *
@@ -150,15 +174,25 @@ const ATT = ChainTables
                 @test isempty(gw.requests)
                 # the gateway finds it absent where our bucket holds it: it fronts another bucket
                 double.respond = req -> req.rawpath == "/mint" ? gwtest_minted(s3, key, length(bytes)) : nothing
-                e = try ATT.touch_attachment(chain, h); nothing catch e; e end
+                e = try
+                    ATT.touch_attachment(chain, h); nothing
+                catch e
+                    e
+                end
                 @test e isa ATT.GatewayMismatchError && e.key == key && e.bucket == "bkt"
-                @test occursin("bucket bkt holds the attachment $key, but the gateway at $(loopback_url(gw)) found it absent " *
-                               "and minted a URL to upload it", sprint(showerror, e))
+                @test occursin(
+                    "bucket bkt holds the attachment $key, but the gateway at $(loopback_url(gw)) found it absent " *
+                        "and minted a URL to upload it", sprint(showerror, e)
+                )
                 @test count(r -> r.method == "PUT", s3.requests) == 0
                 # a refusal is the gateway's, as for a put
                 double.respond = _ -> nothing
                 double.caller = "bob@example.com"
-                e = try ATT.touch_attachment(chain, h); nothing catch e; e end
+                e = try
+                    ATT.touch_attachment(chain, h); nothing
+                catch e
+                    e
+                end
                 @test e isa WriteRefusedError && e.reason == "not_allowed"
             finally
                 close(gw); close(s3)
@@ -210,7 +244,11 @@ const ATT = ChainTables
             ATT.create_chain(other)
             oc = ATT.open(other, joinpath(dir, "other"))
             ATT.sync!(oc)
-            e = try ATT.attachment(oc, h); nothing catch e; e end
+            e = try
+                ATT.attachment(oc, h); nothing
+            catch e
+                e
+            end
             @test e isa ATT.AttachmentAbsentError && e.key == "q/_attachments/$h" && e.chain_id == oc.head.chain_id
             @test sprint(showerror, e) == "AttachmentAbsentError: attachment absent: the store of the chain at bkt/q holds " *
                 "no attachment q/_attachments/$h — it was never put to this chain, or its retention ended and it was " *
@@ -238,8 +276,10 @@ const ATT = ChainTables
         mktempdir() do dir
             try
                 cache_dir = joinpath(dir, "cache")
-                store = GatewayObjectStore("bkt", loopback_url(gw); region = "eu-north-1", credentials = GWTEST_CREDS,
-                                           endpoint = s3test_endpoint(s3), path_style = true, sts_endpoint = loopback_url(sts))
+                store = GatewayObjectStore(
+                    "bkt", loopback_url(gw); region = "eu-north-1", credentials = GWTEST_CREDS,
+                    endpoint = s3test_endpoint(s3), path_style = true, sts_endpoint = loopback_url(sts)
+                )
                 chain = Chain("bkt", "exp/run-1"; store, cache_dir, assume_first_writer_wins = true)
                 ATT.create_chain(chain)
                 empty!(gw.requests)
@@ -300,7 +340,11 @@ const ATT = ChainTables
             h = bytes2hex(sha256(b"what the key names"))
             store.objects["p/_attachments/$h"] = b"other bytes"; store.modified["p/_attachments/$h"] = 0
             empty!(store.calls)
-            e = try ATT.attachment(copy, h); nothing catch e; e end
+            e = try
+                ATT.attachment(copy, h); nothing
+            catch e
+                e
+            end
             found = bytes2hex(sha256(b"other bytes"))
             @test e isa ATT.AttachmentDigestError && e.key == "p/_attachments/$h" && e.found == found && e.size == 11
             @test e.chain_id == copy.head.chain_id
@@ -334,7 +378,11 @@ const ATT = ChainTables
             meta = read(path * ".meta", String)
             found = bytes2hex(ATT.hash_file(path))
             empty!(store.calls)
-            e = try ATT.attachment(copy, h); nothing catch e; e end
+            e = try
+                ATT.attachment(copy, h); nothing
+            catch e
+                e
+            end
             @test e isa ATT.AttachmentCacheError && e.path == path && e.chain_id == copy.head.chain_id
             @test sprint(showerror, e) == "AttachmentCacheError: attachment cache: the cached file $path is $(st.size) " *
                 "bytes modified at $(st.mtime) and hashes to $found, not to its name; its sidecar $path.meta records " *
@@ -344,7 +392,11 @@ const ATT = ChainTables
             # as the message says, on a copy that never confirmed the hash too: deleted, then fetched again
             unconfirmed = ATT.open(chain, joinpath(dir, "unconfirmed"))
             ATT.sync!(unconfirmed)
-            e = try ATT.attachment(unconfirmed, h); nothing catch e; e end
+            e = try
+                ATT.attachment(unconfirmed, h); nothing
+            catch e
+                e
+            end
             @test e isa ATT.AttachmentCacheError && e.path == path && e.chain_id == unconfirmed.head.chain_id
             @test sprint(showerror, e) == "AttachmentCacheError: attachment cache: the cached file $path is $(st.size) " *
                 "bytes modified at $(st.mtime) and hashes to $found, not to its name; its sidecar $path.meta records " *
@@ -381,7 +433,11 @@ const ATT = ChainTables
             store.objects[key] = rand(UInt8, 120)
             two = fresh("two")
             empty!(store.calls)
-            e = try ATT.attachment(two, h); nothing catch e; e end
+            e = try
+                ATT.attachment(two, h); nothing
+            catch e
+                e
+            end
             @test e isa ATT.AttachmentDigestError && e.key == key && e.size == 120 && e.found === nothing
             @test e.chain_id == two.head.chain_id
             @test sprint(showerror, e) == "AttachmentDigestError: attachment digest: the store of the chain at bkt/p " *
@@ -397,7 +453,11 @@ const ATT = ChainTables
             chmod(path, 0o644); write(path, other); chmod(path, 0o444)
             write(path * ".meta", ATT.sidecar_text(stat(path)))
             three = fresh("three")
-            e = try ATT.attachment(three, h); nothing catch e; e end
+            e = try
+                ATT.attachment(three, h); nothing
+            catch e
+                e
+            end
             found = bytes2hex(sha256(other))
             @test e isa ATT.AttachmentCacheError && e.path == path && e.key == key && e.chain_id == three.head.chain_id
             @test sprint(showerror, e) == "AttachmentCacheError: attachment cache: the cached file $path is 80 bytes and " *
@@ -431,7 +491,11 @@ const ATT = ChainTables
             found = bytes2hex(ATT.hash_file(pa))
             rm(pb); rm(pb * ".meta")
             @test ATT.verify(copy) === nothing                                  # not full: the attachments are not checked
-            e = try ATT.verify(copy; full = true); nothing catch e; e end
+            e = try
+                ATT.verify(copy; full = true); nothing
+            catch e
+                e
+            end
             @test e isa ATT.AttachmentCacheError && e.chain_id == copy.head.chain_id
             # an entry that is gone is not damage: deleting one is always safe, and the next read fetches it
             @test sprint(showerror, e) == "AttachmentCacheError: verify(copy; full = true): the attachment cache is " *
@@ -464,7 +528,11 @@ const ATT = ChainTables
             end
             chmod(pb, 0o644); write(pb, rand(UInt8, 400)); chmod(pb, 0o444)
             gone = sort([ha, hc])
-            e = try ATT.repair!(copy); nothing catch e; e end
+            e = try
+                ATT.repair!(copy); nothing
+            catch e
+                e
+            end
             @test e isa ATT.AttachmentAbsentError && e.chain_id == copy.head.chain_id && e.key === nothing
             @test sprint(showerror, e) == "AttachmentAbsentError: attachment absent: repair!(copy) found that the store " *
                 "of the chain at bkt/p no longer holds 2 attachments this copy had confirmed: " *
@@ -475,7 +543,11 @@ const ATT = ChainTables
             @test read(pb) == b                                                 # the pass went on
             @test !isfile(joinpath(copy.path, "confirmed", ha)) && !isfile(joinpath(copy.path, "confirmed", hc))
             @test ATT.repair!(copy).attachments_repaired == 0 && ATT.verify(copy; full = true) === nothing
-            e = try ATT.attachment(copy, ha); nothing catch e; e end
+            e = try
+                ATT.attachment(copy, ha); nothing
+            catch e
+                e
+            end
             @test e isa ATT.AttachmentAbsentError && e.key == "p/_attachments/$ha" && e.chain_id == copy.head.chain_id
             @test sprint(showerror, e) == "AttachmentAbsentError: attachment absent: the store of the chain at bkt/p holds " *
                 "no attachment p/_attachments/$ha — it was never put to this chain, or its retention ended and it was " *
@@ -483,10 +555,16 @@ const ATT = ChainTables
                 "holding the file can bring it back, with put_attachment(chain, file) (ADR-0046)."
             # one alone is named in the error's key
             delete!(store.objects, "p/_attachments/$hb"); chmod(pb, 0o644); rm(pb)
-            e = try ATT.repair!(copy); nothing catch e; e end
+            e = try
+                ATT.repair!(copy); nothing
+            catch e
+                e
+            end
             @test e isa ATT.AttachmentAbsentError && e.key == "p/_attachments/$hb"
-            @test occursin("no longer holds 1 attachment this copy had confirmed: p/_attachments/$hb. Its retention ended " *
-                           "and it was deleted", sprint(showerror, e))
+            @test occursin(
+                "no longer holds 1 attachment this copy had confirmed: p/_attachments/$hb. Its retention ended " *
+                    "and it was deleted", sprint(showerror, e)
+            )
         end
     end
 
@@ -508,7 +586,11 @@ const ATT = ChainTables
             chmod(pbad, 0o644); rm(pbad)
             wrong = rand(UInt8, 40); found = bytes2hex(sha256(wrong))
             store.objects[kbad] = wrong
-            e = try ATT.repair!(copy); nothing catch e; e end
+            e = try
+                ATT.repair!(copy); nothing
+            catch e
+                e
+            end
             @test e isa ATT.AttachmentDigestError
             @test sprint(showerror, e) == "AttachmentDigestError: attachment digest: the store of the chain at bkt/p " *
                 "returned 40 bytes for $kbad, which hash to $found, not to the key's hash. Nothing was cached. S3 checked " *
@@ -516,7 +598,11 @@ const ATT = ChainTables
                 "report it (ADR-0046)."
             @test isfile(joinpath(copy.path, "confirmed", hgone))              # not removed, so reported next time
             store.objects[kbad] = bad
-            e = try ATT.repair!(copy); nothing catch e; e end
+            e = try
+                ATT.repair!(copy); nothing
+            catch e
+                e
+            end
             @test e isa ATT.AttachmentAbsentError && e.key == kgone
             @test !isfile(joinpath(copy.path, "confirmed", hgone)) && read(pbad) == bad
         end
@@ -551,7 +637,11 @@ const ATT = ChainTables
             # through attachment(copy, hash): raised, nothing fetched
             reset!()
             empty!(store.calls)
-            e = try ATT.read_attachment(copy, h; hasher = grow); nothing catch e; e end
+            e = try
+                ATT.read_attachment(copy, h; hasher = grow); nothing
+            catch e
+                e
+            end
             @test e isa ATT.AttachmentCacheError && e.path == path && e.key == "p/_attachments/$h"
             @test e.chain_id == copy.head.chain_id
             @test sprint(showerror, e) == "AttachmentCacheError: attachment cache: the cached file $path changed while it " *

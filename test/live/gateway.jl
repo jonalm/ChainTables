@@ -66,7 +66,11 @@ end
         @test [m.key for m in list_objects(store, prefix * "/")] == [key0]
         # the bucket policy's Deny: a direct put by the writer is refused by S3, only the gateway fills slots
         key1 = GWT.slot_key(chain, 1)
-        e = try put_object_if_absent(store.s3, key1, genesis); nothing catch e; e end
+        e = try
+            put_object_if_absent(store.s3, key1, genesis); nothing
+        catch e
+            e
+        end
         @test e isa TransportError && e.status == 403 && occursin("AccessDenied", sprint(showerror, e))
         @test stat_object(store, key1) === nothing
         # a taken slot through the gateway is slot_taken, never an overwrite
@@ -99,7 +103,11 @@ end
         GWT.insert_rows!(wc, :samples, [(id = 4, note = "from c")])
         ra = Ref{Any}(nothing)
         racing.before_put = key -> (racing.before_put = _ -> nothing; ra[] = GWT.commit!(wa); nothing)
-        e = try GWT.commit!(wc); nothing catch e; e end
+        e = try
+            GWT.commit!(wc); nothing
+        catch e
+            e
+        end
         @test ra[] !== nothing && ra[].slot == 2
         @test e isa LostRaceError && (e.chain_id, e.slot, e.transaction_hash) == (created.chain_id, 2, ra[].transaction_hash)
         @test GWT.head(c).slot == 1 && length(GWT.table(c, :samples)) == 2
@@ -107,7 +115,11 @@ end
         @test_throws "this builder is spent" GWT.commit!(wc)
         # a record naming another author is refused as author_mismatch; nothing lands
         key3 = GWT.slot_key(chain, 3)
-        e = try put_object_if_absent(store, key3, gwtest_record(author * ".impostor")); nothing catch e; e end
+        e = try
+            put_object_if_absent(store, key3, gwtest_record(author * ".impostor")); nothing
+        catch e
+            e
+        end
         @test e isa WriteRefusedError && e.reason == "author_mismatch" && e.key == key3 && e.caller == author
         @test occursin("author_mismatch: the record names '$author.impostor' as client.user but the caller is '$author'", sprint(showerror, e))
         @test stat_object(store, key3) === nothing
@@ -115,7 +127,7 @@ end
         # AWS denies it before the handler runs, so the authorizer is AWS's word (#68, ADR-0036)
         forged = "arn:aws:sts::111122223333:assumed-role/forged/$author.impostor"
         event = """{"requestContext":{"http":{"method":"PUT","path":"/"},"authorizer":{"iam":{"userArn":"$forged"}}},""" *
-                """"rawQueryString":"key=$key3","body":"","isBase64Encoded":false}"""
+            """"rawQueryString":"key=$key3","body":"","isBase64Encoded":false}"""
         err = IOBuffer()
         invoke = `aws lambda invoke --profile $(config.profile) --region $(config.region) --function-name $(config.function)
                   --cli-binary-format raw-in-base64-out --payload $event $(joinpath(dir, "invoke.json"))`
@@ -124,7 +136,11 @@ end
         @test stat_object(store, key3) === nothing
         # a chain under a prefix the policy does not list the caller under: not_allowed at slot 0
         denied = Chain(gwbucket, "$unlisted/$run_id"; cache_dir)
-        e = try GWT.create_chain(denied); nothing catch e; e end
+        e = try
+            GWT.create_chain(denied); nothing
+        catch e
+            e
+        end
         @test e isa WriteRefusedError && e.reason == "not_allowed" && e.slot == 0 && e.caller == author
         @test e.key == GWT.slot_key(denied, 0) && stat_object(denied.store, e.key) === nothing
         @test startswith(sprint(showerror, e), "WriteRefusedError: write refused for slot 0 of chain $(e.chain_id) at $bucket/$unlisted/$run_id: ")
@@ -135,7 +151,11 @@ end
         racing.before_put = _ -> (puts[] += 1; nothing)
         w = GWT.write_builder(c)
         GWT.insert_rows!(w, :samples, [(id = 5, note = "x"^(4 * 1024 * 1024 + 100))])
-        e = try GWT.commit!(w); nothing catch e; e end
+        e = try
+            GWT.commit!(w); nothing
+        catch e
+            e
+        end
         @test e isa WriteBuilderError && occursin("the cap on a RacingGateway is 4194304 bytes (4 MiB)", sprint(showerror, e))
         @test puts[] == 0 && GWT.head(c).slot == 2 && stat_object(store, key3) === nothing
         close(a); close(c)

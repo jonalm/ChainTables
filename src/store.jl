@@ -179,11 +179,15 @@ overwrite each other's cached files on every read (ADR-0040), so a store that le
 undefined is refused when a `Chain` is built over it. Internal dispatch, not a port verb
 (ADR-0010).
 """
-cache_namespace(store::AbstractObjectStore) = throw(ArgumentError("cache_namespace: $(nameof(typeof(store))) does not " *
-    "define ChainTables.cache_namespace, the record cache's directory for objects read through it. Define " *
-    "ChainTables.cache_namespace(::$(nameof(typeof(store)))) to return a portable name of at most " *
-    "$MAX_NAMESPACE_LENGTH characters that no other store holding different objects under the same bucket and " *
-    "key returns (ADR-0040)"))
+cache_namespace(store::AbstractObjectStore) = throw(
+    ArgumentError(
+        "cache_namespace: $(nameof(typeof(store))) does not " *
+            "define ChainTables.cache_namespace, the record cache's directory for objects read through it. Define " *
+            "ChainTables.cache_namespace(::$(nameof(typeof(store)))) to return a portable name of at most " *
+            "$MAX_NAMESPACE_LENGTH characters that no other store holding different objects under the same bucket and " *
+            "key returns (ADR-0040)"
+    )
+)
 
 # The attachment cache's directory inside `cache_dir`, beside the namespaces (ADR-0046), so
 # no store may take it as its namespace.
@@ -244,22 +248,37 @@ cache and opens on every platform (ADR-0034).
 """
 function record_path(cache::RecordCache, store::AbstractObjectStore, bucket::AbstractString, key::AbstractString)
     namespace = cache_namespace(store)
-    length(namespace) <= MAX_NAMESPACE_LENGTH || throw(ArgumentError("record_path: the cache namespace " *
-        "$(repr(namespace)) of $(typeof(store)) is over $MAX_NAMESPACE_LENGTH characters (ADR-0034, ADR-0040); " *
-        "its cache_namespace method must return a shorter name"))
-    namespace == ATTACHMENT_CACHE_NAME && throw(ArgumentError("record_path: the cache namespace " *
-        "$(repr(namespace)) of $(typeof(store)) is the attachment cache's directory (ADR-0046); its cache_namespace " *
-        "method must return another name"))
+    length(namespace) <= MAX_NAMESPACE_LENGTH || throw(
+        ArgumentError(
+            "record_path: the cache namespace " *
+                "$(repr(namespace)) of $(typeof(store)) is over $MAX_NAMESPACE_LENGTH characters (ADR-0034, ADR-0040); " *
+                "its cache_namespace method must return a shorter name"
+        )
+    )
+    namespace == ATTACHMENT_CACHE_NAME && throw(
+        ArgumentError(
+            "record_path: the cache namespace " *
+                "$(repr(namespace)) of $(typeof(store)) is the attachment cache's directory (ADR-0046); its cache_namespace " *
+                "method must return another name"
+        )
+    )
     segments = split(key, '/')
     for s in (namespace, bucket, segments...)
         problem = portable_segment_problem(s)
-        problem === nothing || throw(ArgumentError(
-            "record_path: segment $(repr(s)) of bucket $(repr(bucket)), key $(repr(key)) $problem (ADR-0034)"))
+        problem === nothing || throw(
+            ArgumentError(
+                "record_path: segment $(repr(s)) of bucket $(repr(bucket)), key $(repr(key)) $problem (ADR-0034)"
+            )
+        )
     end
     path = joinpath(cache.dir, namespace, bucket, segments...)
     n = longest_cache_path(path)
-    n <= MAX_PORTABLE_PATH || throw(ArgumentError("record_path: the record cache path $(repr(path)) is $n characters " *
-        "long with its temporary file, over the $MAX_PORTABLE_PATH Windows allows (ADR-0034); use a shorter cache_dir or prefix"))
+    n <= MAX_PORTABLE_PATH || throw(
+        ArgumentError(
+            "record_path: the record cache path $(repr(path)) is $n characters " *
+                "long with its temporary file, over the $MAX_PORTABLE_PATH Windows allows (ADR-0034); use a shorter cache_dir or prefix"
+        )
+    )
     return path
 end
 
@@ -308,8 +327,10 @@ function heal_record!(cache::RecordCache, store::AbstractObjectStore, bucket::Ab
     path = record_path(cache, store, bucket, key)
     held = isfile(path) ? read(path) : nothing
     held == bytes && return nothing
-    held === nothing || @warn("record cache: the cached copy of $key in bucket $bucket is not what the store holds; " *
-        "replaced with the store's bytes (ADR-0040)", path, cached_bytes = length(held), store_bytes = length(bytes))
+    held === nothing || @warn(
+        "record cache: the cached copy of $key in bucket $bucket is not what the store holds; " *
+            "replaced with the store's bytes (ADR-0040)", path, cached_bytes = length(held), store_bytes = length(bytes)
+    )
     cache_record!(cache, store, bucket, key, bytes)
     return nothing
 end
@@ -357,7 +378,7 @@ means — [`retryable`](@ref) says whether the request is re-issued. A test's
 """
 struct TransportError <: Exception
     msg::String
-    status::Union{Nothing,Int}
+    status::Union{Nothing, Int}
 end
 TransportError(msg; status = nothing) = TransportError(msg, status)
 Base.showerror(io::IO, e::TransportError) =
@@ -410,7 +431,7 @@ function put_record!(store::AbstractObjectStore, cache::RecordCache, bucket::Abs
     ours = Ops.transaction_hash(bytes)
     failure = nothing
     for attempt in 1:PUT_ATTEMPTS
-        attempt == 1 || sleep(PUT_BACKOFF_S[attempt-1])
+        attempt == 1 || sleep(PUT_BACKOFF_S[attempt - 1])
         outcome = try
             put_object_if_absent(store, key, bytes)
         catch e
@@ -420,8 +441,10 @@ function put_record!(store::AbstractObjectStore, cache::RecordCache, bucket::Abs
         end
         if outcome !== nothing
             outcome.created && (cache_record!(cache, store, bucket, key, bytes); return nothing)
-            outcome.status == 412 || error("put_object_if_absent($(typeof(store))) returned created = false with status " *
-                "$(outcome.status); the port promises false only for a 412 (ADR-0019)")
+            outcome.status == 412 || error(
+                "put_object_if_absent($(typeof(store))) returned created = false with status " *
+                    "$(outcome.status); the port promises false only for a 412 (ADR-0019)"
+            )
         end
         found = fetch_object(store, key)
         if found !== nothing
@@ -430,8 +453,12 @@ function put_record!(store::AbstractObjectStore, cache::RecordCache, bucket::Abs
         end
     end
     failure === nothing || throw(failure)
-    throw(RewrittenChainError("rewritten chain: the put to $key was refused as existing (412) and a fetch found nothing " *
-        "there, $PUT_ATTEMPTS times over. Objects are appearing and vanishing from outside the protocol; nothing heals it."))
+    throw(
+        RewrittenChainError(
+            "rewritten chain: the put to $key was refused as existing (412) and a fetch found nothing " *
+                "there, $PUT_ATTEMPTS times over. Objects are appearing and vanishing from outside the protocol; nothing heals it."
+        )
+    )
 end
 
 # ---------------------------------------------------------------------------
