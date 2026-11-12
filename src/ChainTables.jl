@@ -1,6 +1,26 @@
+"""
+Several clients agree on a set of tables without a server, through a hash-chained
+sequence of records in an S3 bucket. Terms: see `CONTEXT.md`.
+"""
 module ChainTables
 
 using SHA: SHA
+
+public AbstractObjectStore, AttachmentAbsentError, AttachmentCacheError,
+    AttachmentChangedError, AttachmentDigestError, AttachmentURLExpiredError, Bucket, CBOR,
+    Chain, ChainNotFoundError, ChainTablesError, CommitOutcomeUnknownError, Credentials,
+    DivergenceError, FingerprintMismatchError, GatewayMismatchError, GatewayObjectStore,
+    GatewaySessionEndingError, LayoutVersionError, LocalCopy, LocalCopyInconsistentError,
+    LostRaceError, MalformedRecordError, NotALocalCopyError, ObjectMeta, Ops,
+    PinnedCopyError, PutOutcome, RecordCacheError, RewrittenChainError, S3ObjectStore,
+    StaleHeadError, StateFingerprint, TableView, Testing, TransactionHash, TransportError,
+    UnsupportedStoreError, WriteBuilderError, WriteRefusedError, WrongChainError,
+    add_column!, as_of, attachment, cache_namespace, column!, commit!, commit_log,
+    create_chain, create_table!, delete_rows!, drop_column!, drop_table!, fetch_object,
+    head, insert_rows!, is_pinned, list_objects, open, pin!, primary_key!, put_attachment,
+    put_object_if_absent, record_author, repair!, shape, slot_at, sso_credentials,
+    sso_login, stat_object, sync!, table, table_with_slots, tables, touch_attachment,
+    try_create_chain, unpin!, update_rows!, verify, write_builder
 
 abstract type AbstractObjectStore end
 
