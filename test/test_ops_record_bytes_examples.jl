@@ -1,4 +1,6 @@
 using Test
+using ExplicitImports: check_all_explicit_imports_are_public,
+    check_all_qualified_accesses_are_public
 using ChainTables: Ops
 
 const CLIENT = Ops.Client(
@@ -16,4 +18,9 @@ end
     bytes = Ops.encode_record(GENESIS)
     # Pass the slot the bytes were fetched from; the record must name it.
     @test Ops.decode_record(bytes; slot = 0) == GENESIS
+end
+
+@testset "the examples use only public names" begin
+    @test check_all_explicit_imports_are_public(@__MODULE__, @__FILE__) === nothing
+    @test check_all_qualified_accesses_are_public(@__MODULE__, @__FILE__) === nothing
 end

@@ -4,18 +4,9 @@ using ChainTables: ChainTables, Chain, RewrittenChainError, as_of, commit!, comm
 using ChainTables.Testing: InMemoryObjectStore
 
 include("fixtures/chains.jl")
+include("fixtures/seeded_chains.jl")
 
 const CT = ChainTables
-
-function with_copy(f, chain, path)
-    copy = CT.open(chain, path)
-    try
-        f(copy)
-    finally
-        close(copy)
-    end
-    return nothing
-end
 
 function insert_id!(copy, id; comment = nothing)
     w = write_builder(copy)

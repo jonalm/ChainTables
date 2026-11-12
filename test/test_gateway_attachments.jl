@@ -1,6 +1,6 @@
 using Test
 using ChainTables: ChainTables, AttachmentAbsentError, AttachmentChangedError,
-    AttachmentURLExpiredError, Chain, GatewayMismatchError, GatewayObjectStore,
+    AttachmentURLExpiredError, Chain, GatewayMismatchError,
     GatewaySessionEndingError, TransportError, WriteRefusedError, put_attachment,
     touch_attachment
 using SHA: sha256
@@ -8,7 +8,7 @@ using StableRNGs: StableRNG
 
 include("fixtures/attachments.jl")
 include("fixtures/s3_server.jl")
-include("fixtures/gateway_double.jl")
+include("fixtures/gateway_server.jl")
 include("fixtures/gateway_attachments.jl")
 
 const BIG = rand(StableRNG(3), UInt8, 2 * 1024 * 1024 + 3)
@@ -123,7 +123,7 @@ end
         @test e.status == 500
         @test ChainTables.retryable(e)
         url = "$(s3test_endpoint(g.s3))/bkt/$FRESH_KEY"
-        @test occursin("PUT $url: HTTP 500 InternalError", sprint(showerror, e))
+        @test occursin("PUT $url: InternalError", sprint(showerror, e))
         @test !occursin("Signature", sprint(showerror, e))
     end
 end

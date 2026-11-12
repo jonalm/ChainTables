@@ -171,10 +171,6 @@ function unsupported_store(chain::Chain)
     return store isa Union{S3ObjectStore, GatewayObjectStore} && !is_aws(store)
 end
 
-# Kept for `open`'s call in localcopy.jl. It warned once per process that commits would
-# refuse; a package never warns, so the refusal at commit is the one signal.
-warn_unsupported_store(chain) = nothing
-
 """
     refuse_unsupported_store(chain, call)
 

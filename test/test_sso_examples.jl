@@ -1,4 +1,6 @@
 using Test
+using ExplicitImports: check_all_explicit_imports_are_public,
+    check_all_qualified_accesses_are_public
 using ChainTables: ChainTables, Chain, sso_credentials, sso_login
 
 @testset "sso_credentials example" begin
@@ -16,4 +18,9 @@ end
     ran = Cmd[]
     sso_login("team"; device_code = true, runner = cmd -> push!(ran, cmd))
     @test only(ran) == `aws sso login --profile team --use-device-code`
+end
+
+@testset "the examples use only public names" begin
+    @test check_all_explicit_imports_are_public(@__MODULE__, @__FILE__) === nothing
+    @test check_all_qualified_accesses_are_public(@__MODULE__, @__FILE__) === nothing
 end

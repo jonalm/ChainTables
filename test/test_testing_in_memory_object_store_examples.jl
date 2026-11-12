@@ -1,4 +1,6 @@
 using Test
+using ExplicitImports: check_all_explicit_imports_are_public,
+    check_all_qualified_accesses_are_public
 using ChainTables: ChainTables, Chain, CommitOutcomeUnknownError, Testing
 
 @testset "InMemoryObjectStore example" begin
@@ -22,4 +24,9 @@ using ChainTables: ChainTables, Chain, CommitOutcomeUnknownError, Testing
         message = "may or may not have happened"
         @test_throws CommitOutcomeUnknownError message ChainTables.commit!(w)
     end
+end
+
+@testset "the examples use only public names" begin
+    @test check_all_explicit_imports_are_public(@__MODULE__, @__FILE__) === nothing
+    @test check_all_qualified_accesses_are_public(@__MODULE__, @__FILE__) === nothing
 end

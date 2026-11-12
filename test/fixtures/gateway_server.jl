@@ -12,6 +12,11 @@ const GWTEST_AUTHORIZATION = Regex(
 
 const GWTEST_SLOT_KEY = r"^(?:[^/](?:.*[^/])?/)?[0-9]{12}$"
 
+const GWTEST_CREDS = Credentials("AKIATEST", "topsecret"; session_token = "session-token")
+const GWTEST_ARN =
+    "arn:aws:sts::123456789012:assumed-role/" *
+    "AWSReservedSSO_chaintables-writer_0123456789abcdef/alice@example.com"
+
 """
     LoopbackServer
 
@@ -198,7 +203,8 @@ function gwtest_minted(
         s3::S3TestServer, key, size; seconds = 900, lifetime = seconds, capped = false,
         url = nothing, edit = identity, query = true
     )
-    signature = bytes2hex(sha256(key * string(time_ns())))
+    # Unique per grant, and with no randomness.
+    signature = bytes2hex(sha256("$key $(length(s3.presigned))"))
     headers = edit(gwtest_minted_headers(key, size))
     s3.presigned[signature] = (; key, headers = Dict(headers), expires = time() + seconds)
     path = "/$(s3.bucket)/" * ChainTables.uri_encode(key; keep_slash = true)
@@ -214,10 +220,10 @@ function gwtest_minted(
 end
 
 function gwtest_minted_headers(key, size)
-    checksum = ChainTables.Base64.base64encode(hex2bytes(key[(end - 63):end]))
     return [
         "content-length" => string(size), "content-type" => "application/octet-stream",
-        "if-none-match" => "*", "x-amz-checksum-sha256" => checksum,
+        "if-none-match" => "*",
+        "x-amz-checksum-sha256" => ChainTables.checksum_sha256(key[(end - 63):end]),
         "x-amz-tagging" => "chaintables=attachment",
     ]
 end

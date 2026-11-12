@@ -52,7 +52,14 @@ test/runtests.jl`, 1:14 wall, log in `trial_notes/full_suite_run1.log`):
 
 ## Open questions for the user (Rules that blocked; ask before acting)
 
-Answers: _(fill in)_
+Answers (user, session 2): 1. allow stateful test doubles and `with_<resource>` helpers
+(and the types behind them) in test/fixtures/; log as a Guide inconsistency between the
+fixtures Rule and the stateful-fixture Default; move C's duplicated
+`with_chain`/`with_seeded`/`with_copy` into a fixture. 2. drop every `@warn` in src/
+(B's fall-back warning, the `warn_unsupported_store` stub and its call); log each as a
+behaviour change; update the tests that pinned them. 3. `ignore` list on
+`check_all_qualified_accesses_are_public`, limited to the Tables.jl interface names and
+the `Downloads.Curl` names; log it; first remove any other non-public access.
 
 1. **Stateful doubles in `test/fixtures/`.** Rule: fixtures hold only consts and
    pure functions. The loopback S3 server, gateway doubles and `with_<resource>`

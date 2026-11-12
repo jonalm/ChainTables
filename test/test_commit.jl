@@ -8,60 +8,9 @@ using ChainTables: ChainTables, Chain, CommitOutcomeUnknownError, FingerprintMis
 using ChainTables.Testing: InMemoryObjectStore
 
 include("fixtures/chains.jl")
+include("fixtures/seeded_chains.jl")
 
 const CT = ChainTables
-
-function with_chain(f; kw...)
-    mktempdir() do dir
-        store = InMemoryObjectStore()
-        cache_dir = joinpath(dir, "cache")
-        chain = Chain(
-            "bkt", "p"; store, cache_dir, record_host = false, record_user = false, kw...
-        )
-        f(dir, store, chain)
-    end
-    return nothing
-end
-
-function with_copy(f, chain, path)
-    copy = CT.open(chain, path)
-    try
-        f(copy)
-    finally
-        close(copy)
-    end
-    return nothing
-end
-
-function declare_samples!(w)
-    create_table!(w, :samples) do t
-        column!(t, :id, Int64)
-        column!(t, :label, String)
-        column!(t, :mass, Float64; nullable = true)
-        primary_key!(t, :id)
-    end
-    return nothing
-end
-
-function commit_samples!(copy)
-    w = write_builder(copy)
-    declare_samples!(w)
-    insert_rows!(w, :samples, SAMPLE_ROWS)
-    return commit!(w; comment = "first samples")
-end
-
-# A chain with genesis and the samples table at slot 1, and a copy at its head.
-function with_seeded(f; kw...)
-    with_chain(; kw...) do dir, store, chain
-        create_chain(chain)
-        with_copy(chain, joinpath(dir, "one")) do copy
-            sync!(copy)
-            commit_samples!(copy)
-            f(dir, store, chain, copy)
-        end
-    end
-    return nothing
-end
 
 function builder_inserting(copy, i)
     w = write_builder(copy)
@@ -126,7 +75,7 @@ end
 end
 
 @testset "commit! lands with one put, no read-back, and caches its record" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         @test puts(store, slotkey(1)) == 1
         @test (:fetch_object, slotkey(1)) ∉ store.calls
         @test read(CT.record_path(chain, slotkey(1))) == store.objects[slotkey(1)]
@@ -134,7 +83,7 @@ end
 end
 
 @testset "commit! spends the builder" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         w = builder_inserting(copy, 3)
         commit!(w)
         @test w.spent
@@ -143,7 +92,7 @@ end
 end
 
 @testset "commit! behind the chain is StaleHeadError, before anything is applied" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         with_copy(chain, joinpath(dir, "two")) do copy2
             sync!(copy2)
             r2 = commit!(builder_inserting(copy2, 3))
@@ -161,7 +110,7 @@ end
 end
 
 @testset "commit! of a builder taken before a sync! is StaleHeadError, no request" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         w = builder_inserting(copy, 4)
         with_copy(chain, joinpath(dir, "two")) do copy2
             sync!(copy2)
@@ -195,7 +144,7 @@ const STATE_GATE_CASES = [
 const ADD_ROWS = (insert = insert_rows!, update = update_rows!, delete = delete_rows!)
 
 @testset "commit! refuses a forbidden op: $(case.name)" for case in STATE_GATE_CASES
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         w = write_builder(copy)
         foreach(((verb, row),) -> ADD_ROWS[verb](w, :samples, [row]), case.rows)
         before = (local_state(copy), length(store.objects))
@@ -224,7 +173,7 @@ const BAD_BUILDER_CASES = [
 ]
 
 @testset "commit! refuses a builder with $(case.name)" for case in BAD_BUILDER_CASES
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         w = write_builder(copy)
         case.ops && delete_rows!(w, :samples, [(id = 1,)])
         before = local_state(copy)
@@ -234,7 +183,7 @@ const BAD_BUILDER_CASES = [
 end
 
 @testset "write_builder refuses a copy with no head" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         with_copy(chain, joinpath(dir, "fresh")) do fresh
             msg = "write_builder: the local copy at $(fresh.path) has no head yet"
             @test_throws ArgumentError msg write_builder(fresh)
@@ -251,7 +200,7 @@ function declare_tags!(w)
 end
 
 @testset "write_builder loads a table only when the builder names it" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         close(copy)
         with_copy(chain, copy.path) do again
             w = write_builder(again)
@@ -268,7 +217,7 @@ end
 end
 
 @testset "write_builder drops an unread table without reading it" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         close(copy)
         with_copy(chain, copy.path) do again
             w = write_builder(again)
@@ -281,7 +230,7 @@ end
 end
 
 @testset "commit! loses a race to another client's record, never retried" begin
-    with_seeded() do dir, store, chain, a
+    with_seeded(commit_samples!) do dir, store, chain, a, _
         with_copy(chain, joinpath(dir, "two")) do b
             sync!(b)
             wa, wb = builder_inserting(a, 3), builder_inserting(b, 4)
@@ -301,7 +250,7 @@ end
 end
 
 @testset "commit! succeeds when only the acknowledgement was lost" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         store.fault = (verb, key, phase) -> verb === :put_object_if_absent &&
             phase === :after && throw(TransportError("connection reset by peer"))
         r = commit!(builder_inserting(copy, 3))
@@ -312,7 +261,7 @@ end
 end
 
 @testset "commit! throws a refusal of the put at once, the copy at its head" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         store.fault = (verb, key, phase) -> verb === :put_object_if_absent &&
             phase === :before && throw(TransportError("forbidden"; status = 403))
         before = local_state(copy)
@@ -323,7 +272,7 @@ end
 end
 
 @testset "commit! whose retries are spent is CommitOutcomeUnknownError" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         store.fault = (verb, key, phase) -> verb === :put_object_if_absent &&
             phase === :before && throw(TransportError("service unavailable"; status = 503))
         before = local_state(copy)
@@ -337,7 +286,7 @@ end
 end
 
 @testset "commit! whose response is lost to a store's own error names its record" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         store.fault = (verb, key, phase) -> verb === :put_object_if_absent &&
             phase === :after && error("response dropped")
         w = builder_inserting(copy, 3)
@@ -354,7 +303,7 @@ end
 end
 
 @testset "commit! whose put fails before it lands leaves the slot empty" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         store.fault = (verb, key, phase) -> verb === :put_object_if_absent &&
             phase === :before && error("interrupted")
         w = builder_inserting(copy, 3)
@@ -366,7 +315,7 @@ end
 end
 
 @testset "commit! whose head fails to write is CommitOutcomeUnknownError, landed" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         w = builder_inserting(copy, 3)
         heads = joinpath(copy.path, "heads")
         chmod(heads, 0o555)                       # the head cannot be written; the put wins
@@ -383,7 +332,7 @@ end
 end
 
 @testset "commit! refuses a head that disagrees with its own record" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         h = copy.head
         lie = with_fingerprint(store.objects[slotkey(1)], 1, fill(0xee, 32))
         plant!(store, slotkey(1), lie)
@@ -414,7 +363,7 @@ const REFUSED_CHAIN_CASES = [
 ]
 
 @testset "commit! refuses to build on $(case.name)" for case in REFUSED_CHAIN_CASES
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         empty!(store.objects)
         empty!(store.modified)
         case.refill && refill_with_another_chain(dir, store)
@@ -425,7 +374,7 @@ const REFUSED_CHAIN_CASES = [
 end
 
 @testset "write_builder and commit! refuse a pinned copy" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         w = builder_inserting(copy, 3)
         CT.pin!(copy)
         err = (@test_throws PinnedCopyError "pinned" write_builder(copy)).value
@@ -437,7 +386,7 @@ end
 end
 
 @testset "write_builder and commit! infer" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         w = @inferred write_builder(copy)
         insert_rows!(w, :samples, [(id = 3, label = "c", mass = 3.0)])
         @test @inferred(commit!(w)).slot == 2

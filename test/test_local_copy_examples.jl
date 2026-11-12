@@ -1,4 +1,6 @@
 using Test
+using ExplicitImports: check_all_explicit_imports_are_public,
+    check_all_qualified_accesses_are_public
 using ChainTables: ChainTables, Chain, LocalCopy, column!, commit!, create_chain,
     create_table!, head, insert_rows!, is_pinned, pin!, primary_key!, sync!, tables, unpin!,
     write_builder
@@ -98,4 +100,9 @@ end
         @test head(copy).slot == 0
         close(copy)
     end
+end
+
+@testset "the examples use only public names" begin
+    @test check_all_explicit_imports_are_public(@__MODULE__, @__FILE__) === nothing
+    @test check_all_qualified_accesses_are_public(@__MODULE__, @__FILE__) === nothing
 end

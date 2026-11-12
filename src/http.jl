@@ -101,6 +101,7 @@ end
 deadline_ms(::Nothing) = nothing
 deadline_ms(seconds::Real) = max(1, ceil(Int, seconds * 1000))
 
+# For a presigned URL the query is a bearer credential: never print it.
 url_without_query(url::AbstractString) = first(split(url, '?'; limit = 2))
 
 """

@@ -1,4 +1,6 @@
 using Test
+using ExplicitImports: check_all_explicit_imports_are_public,
+    check_all_qualified_accesses_are_public
 using ChainTables: CBOR
 
 @testset "encode example" begin
@@ -11,4 +13,9 @@ using ChainTables: CBOR
     # Writing to a stream returns the byte count.
     io = IOBuffer()
     @test CBOR.encode(io, "abc") == 4
+end
+
+@testset "the examples use only public names" begin
+    @test check_all_explicit_imports_are_public(@__MODULE__, @__FILE__) === nothing
+    @test check_all_qualified_accesses_are_public(@__MODULE__, @__FILE__) === nothing
 end

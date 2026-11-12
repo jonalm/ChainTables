@@ -1,6 +1,6 @@
 using Test
 using ChainTables: ChainTables, AttachmentAbsentError, AttachmentChangedError,
-    AttachmentURLExpiredError, Chain, GatewayMismatchError, GatewayObjectStore,
+    AttachmentURLExpiredError, Chain, GatewayMismatchError,
     GatewaySessionEndingError, TransportError, WriteRefusedError, put_attachment,
     touch_attachment
 using SHA: sha256
@@ -8,7 +8,7 @@ using StableRNGs: StableRNG
 
 include("fixtures/attachments.jl")
 include("fixtures/s3_server.jl")
-include("fixtures/gateway_double.jl")
+include("fixtures/gateway_server.jl")
 include("fixtures/gateway_attachments.jl")
 
 @testset "upload_minted sends nothing once the minted URL has expired" begin

@@ -1,4 +1,6 @@
 using Test
+using ExplicitImports: check_all_explicit_imports_are_public,
+    check_all_qualified_accesses_are_public
 using ChainTables: ChainTables, AbstractObjectStore, ObjectMeta, PutOutcome,
     cache_namespace, fetch_object, list_objects, put_object_if_absent, record_author,
     stat_object
@@ -69,4 +71,9 @@ end
 @testset "cache_namespace example" begin
     # Every in-memory store is its own namespace in the record cache.
     @test startswith(cache_namespace(InMemoryObjectStore()), "mem-")
+end
+
+@testset "the examples use only public names" begin
+    @test check_all_explicit_imports_are_public(@__MODULE__, @__FILE__) === nothing
+    @test check_all_qualified_accesses_are_public(@__MODULE__, @__FILE__) === nothing
 end

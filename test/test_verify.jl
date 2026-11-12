@@ -7,65 +7,9 @@ using ChainTables.Testing: InMemoryObjectStore
 using SHA: sha256
 
 include("fixtures/chains.jl")
+include("fixtures/seeded_chains.jl")
 
 const CT = ChainTables
-
-function chain_over(store, cache_dir, prefix = "p")
-    return Chain("bkt", prefix; store, cache_dir, record_host = false, record_user = false)
-end
-
-function with_copy(f, chain, path)
-    copy = CT.open(chain, path)
-    try
-        f(copy)
-    finally
-        close(copy)
-    end
-    return nothing
-end
-
-function create_keyed!(w, name)
-    create_table!(w, name) do t
-        column!(t, :k, Int64)
-        primary_key!(t, :k)
-    end
-    insert_rows!(w, name, [(k = 1,), (k = 2,)])
-    return nothing
-end
-
-# Samples at slot 1; tags and its twin, sharing one table file, at slot 2; an update at 3.
-function commit_three!(copy)
-    w = write_builder(copy)
-    create_table!(w, :samples) do t
-        column!(t, :id, Int64)
-        column!(t, :label, String)
-        column!(t, :mass, Float64; nullable = true)
-        primary_key!(t, :id)
-    end
-    insert_rows!(w, :samples, SAMPLE_ROWS)
-    commit!(w; comment = "first samples")
-    w = write_builder(copy)
-    foreach(name -> create_keyed!(w, name), (:tags, :twin))
-    commit!(w)
-    w = write_builder(copy)
-    update_rows!(w, :samples, [(id = 2, mass = 2.5)])
-    commit!(w)
-    return nothing
-end
-
-function with_seeded(f)
-    mktempdir() do dir
-        store = InMemoryObjectStore()
-        chain = chain_over(store, joinpath(dir, "cache"))
-        create_chain(chain)
-        with_copy(chain, joinpath(dir, "one")) do copy
-            sync!(copy)
-            commit_three!(copy)
-            f(dir, store, chain, copy)
-        end
-    end
-    return nothing
-end
 
 function table_file(copy, name)
     return joinpath(copy.path, "tables", bytes2hex(Dict(copy.head.tables)[name]))
@@ -122,7 +66,7 @@ end
 cached(chain, s) = CT.record_path(chain, slotkey(s))
 
 @testset "verify passes a sound copy with no request" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_three!) do dir, store, chain, copy, _
         n = length(store.calls)
         @test verify(copy) === nothing
         @test verify(copy; full = true) === nothing
@@ -131,7 +75,7 @@ cached(chain, s) = CT.record_path(chain, slotkey(s))
 end
 
 @testset "verify names a table file that does not hash to its name" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_three!) do dir, store, chain, copy, _
         file, good = damage!(copy, "samples")
         bad = bytes2hex(sha256(read(file)))
         found = Dict(copy.head.tables)
@@ -152,7 +96,7 @@ end
 end
 
 @testset "verify names a missing table file" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_three!) do dir, store, chain, copy, _
         file = table_file(copy, "samples")
         rm(file)
         msg = "table file tables/$(basename(file)) (table \"samples\") is missing"
@@ -162,7 +106,7 @@ end
 end
 
 @testset "verify names both tables of a shared file" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_three!) do dir, store, chain, copy, _
         file, good = damage!(copy, "tags")
         msg = "(tables \"tags\", \"twin\") hashes to"
         @test_throws FingerprintMismatchError msg verify(copy)
@@ -172,7 +116,7 @@ end
 end
 
 @testset "verify refuses a copy with no head, and a closed copy" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_three!) do dir, store, chain, copy, _
         with_copy(chain, joinpath(dir, "fresh")) do fresh
             msg = "verify(copy): the local copy at $(fresh.path) has no head yet"
             @test_throws ArgumentError msg verify(fresh)
@@ -267,7 +211,7 @@ end
 end
 
 @testset "verify infers" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_three!) do dir, store, chain, copy, _
         @test @inferred(verify(copy)) === nothing
     end
 end

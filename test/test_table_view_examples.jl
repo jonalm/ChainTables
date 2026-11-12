@@ -1,4 +1,6 @@
 using Test
+using ExplicitImports: check_all_explicit_imports_are_public,
+    check_all_qualified_accesses_are_public
 using ChainTables: ChainTables, Chain, TableView, column!, commit!, create_chain,
     create_table!, insert_rows!, primary_key!, sync!, table, table_with_slots, update_rows!,
     write_builder
@@ -53,4 +55,9 @@ end
         @test s._slot == [1, 2]
         @test s.label == ["a", "B"]
     end
+end
+
+@testset "the examples use only public names" begin
+    @test check_all_explicit_imports_are_public(@__MODULE__, @__FILE__) === nothing
+    @test check_all_qualified_accesses_are_public(@__MODULE__, @__FILE__) === nothing
 end

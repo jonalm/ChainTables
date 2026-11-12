@@ -238,10 +238,7 @@ end
         w_file = bytes2hex(last(head2.tables[3]))
         rm(joinpath(path, "tables", w_file))
         restore()
-        warning = "head heads/000000000002 names table file tables/$w_file " *
-            "(table \"w\"), which is missing; opening the local copy at $path at slot 1 " *
-            "and sweeping heads/000000000002"
-        copy = @test_logs (:warn, warning) ChainTables.open(chain, path)
+        copy = @test_logs ChainTables.open(chain, path)
         @test head(copy).slot == 1
         @test listing(path, "heads") == ["000000000001"]
         @test collect(table(copy, :w)) == [(id = 7, v = "z")]

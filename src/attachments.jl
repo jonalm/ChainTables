@@ -186,9 +186,6 @@ checksum_sha256(hex::AbstractString) = Base64.base64encode(hex2bytes(hex))
 
 is_bad_digest(status, body) = status == 400 && occursin(BAD_DIGEST_CODE, String(copy(body)))
 
-# The URL with its query left out: for a presigned URL the query is a bearer credential.
-bare_url(url::AbstractString) = first(split(url, '?'; limit = 2))
-
 # The bounded retry of a whole store call, the commit's: re-issued on a retryable
 # `TransportError`, the last failure rethrown (ADR-0010). One sleep between attempts, so
 # PUT_ATTEMPTS attempts in all.

@@ -7,65 +7,14 @@ using ChainTables: ChainTables, Chain, ChainNotFoundError, MalformedRecordError,
 using ChainTables.Testing: InMemoryObjectStore
 
 include("fixtures/chains.jl")
+include("fixtures/seeded_chains.jl")
 
 const CT = ChainTables
-
-function with_chain(f; prefix = "p", kw...)
-    mktempdir() do dir
-        store = InMemoryObjectStore()
-        cache_dir = joinpath(dir, "cache")
-        chain = Chain(
-            "bkt", prefix; store, cache_dir, record_host = false, record_user = false, kw...
-        )
-        f(dir, store, chain)
-    end
-    return nothing
-end
-
-function declare_samples!(w, name = :samples)
-    create_table!(w, name) do t
-        column!(t, :id, Int64)
-        column!(t, :label, String)
-        column!(t, :mass, Float64; nullable = true)
-        primary_key!(t, :id)
-    end
-    return nothing
-end
 
 function insert_sample!(copy, i)
     w = write_builder(copy)
     insert_rows!(w, :samples, [(id = i, label = string(i), mass = Float64(i))])
     return commit!(w)
-end
-
-function commit_samples!(copy)
-    w = write_builder(copy)
-    declare_samples!(w)
-    insert_rows!(w, :samples, SAMPLE_ROWS)
-    return commit!(w; comment = "first samples")
-end
-
-# A chain with genesis and the samples table at slot 1, and a copy at its head.
-function with_seeded(f; kw...)
-    with_chain(; kw...) do dir, store, chain
-        create_chain(chain)
-        with_copy(chain, joinpath(dir, "one")) do copy
-            sync!(copy)
-            commit_samples!(copy)
-            f(dir, store, chain, copy)
-        end
-    end
-    return nothing
-end
-
-function with_copy(f, chain, path)
-    copy = CT.open(chain, path)
-    try
-        f(copy)
-    finally
-        close(copy)
-    end
-    return nothing
 end
 
 sample_ids(copy) = [row.id for row in table(copy, :samples)]
@@ -120,7 +69,7 @@ end
 end
 
 @testset "sync! replays a second client's records to the same head" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         with_copy(chain, joinpath(dir, "two")) do copy2
             th = TransactionHash(copy.head.transaction_hash)
             @test sync!(copy2) == (; applied = 2, slot = 1, transaction_hash = th)
@@ -131,7 +80,7 @@ end
 end
 
 @testset "sync! caches what it fetched, and never a probe's miss" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         sync!(copy)
         @test !isfile(CT.record_path(chain, slotkey(2)))
         with_copy(chain, joinpath(dir, "other")) do other
@@ -147,7 +96,7 @@ end
 end
 
 @testset "sync! refuses a pinned copy" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         CT.pin!(copy)
         err = (@test_throws PinnedCopyError "the local copy is pinned" sync!(copy)).value
         @test (err.path, err.slot, err.call) == (copy.path, 1, "sync!")
@@ -164,7 +113,7 @@ end
 end
 
 @testset "sync! throws RewrittenChainError when the head's slot holds another record" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         cid, th1 = copy.head.chain_id, copy.head.transaction_hash
         good = store.objects[slotkey(1)]
         other = with_comment(good, 1, "rewritten")
@@ -181,7 +130,7 @@ end
 end
 
 @testset "sync! throws RewrittenChainError when the head's slot is absent" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         good = store.objects[slotkey(1)]
         delete!(store.objects, slotkey(1))
         msg = "the head's slot is absent"
@@ -194,7 +143,7 @@ end
 end
 
 @testset "sync! throws RewrittenChainError for a record naming another parent" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         cid, th1 = copy.head.chain_id, copy.head.transaction_hash
         ops = [CT.Ops.Insert("samples", [Any[3, "c", 3.0]])]
         fp = copy.head.state_fingerprint
@@ -209,7 +158,7 @@ end
 end
 
 @testset "sync! throws MalformedRecordError for a record of another chain" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         cid, th1 = copy.head.chain_id, copy.head.transaction_hash
         ops = [CT.Ops.Insert("samples", [Any[3, "c", 3.0]])]
         fp = copy.head.state_fingerprint
@@ -222,7 +171,7 @@ end
 end
 
 @testset "sync! throws RewrittenChainError for a slot gone after the probe" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         th1 = copy.head.transaction_hash
         ops = [CT.Ops.Insert("samples", [Any[3, "c", 3.0]])]
         record = forged_record(CT.chain_id_bytes(copy.head.chain_id), 2, th1, th1; ops)
@@ -235,7 +184,7 @@ end
 end
 
 @testset "sync! over another chain's prefix with a cold cache is WrongChainError" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         chainq = Chain("bkt", "q"; store, cache_dir = joinpath(dir, "qcache"))
         createdq = create_chain(chainq)
         with_copy(chainq, joinpath(dir, "q")) do q
@@ -255,7 +204,7 @@ end
 end
 
 @testset "sync! over an emptied prefix is RewrittenChainError, the cache warm" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         empty!(store.objects)
         empty!(store.modified)
         err = (@test_throws RewrittenChainError "absent" sync!(copy)).value
@@ -264,7 +213,7 @@ end
 end
 
 @testset "sync! over a prefix refilled by another chain is WrongChainError" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         empty!(store.objects)
         empty!(store.modified)
         cache_dir = joinpath(dir, "c2cache")
@@ -282,7 +231,7 @@ end
 end
 
 @testset "sync! over a warm cache asks the store only for slot 0 and the top" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         foreach(i -> insert_sample!(copy, i), 3:4)
         with_copy(chain, joinpath(dir, "warm")) do fresh
             n = length(store.calls)
@@ -310,7 +259,7 @@ const DAMAGED_CASES = [
 ]
 
 @testset "sync! fetches a damaged cached record: $(case.name)" for case in DAMAGED_CASES
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         foreach(i -> insert_sample!(copy, i), 3:4)
         good = store.objects[slotkey(case.slot)]
         write(CT.record_path(chain, slotkey(case.slot)), case.bytes(good))
@@ -325,7 +274,7 @@ const DAMAGED_CASES = [
 end
 
 @testset "sync! fetches again a damaged cached head slot" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         write(CT.record_path(chain, slotkey(1)), b"")
         @test sync!(copy).applied == 0
         @test read(CT.record_path(chain, slotkey(1))) == store.objects[slotkey(1)]
@@ -366,7 +315,7 @@ end
 end
 
 @testset "sync! applies our own record after a crash between the put and the head" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         head1 = read(joinpath(copy.path, "heads", "000000000001"))
         tables_dir = joinpath(copy.path, "tables")
         files1 = Dict(f => read(joinpath(tables_dir, f)) for f in readdir(tables_dir))
@@ -385,7 +334,7 @@ end
 end
 
 @testset "replay! checkpoints by the amortized rule on a scripted clock" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         foreach(i -> insert_sample!(copy, i), 3:12)
         ticks = Ref(0)
         clock = () -> (ticks[] += 1)               # apply and checkpoint each take one tick
@@ -406,7 +355,7 @@ function five_tick_checkpoints()
 end
 
 @testset "replay! waits as long as the last checkpoint took" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         foreach(i -> insert_sample!(copy, i), 3:12)
         script = five_tick_checkpoints()
         with_copy(chain, joinpath(dir, "fresh")) do fresh
@@ -418,7 +367,7 @@ end
 end
 
 @testset "sync! that fails leaves the copy at its last checkpoint and resumes" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         foreach(i -> insert_sample!(copy, i), 3:12)
         store.fault = (verb, key, phase) -> verb === :fetch_object && key == slotkey(7) &&
             phase === :before && throw(TransportError("timeout"))
@@ -438,7 +387,7 @@ end
 end
 
 @testset "sync! with read_ahead = 1 fetches one slot at a time, in order" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         foreach(i -> insert_sample!(copy, i), 3:5)
         one = Chain("bkt", "p"; store, cache_dir = joinpath(dir, "cache1"), read_ahead = 1)
         with_copy(one, joinpath(dir, "one_ahead")) do c1
@@ -450,7 +399,7 @@ end
 end
 
 @testset "sync! stops at a malformed record, the copy at its last checkpoint" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         h = copy.head
         ops = [CT.Ops.Insert("samples", [Any[13.0, "x", 1.0]])]
         cid = CT.chain_id_bytes(h.chain_id)
@@ -463,7 +412,7 @@ end
 end
 
 @testset "sync! infers" begin
-    with_seeded() do dir, store, chain, copy
+    with_seeded(commit_samples!) do dir, store, chain, copy, _
         @test @inferred(sync!(copy)).applied == 0
     end
 end

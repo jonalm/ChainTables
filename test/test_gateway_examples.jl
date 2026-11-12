@@ -1,4 +1,6 @@
 using Test
+using ExplicitImports: check_all_explicit_imports_are_public,
+    check_all_qualified_accesses_are_public
 using ChainTables: ChainTables, Chain, Credentials, GatewayObjectStore
 
 @testset "GatewayObjectStore example" begin
@@ -13,4 +15,9 @@ using ChainTables: ChainTables, Chain, Credentials, GatewayObjectStore
     store = GatewayObjectStore("bkt", url; region = "eu-north-1", credentials)
     shown = "GatewayObjectStore(\"bkt\", \"$url\"; region = \"eu-north-1\")"
     @test sprint(show, store) == shown
+end
+
+@testset "the examples use only public names" begin
+    @test check_all_explicit_imports_are_public(@__MODULE__, @__FILE__) === nothing
+    @test check_all_qualified_accesses_are_public(@__MODULE__, @__FILE__) === nothing
 end

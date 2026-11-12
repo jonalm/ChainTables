@@ -1,4 +1,6 @@
 using Test
+using ExplicitImports: check_all_explicit_imports_are_public,
+    check_all_qualified_accesses_are_public
 using ChainTables: ChainNotFoundError, ChainTablesError, CommitOutcomeUnknownError,
     GatewayMismatchError, LostRaceError, MalformedRecordError, RewrittenChainError,
     StaleHeadError, TransportError, UnsupportedStoreError, WriteBuilderError,
@@ -83,4 +85,9 @@ end
     e = CredentialsError(; profile = "team", detail = "the AWS CLI (aws) is not on PATH")
     @test e.profile == "team"
     @test occursin("sso_login", sprint(showerror, e))
+end
+
+@testset "the examples use only public names" begin
+    @test check_all_explicit_imports_are_public(@__MODULE__, @__FILE__) === nothing
+    @test check_all_qualified_accesses_are_public(@__MODULE__, @__FILE__) === nothing
 end

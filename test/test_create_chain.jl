@@ -5,6 +5,7 @@ using ChainTables.Testing: InMemoryObjectStore
 using TestConventions: check_inferred
 
 include("fixtures/chains.jl")
+include("fixtures/seeded_chains.jl")
 
 const CT = ChainTables
 
@@ -17,20 +18,8 @@ function ChainTables.put_object_if_absent(::CreateTestBadOutcome, key, bytes)
     return PutOutcome(false, 200)
 end
 
-function with_chain(f; kw...)
-    mktempdir() do dir
-        store = InMemoryObjectStore()
-        cache_dir = joinpath(dir, "cache")
-        chain = Chain(
-            "bkt", "p"; store, cache_dir, record_host = false, record_user = false, kw...
-        )
-        f(chain, store)
-    end
-    return nothing
-end
-
 @testset "create_chain writes a zero-op genesis to slot 0 with one put" begin
-    with_chain() do chain, store
+    with_chain() do _, store, chain
         created = create_chain(chain)
         @test created.slot == 0 && occursin(r"^[A-Z2-7]{26}$", created.chain_id)
         @test created.transaction_hash isa TransactionHash
@@ -42,7 +31,7 @@ end
 end
 
 @testset "create_chain's genesis names the chain and nothing else" begin
-    with_chain() do chain, store
+    with_chain() do _, store, chain
         created = create_chain(chain)
         genesis = CT.Ops.decode_record(store.objects[slotkey(0)]; slot = 0)
         @test isempty(genesis.ops) && genesis.prev_hash === nothing
@@ -54,7 +43,7 @@ end
 end
 
 @testset "create_chain loses to a chain already there, with one put and a read-back" begin
-    with_chain() do chain, store
+    with_chain() do _, store, chain
         created = create_chain(chain)
         empty!(store.calls)
         msg = "already fills the slot"
@@ -67,7 +56,7 @@ end
 end
 
 @testset "create_chain loses to a malformed genesis, its chain id unknown" begin
-    with_chain() do chain, store
+    with_chain() do _, store, chain
         put_object_if_absent(store, slotkey(0), b"not a record")
         msg = "genesis record is malformed"
         err = (@test_throws LostRaceError msg create_chain(chain)).value
@@ -76,7 +65,7 @@ end
 end
 
 @testset "try_create_chain returns nothing for a chain already there" begin
-    with_chain() do chain, store
+    with_chain() do _, store, chain
         created = try_create_chain(chain)
         @test keys(created) == (:chain_id, :slot, :transaction_hash) && created.slot == 0
         empty!(store.calls)
@@ -96,7 +85,7 @@ end
 end
 
 @testset "create_chain and try_create_chain infer" begin
-    with_chain() do chain, store
+    with_chain() do _, store, chain
         other = Chain("bkt", "q"; store, cache_dir = chain.cache.dir)
         T = typeof(@inferred create_chain(other))
         check_inferred(Union{Nothing, T}, try_create_chain, chain)

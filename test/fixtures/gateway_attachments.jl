@@ -1,7 +1,7 @@
 # Shared by the tests of attachments on a gateway bucket: an attachment, and a gateway
-# bucket on loopback servers (fixtures/s3_server.jl and fixtures/gateway_double.jl,
+# bucket on loopback servers (fixtures/s3_server.jl and fixtures/gateway_server.jl,
 # included first).
-using ChainTables: ChainTables, GatewayObjectStore, put_attachment
+using ChainTables: ChainTables, put_attachment
 using SHA: sha256
 using StableRNGs: StableRNG
 
@@ -11,25 +11,14 @@ const EXPIRES = "2026-11-06T12:00:00Z"
 """
     with_gateway(f)
 
-Call `f(g)` with `g = (; s3, double, gw, store, dir)`: a loopback S3, a gateway double
-that lets alice write under `p`, its loopback server, a gateway store on both, and a
+Call `f(g)` with `g = (; s3, filled, double, gw, sts, store, dir)`: the
+`with_gateway_doubles` doubles, with a gateway that lets alice write under `p`, and a
 temporary directory. Closes the servers after.
 """
 function with_gateway(f)
-    s3 = S3TestServer(; bucket = "bkt", credentials = GWTEST_CREDS)
-    policy = ["p" => ["alice@example.com"]]
     alice = "alice@example.com"
-    double = GatewayDouble(s3, GWTEST_CREDS, "eu-north-1", alice, policy, _ -> nothing)
-    gw = LoopbackServer(double)
-    try
-        store = GatewayObjectStore(
-            "bkt", loopback_url(gw); region = "eu-north-1", credentials = GWTEST_CREDS,
-            endpoint = s3test_endpoint(s3), path_style = true, timeout = 30
-        )
-        mktempdir(dir -> f((; s3, double, gw, store, dir)))
-    finally
-        close(gw)
-        close(s3)
+    with_gateway_doubles(GWTEST_CREDS, alice, ["p" => [alice]]; arn = GWTEST_ARN) do d
+        mktempdir(dir -> f((; d..., dir)))
     end
     return nothing
 end

@@ -196,7 +196,7 @@ function upload_minted(store::GatewayObjectStore, key::String, io::IO, size::Int
     sent === nothing && throw(AttachmentURLExpiredError(; key, expires, detail = outlasted))
     sent.status == 200 && return true
     sent.status == 412 && return false
-    where = bare_url(reply.url)
+    where = url_without_query(reply.url)
     is_bad_digest(sent.status, sent.body) &&
         throw(AttachmentChangedError(; key, detail = "S3 at $where answered BadDigest"))
     expired = expired_detail(size, reply, started, deadline)
@@ -225,7 +225,7 @@ end
 # at the S3 half's own object URL. A URL with no query carries no signature.
 function check_minted_url(store::GatewayObjectStore, key::String, url::String)
     expected = expected_attachment_url(store, key)
-    where = bare_url(url)
+    where = url_without_query(url)
     where == expected || throw(
         GatewayMismatchError(;
             key, bucket = store.s3.bucket, gateway = store.function_url,

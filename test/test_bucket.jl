@@ -1,6 +1,6 @@
 using Test
-using ChainTables: ChainTables, Bucket, Chain, Credentials, GatewayObjectStore,
-    S3ObjectStore, create_chain, sso_login
+using ChainTables: ChainTables, Bucket, Chain, Credentials, CredentialsError,
+    GatewayObjectStore, S3ObjectStore, create_chain, sso_login
 using ChainTables.Testing: InMemoryObjectStore
 
 const URL = "https://abc123.lambda-url.eu-north-1.on.aws"
@@ -40,7 +40,7 @@ const REFUSED_BUCKETS = [
     (name = "empty", make = () -> Bucket(""), says = "the bucket name is empty"),
     (
         name = "dotted", make = () -> Bucket("my.bucket"),
-        says = "bucket name \"my.bucket\" contains a dot, which breaks certificate",
+        says = "bucket name \"my.bucket\" contains a dot",
     ),
     (
         name = "region against URL",
@@ -140,7 +140,7 @@ end
     mktempdir() do dir
         store = InMemoryObjectStore()
         chain = Chain(b, "exp/run-1"; store, cache_dir = joinpath(dir, "cache"))
-        @test chain isa Chain{InMemoryObjectStore} && chain.store === store
+        @test chain isa Chain{<:InMemoryObjectStore} && chain.store === store
         @test create_chain(chain).slot == 0
         @test haskey(store.objects, "exp/run-1/000000000000")
     end
@@ -156,10 +156,10 @@ const PROFILED =
             chain = Chain(PROFILED, "p"; store, cache_dir = "/c")
             @test chain.credentials isa Function
             says = "aws sso login --profile $NO_SUCH_PROFILE"
-            @test_throws ArgumentError says chain.credentials()
-            @test_throws ArgumentError says Chain(PROFILED, "p"; cache_dir = "/c")
+            @test_throws CredentialsError says chain.credentials()
+            @test_throws CredentialsError says Chain(PROFILED, "p"; cache_dir = "/c")
             mine = Chain(PROFILED, "p"; store, cache_dir = "/c", profile = "mine")
-            @test_throws ArgumentError "aws sso login --profile mine" mine.credentials()
+            @test_throws CredentialsError "aws sso login --profile mine" mine.credentials()
         end
     end
 end

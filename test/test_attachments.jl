@@ -280,7 +280,7 @@ end
         @test e isa TransportError
         @test e.status == 403
         url = "$(s3test_endpoint(server))/bkt/$key"
-        @test occursin("PUT $url: HTTP 403 AccessDenied", sprint(showerror, e))
+        @test occursin("PUT $url: AccessDenied", sprint(showerror, e))
     end
 end
 

@@ -36,7 +36,7 @@ Open the local copy at `path` for `chain`. No network I/O, no replay, nothing ha
 
 An absent or empty directory becomes a fresh, unbound copy. Otherwise the highest head
 that is self-consistent and whose table files all exist is chosen, else the next lower
-one, with a warning. Throws `NotALocalCopyError`, `LocalCopyInconsistentError`,
+one, silently. Throws `NotALocalCopyError`, `LocalCopyInconsistentError`,
 `WrongChainError` or `LayoutVersionError`. Then every other head, every table file the
 head does not name, and every `.tmp` are deleted. `Base.open` is not extended: call it
 qualified, `ChainTables.open`.
@@ -53,8 +53,6 @@ function open(chain, path::AbstractString)
     copy.head = choose_head(copy, expected_chain_id(chain))
     copy.tables = head_tables(copy.head)
     sweep!(copy)
-    # ADR-0016: open warns about a store that is not AWS, commit! refuses it.
-    warn_unsupported_store(chain)
     return copy
 end
 
@@ -202,10 +200,7 @@ function choose_head(copy::LocalCopy, expected)
     reasons = String[]
     for name in names
         found = usable_head(copy, name, expected)
-        if found isa Head
-            isempty(reasons) || warn_fall_back(copy, last(reasons), found, first(names))
-            return found
-        end
+        found isa Head && return found
         push!(reasons, found)
     end
     throw(
@@ -253,14 +248,6 @@ end
 function missing_table_reason(file, (name, hash))
     return "head $file names table file tables/$(bytes2hex(hash)) " *
         "(table $(repr(name))), which is missing"
-end
-
-# BLOCKED: the Guide forbids @warn in src/; open's fall-back to a lower head is reported
-# this way until a non-warning channel is chosen.
-function warn_fall_back(copy::LocalCopy, reason, h::Head, swept)
-    @warn "$reason; opening the local copy at $(copy.path) at slot $(h.slot) " *
-        "and sweeping heads/$swept"
-    return nothing
 end
 
 """

@@ -1,4 +1,6 @@
 using Test
+using ExplicitImports: check_all_explicit_imports_are_public,
+    check_all_qualified_accesses_are_public
 using ChainTables: ChainTables, Chain, as_of, column!, commit!, create_chain,
     create_table!, head, insert_rows!, is_pinned, primary_key!, slot_at, sync!, table,
     write_builder
@@ -40,4 +42,9 @@ end
         now_ms = round(Int64, time() * 1000)
         @test slot_at(chain, now_ms) == 2
     end
+end
+
+@testset "the examples use only public names" begin
+    @test check_all_explicit_imports_are_public(@__MODULE__, @__FILE__) === nothing
+    @test check_all_qualified_accesses_are_public(@__MODULE__, @__FILE__) === nothing
 end

@@ -7,6 +7,7 @@ using ChainTables: ChainTables, AbstractObjectStore, Chain, ChainNotFoundError,
 using ChainTables.Testing: InMemoryObjectStore
 
 include("fixtures/chains.jl")
+include("fixtures/seeded_chains.jl")
 
 const CT = ChainTables
 
@@ -21,61 +22,6 @@ function ChainTables.fetch_object(s::AsOfTestNoGenesis, key)
     return ChainTables.fetch_object(s.inner, key)
 end
 ChainTables.stat_object(s::AsOfTestNoGenesis, key) = ChainTables.stat_object(s.inner, key)
-
-function chain_over(store, cache_dir, prefix = "p")
-    return Chain("bkt", prefix; store, cache_dir, record_host = false, record_user = false)
-end
-
-function with_copy(f, chain, path)
-    copy = CT.open(chain, path)
-    try
-        f(copy)
-    finally
-        close(copy)
-    end
-    return nothing
-end
-
-function create_keyed!(w, name)
-    create_table!(w, name) do t
-        column!(t, :k, Int64)
-        primary_key!(t, :k)
-    end
-    insert_rows!(w, name, [(k = 1,), (k = 2,)])
-    return nothing
-end
-
-# Samples at slot 1; tags and its twin at slot 2; an update at slot 3.
-function commit_three!(copy)
-    w = write_builder(copy)
-    create_table!(w, :samples) do t
-        column!(t, :id, Int64)
-        column!(t, :label, String)
-        column!(t, :mass, Float64; nullable = true)
-        primary_key!(t, :id)
-    end
-    insert_rows!(w, :samples, SAMPLE_ROWS)
-    r1 = commit!(w; comment = "first samples")
-    w = write_builder(copy)
-    foreach(name -> create_keyed!(w, name), (:tags, :twin))
-    r2 = commit!(w)
-    w = write_builder(copy)
-    update_rows!(w, :samples, [(id = 2, mass = 2.5)])
-    return [r1, r2, commit!(w)]
-end
-
-function with_seeded(f)
-    mktempdir() do dir
-        store = InMemoryObjectStore()
-        chain = chain_over(store, joinpath(dir, "cache"))
-        create_chain(chain)
-        with_copy(chain, joinpath(dir, "one")) do copy
-            sync!(copy)
-            f(dir, store, chain, copy, commit_three!(copy))
-        end
-    end
-    return nothing
-end
 
 function with_as_of(f, chain, target; kw...)
     copy = as_of(chain, target; kw...)
@@ -96,7 +42,7 @@ end
 cached(chain, s) = CT.record_path(chain, slotkey(s))
 
 @testset "as_of a slot is a temporary pinned copy that close deletes" begin
-    with_seeded() do dir, store, chain, copy, rs
+    with_seeded(commit_three!) do dir, store, chain, copy, rs
         old = as_of(chain, 1)
         @test old isa LocalCopy && old.temporary && is_pinned(old)
         @test head(old) == (; slot = 1, rs[1].transaction_hash, rs[1].state_fingerprint)
@@ -112,7 +58,7 @@ cached(chain, s) = CT.record_path(chain, slotkey(s))
 end
 
 @testset "as_of a transaction hash leaves the live copy alone" begin
-    with_seeded() do dir, store, chain, copy, rs
+    with_seeded(commit_three!) do dir, store, chain, copy, rs
         with_as_of(chain, rs[2].transaction_hash) do old
             @test head(old).slot == 2 && tables(old) == ["samples", "tags", "twin"]
         end
@@ -145,13 +91,13 @@ const BAD_TARGETS = [
 ]
 
 @testset "as_of refuses $(case.name)" for case in BAD_TARGETS
-    with_seeded() do dir, store, chain, copy, rs
+    with_seeded(commit_three!) do dir, store, chain, copy, rs
         @test_throws ArgumentError case.msg as_of(chain, case.target(rs))
     end
 end
 
 @testset "as_of a prefix with no slot 0 is ChainNotFoundError" begin
-    with_seeded() do dir, store, chain, copy, rs
+    with_seeded(commit_three!) do dir, store, chain, copy, rs
         none = chain_over(store, chain.cache.dir, "none")
         @test_throws ChainNotFoundError "no chain" as_of(none, 0)
         @test_throws ChainNotFoundError "no chain" as_of(none, 2)
@@ -161,7 +107,7 @@ end
 end
 
 @testset "as_of leaves no directory where it failed before a checkpoint" begin
-    with_seeded() do dir, store, chain, copy, rs
+    with_seeded(commit_three!) do dir, store, chain, copy, rs
         refused = joinpath(dir, "refused")
         @test_throws ArgumentError "has no slot 9" as_of(chain, 9; path = refused)
         @test !ispath(refused)
@@ -174,7 +120,7 @@ end
 end
 
 @testset "as_of reopens a given path pinned at the target, asking only for its slot" begin
-    with_seeded() do dir, store, chain, copy, rs
+    with_seeded(commit_three!) do dir, store, chain, copy, rs
         path = joinpath(dir, "pinned")
         with_as_of(chain, 2; path) do a
             @test !a.temporary && a.path == abspath(path) && is_pinned(a)
@@ -191,7 +137,7 @@ end
 end
 
 @testset "as_of replays a given path pinned below the target forward" begin
-    with_seeded() do dir, store, chain, copy, rs
+    with_seeded(commit_three!) do dir, store, chain, copy, rs
         path = joinpath(dir, "pinned")
         with_as_of(a -> nothing, chain, 1; path)
         with_as_of(chain, 3; path) do a
@@ -201,7 +147,7 @@ end
 end
 
 @testset "as_of refuses a path pinned above the target, or live" begin
-    with_seeded() do dir, store, chain, copy, rs
+    with_seeded(commit_three!) do dir, store, chain, copy, rs
         path = joinpath(dir, "pinned")
         with_as_of(a -> nothing, chain, 3; path)
         msg = "is pinned at slot 3, above 1"
@@ -214,7 +160,7 @@ end
 end
 
 @testset "as_of and unpin! make a copy live that sync! advances" begin
-    with_seeded() do dir, store, chain, copy, rs
+    with_seeded(commit_three!) do dir, store, chain, copy, rs
         with_as_of(chain, 1; path = joinpath(dir, "unpin")) do a
             @test unpin!(a) === nothing && !is_pinned(a)
             @test sync!(a) == (; applied = 2, slot = 3, rs[3].transaction_hash)
@@ -227,7 +173,7 @@ end
 end
 
 @testset "as_of verifies the record it builds to" begin
-    with_seeded() do dir, store, chain, copy, rs
+    with_seeded(commit_three!) do dir, store, chain, copy, rs
         lie = with_fingerprint(store.objects[slotkey(2)], 2, fill(0xee, 32))
         plant!(store, slotkey(2), lie)
         write(cached(chain, 2), lie)
@@ -258,7 +204,7 @@ function pin_onto_lie!(path, lie)
 end
 
 @testset "as_of verifies the record a reopened path claims" begin
-    with_seeded() do dir, store, chain, copy, rs
+    with_seeded(commit_three!) do dir, store, chain, copy, rs
         path = joinpath(dir, "pinned")
         with_as_of(a -> nothing, chain, 3; path)
         lie = with_fingerprint(store.objects[slotkey(3)], 3, fill(0xee, 32))
@@ -274,7 +220,7 @@ end
 end
 
 @testset "as_of refuses a path bound to another chain" begin
-    with_seeded() do dir, store, chain, copy, rs
+    with_seeded(commit_three!) do dir, store, chain, copy, rs
         path = joinpath(dir, "pinned")
         with_as_of(a -> nothing, chain, 1; path)
         chainq = Chain("bkt", "q"; store, cache_dir = joinpath(dir, "qcache"))
@@ -285,7 +231,7 @@ end
 end
 
 @testset "as_of infers" begin
-    with_seeded() do dir, store, chain, copy, rs
+    with_seeded(commit_three!) do dir, store, chain, copy, rs
         with_as_of(a -> nothing, chain, 1)
         old = @inferred as_of(chain, 1)
         close(old)

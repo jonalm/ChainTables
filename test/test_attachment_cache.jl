@@ -1,13 +1,13 @@
 using Test
 using ChainTables: ChainTables, AttachmentAbsentError, AttachmentCacheError,
-    AttachmentDigestError, Chain, GatewayObjectStore, TransportError, attachment,
+    AttachmentDigestError, Chain, TransportError, attachment,
     put_attachment
 using SHA: sha256
 using StableRNGs: StableRNG
 
 include("fixtures/attachments.jl")
 include("fixtures/s3_server.jl")
-include("fixtures/gateway_double.jl")
+include("fixtures/gateway_server.jl")
 
 const BYTES = rand(StableRNG(5), UInt8, 5000)
 const HASH = bytes2hex(sha256(BYTES))
@@ -316,19 +316,10 @@ end
 end
 
 @testset "attachment on a gateway chain reads the bucket and never the gateway" begin
-    s3 = S3TestServer(; bucket = "bkt", credentials = GWTEST_CREDS)
-    policy = ["exp" => ["alice@example.com"]]
     alice = "alice@example.com"
-    double = GatewayDouble(s3, GWTEST_CREDS, "eu-north-1", alice, policy, _ -> nothing)
-    gw = LoopbackServer(double)
-    sts = LoopbackServer(gwtest_sts(GWTEST_CREDS, "eu-north-1", GWTEST_ARN))
-    try
+    doubles = (GWTEST_CREDS, alice, ["exp" => [alice]])
+    with_gateway_doubles(doubles...; arn = GWTEST_ARN) do (; s3, gw, store)
         mktempdir() do dir
-            store = GatewayObjectStore(
-                "bkt", loopback_url(gw); region = "eu-north-1", credentials = GWTEST_CREDS,
-                endpoint = s3test_endpoint(s3), path_style = true,
-                sts_endpoint = loopback_url(sts)
-            )
             cache_dir = joinpath(dir, "cache")
             assume_first_writer_wins = true
             chain = Chain("bkt", "exp/run-1"; store, cache_dir, assume_first_writer_wins)
@@ -350,9 +341,5 @@ end
             @test_throws AttachmentAbsentError "lacks it" attachment(copy, absent)
             @test isempty(gw.requests)
         end
-    finally
-        close(gw)
-        close(sts)
-        close(s3)
     end
 end

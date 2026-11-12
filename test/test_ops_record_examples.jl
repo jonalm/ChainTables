@@ -1,4 +1,6 @@
 using Test
+using ExplicitImports: check_all_explicit_imports_are_public,
+    check_all_qualified_accesses_are_public
 using ChainTables: Ops
 
 @testset "Client example" begin
@@ -15,4 +17,9 @@ end
     genesis = Ops.Record(chain_id, 0, nothing, fill(0x02, 32), client, nothing, [])
     @test genesis.slot == 0
     @test isempty(genesis.ops)
+end
+
+@testset "the examples use only public names" begin
+    @test check_all_explicit_imports_are_public(@__MODULE__, @__FILE__) === nothing
+    @test check_all_qualified_accesses_are_public(@__MODULE__, @__FILE__) === nothing
 end

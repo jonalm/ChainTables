@@ -5,26 +5,11 @@ using ChainTables: ChainTables, Chain, MalformedRecordError, RewrittenChainError
 using ChainTables.Testing: InMemoryObjectStore
 
 include("fixtures/chains.jl")
+include("fixtures/seeded_chains.jl")
 
 # read_forward is internal: sync!, as_of and slot_at read through it. Its keep_bytes
 # limit and its parent Guard are reached only by calling it.
 const CT = ChainTables
-
-function chain_over(store, cache_dir; kw...)
-    return Chain(
-        "bkt", "p"; store, cache_dir, record_host = false, record_user = false, kw...
-    )
-end
-
-function with_copy(f, chain, path)
-    copy = CT.open(chain, path)
-    try
-        f(copy)
-    finally
-        close(copy)
-    end
-    return nothing
-end
 
 function plant!(store, key, bytes)
     store.objects[key] = bytes

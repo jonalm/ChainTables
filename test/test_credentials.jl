@@ -47,8 +47,9 @@ const UNSET_CASES = [
 
 @testset "Chain refuses an environment without keys: $(case.name)" for case in UNSET_CASES
     withenv(case.env...) do
-        @test_throws CredentialsError case.says Chain("bkt", "p"; region = "eu-north-1")
-        @test_throws CredentialsError "aws-vault exec" Chain("bkt", "p"; region = "eu-north-1")
+        make = () -> Chain("bkt", "p"; region = "eu-north-1")
+        @test_throws CredentialsError case.says make()
+        @test_throws CredentialsError "aws-vault exec" make()
     end
 end
 

@@ -9,11 +9,23 @@ using ExplicitImports: check_all_explicit_imports_are_public,
     Aqua.test_all(ChainTables)
 end
 
+# Tables.jl declares none of its interface public, and Downloads.Curl's options are the
+# only way to refuse redirects and set a streamed transfer's stall and deadline limits.
+const NON_PUBLIC_ACCESSES = (
+    :Schema, :columnaccess, :columns, :istable, :rowaccess, :rows, :schema,
+    :Curl, :setopt, :CURLOPT_FOLLOWLOCATION, :CURLOPT_LOW_SPEED_LIMIT,
+    :CURLOPT_LOW_SPEED_TIME, :CURLOPT_TIMEOUT_MS,
+)
+
+function check_qualified_accesses(m)
+    return check_all_qualified_accesses_are_public(m; ignore = NON_PUBLIC_ACCESSES)
+end
+
 const EXPLICIT_IMPORT_CHECKS = [
     (name = "no implicit imports", check = check_no_implicit_imports),
     (name = "no stale explicit imports", check = check_no_stale_explicit_imports),
     (name = "explicit imports via owners", check = check_all_explicit_imports_via_owners),
-    (name = "qualified accesses are public", check = check_all_qualified_accesses_are_public),
+    (name = "qualified accesses are public", check = check_qualified_accesses),
     (name = "explicit imports are public", check = check_all_explicit_imports_are_public),
 ]
 

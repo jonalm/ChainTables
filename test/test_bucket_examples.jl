@@ -1,4 +1,6 @@
 using Test
+using ExplicitImports: check_all_explicit_imports_are_public,
+    check_all_qualified_accesses_are_public
 using ChainTables: ChainTables, Bucket, Chain, Credentials, sso_login
 
 @testset "Bucket example" begin
@@ -11,4 +13,9 @@ using ChainTables: ChainTables, Bucket, Chain, Credentials, sso_login
     credentials = Credentials("AKIAEXAMPLE", "secret")
     chain = Chain(bucket, "exp/run-1"; credentials, cache_dir = "/c")
     @test chain.bucket == "bkt" && chain.region == "eu-north-1"
+end
+
+@testset "the examples use only public names" begin
+    @test check_all_explicit_imports_are_public(@__MODULE__, @__FILE__) === nothing
+    @test check_all_qualified_accesses_are_public(@__MODULE__, @__FILE__) === nothing
 end

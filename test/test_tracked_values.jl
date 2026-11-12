@@ -113,7 +113,7 @@ end
 
 @testset "no deployment value in the tracked tree" begin
     root = dirname(@__DIR__)
-    @test isdir(joinpath(root, ".git"))              # the tripwire needs a git checkout
+    @test ispath(joinpath(root, ".git"))              # the tripwire needs a git checkout
     files = readlines(`git -C $root ls-files`)
     @test !isempty(files)
     hits = reduce(vcat, [file_hits(root, path) for path in files]; init = String[])

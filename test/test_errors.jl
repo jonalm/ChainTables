@@ -1,8 +1,9 @@
 using Test
 using ChainTables: ChainTables, ChainNotFoundError, ChainTablesError,
-    CommitOutcomeUnknownError, GatewayMismatchError, LostRaceError, MalformedRecordError,
-    RewrittenChainError, StaleHeadError, StateFingerprint, TransactionHash, TransportError, CredentialsError,
-    UnsupportedStoreError, WriteBuilderError, WriteRefusedError
+    CommitOutcomeUnknownError, CredentialsError, GatewayMismatchError, LostRaceError,
+    MalformedRecordError, RewrittenChainError, StaleHeadError, StateFingerprint,
+    TransactionHash, TransportError, UnsupportedStoreError, WriteBuilderError,
+    WriteRefusedError
 
 const ZEROS = zeros(UInt8, 32)
 const ONES = ones(UInt8, 32)

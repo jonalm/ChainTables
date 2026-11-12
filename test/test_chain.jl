@@ -1,5 +1,6 @@
 using Test
-using ChainTables: ChainTables, Chain, cache_namespace, create_chain, put_object_if_absent
+using ChainTables: ChainTables, Chain, CredentialsError, cache_namespace, create_chain,
+    put_object_if_absent
 using ChainTables.Testing: InMemoryObjectStore
 
 include("fixtures/chains.jl")
@@ -9,7 +10,7 @@ const CT = ChainTables
 @testset "Chain holds location and configuration, and does no I/O" begin
     store = InMemoryObjectStore()
     chain = Chain("bkt", "exp/run-7"; store, cache_dir = "/c", region = "eu-north-1")
-    @test chain isa Chain{InMemoryObjectStore}
+    @test chain isa Chain{<:InMemoryObjectStore}
     @test (chain.bucket, chain.prefix, chain.region) == ("bkt", "exp/run-7", "eu-north-1")
     @test chain.read_ahead == 8 && !chain.assume_first_writer_wins && !chain.path_style
     @test chain.endpoint === nothing && chain.credentials === nothing
@@ -131,14 +132,14 @@ end
 @testset "Chain with no store needs credentials for the S3 client" begin
     withenv("AWS_ACCESS_KEY_ID" => nothing, "AWS_SECRET_ACCESS_KEY" => nothing) do
         msg = "AWS_ACCESS_KEY_ID"
-        @test_throws ArgumentError msg Chain("bkt", "p"; region = "eu-north-1")
+        @test_throws CredentialsError msg Chain("bkt", "p"; region = "eu-north-1")
     end
 end
 
 @testset "Chain infers" begin
     store = InMemoryObjectStore()
     chain = @inferred Chain("bkt", "p"; store, cache_dir = "/c")
-    @test chain isa Chain{InMemoryObjectStore}
+    @test chain isa Chain{<:InMemoryObjectStore}
 end
 
 # gallop's probes are visible only on the store's calls; sync! adds its own fetches.

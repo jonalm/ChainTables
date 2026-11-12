@@ -1,5 +1,6 @@
 using Test
-using ChainTables: ChainTables, Credentials, CredentialsError, S3ObjectStore, sso_credentials, sso_login
+using ChainTables: ChainTables, Credentials, CredentialsError, S3ObjectStore,
+    sso_credentials, sso_login
 
 const T0 = 1255369800.0 # 2009-10-12T17:50:00Z
 
@@ -113,7 +114,8 @@ end
     mktempdir() do dir
         withenv("PATH" => dir) do
             get_credentials = sso_credentials("team")
-            @test_throws CredentialsError "the AWS CLI (aws) is not on PATH" get_credentials()
+            says = "the AWS CLI (aws) is not on PATH"
+            @test_throws CredentialsError says get_credentials()
         end
     end
 end
