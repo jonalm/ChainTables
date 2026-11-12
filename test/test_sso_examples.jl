@@ -1,0 +1,19 @@
+using Test
+using ChainTables: ChainTables, Chain, sso_credentials, sso_login
+
+@testset "sso_credentials example" begin
+    # After `aws sso login --profile team`, the CLI's cached session signs every request.
+    # A fake CLI stands in here, so nothing is run.
+    printed = "AWS_ACCESS_KEY_ID=AKIA1\nAWS_SECRET_ACCESS_KEY=s\n"
+    fake_cli = profile -> (; ok = true, text = printed)
+    credentials = sso_credentials("team"; exporter = fake_cli)
+    chain = Chain("bkt", "exp/run-1"; region = "eu-north-1", credentials, cache_dir = "/c")
+    @test chain.credentials().access_key_id == "AKIA1"
+end
+
+@testset "sso_login example" begin
+    # Logs in with the AWS CLI, which opens a browser; `runner` stands in for the CLI here.
+    ran = Cmd[]
+    sso_login("team"; device_code = true, runner = cmd -> push!(ran, cmd))
+    @test only(ran) == `aws sso login --profile team --use-device-code`
+end

@@ -5,7 +5,8 @@ sequence of records in an S3 bucket. Terms: see `CONTEXT.md`.
 module ChainTables
 
 using Base64: Base64
-using SHA: SHA, sha256
+using Downloads: Downloads
+using SHA: SHA, hmac_sha256, sha256
 using Tables: Tables
 
 public AbstractObjectStore, AttachmentAbsentError, AttachmentCacheError,
@@ -54,9 +55,16 @@ include("views.jl")
 include("store.jl")      # steps 6, 7
 include("chain.jl")      # step 7: Chain, create_chain, sync!, commit!
 include("recovery.jl")   # step 8: verify, repair!, as_of, slot_at (ADR-0014, ADR-0015)
-include("s3.jl")         # step 9
-include("gateway.jl")    # ADR-0028: GatewayObjectStore, the author from STS, the 4 MiB cap
-include("bucket.jl")     # ADR-0029: Bucket, Chain(bucket, prefix)
+include("credentials.jl")
+include("sso.jl")
+include("dates.jl")
+include("sigv4.jl")
+include("http.jl")
+include("s3_store.jl")
+include("gateway.jl")
+include("gateway_reply.jl")
+include("gateway_author.jl")
+include("bucket.jl")
 include("attachments.jl")
 include("gateway_attachments.jl")
 include("attachment_cache.jl")

@@ -1,16 +1,30 @@
-# Shared by test/s3.jl and test/gateway.jl (offline suite only): the loopback S3. Included
-# once, by test/runtests.jl, ahead of both.
-using Sockets
-using SHA: sha256
-import ChainTables
-using ChainTables: Credentials
-const S3T = ChainTables
+# A minimal S3 over HTTP/1.1 on a loopback port, so no test reaches AWS: path-style, one
+# connection per request, every signature recomputed and refused with 403 when it
+# differs. `respond(req)` returns `(status, headers, body)` to script a reply, or
+# `nothing` for the default. Tests use it through `with_s3_server`.
 
-# ---------------------------------------------------------------------------
-# A minimal S3 over HTTP/1.1 on a loopback port: path-style, one connection per
-# request, every request's signature recomputed and refused with 403 when it differs.
-# `respond(req)` returns `(status, headers, body)` to script a failure, or `nothing`.
-# ---------------------------------------------------------------------------
+using ChainTables: ChainTables, Credentials
+using SHA: sha256
+using Sockets: Sockets, @ip_str, accept, getsockname, listen
+
+const S3TEST_WEEKDAYS = ("Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed") # 1970-01-01: Thu
+const S3TEST_MONTHS =
+    ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+const S3TEST_AUTHORIZATION = Regex(
+    "^AWS4-HMAC-SHA256 Credential=([^/]+)/(\\d{8})/([^/]+)/s3/aws4_request, " *
+        "SignedHeaders=([^,]+), Signature=([0-9a-f]{64})\$"
+)
+
+const S3TEST_PRECONDITION =
+    "At least one of the pre-conditions you specified did not hold"
+
+"""
+    S3TestServer
+
+The loopback S3's state: its objects, every request it received, the presigned PUTs a
+minter granted, and the scripted `respond` and listing `page_size` a test may set.
+"""
 mutable struct S3TestServer
     const server::Sockets.TCPServer
     const port::Int
@@ -20,7 +34,8 @@ mutable struct S3TestServer
     const objects::Dict{String, Vector{UInt8}}
     const modified::Dict{String, Int64}
     const requests::Vector{Any}
-    const presigned::Dict{String, Any}     # X-Amz-Signature => (; key, headers, expires): what a minter granted
+    # X-Amz-Signature => (; key, headers, expires): what a minter granted
+    const presigned::Dict{String, Any}
     respond::Any
     page_size::Int
 end
@@ -29,196 +44,302 @@ function S3TestServer(; bucket, credentials, region = "eu-north-1", page_size = 
     server = listen(ip"127.0.0.1", 0)
     port = Int(getsockname(server)[2])
     s = S3TestServer(
-        server, port, bucket, region, credentials, Dict{String, Vector{UInt8}}(), Dict{String, Int64}(), Any[],
-        Dict{String, Any}(), _ -> nothing, page_size
+        server, port, bucket, region, credentials, Dict{String, Vector{UInt8}}(),
+        Dict{String, Int64}(), Any[], Dict{String, Any}(), Returns(nothing), page_size
     )
-    @async try
-        while isopen(server)
-            sock = accept(server)
-            @async try
-                s3test_handle(s, sock)
-            catch e
-                @error "S3TestServer" exception = (e, catch_backtrace())
-            finally
-                close(sock)
-            end
-        end
-    catch e
-        isopen(server) && rethrow()
-    end
+    errormonitor(@async serve_connections(server, sock -> s3test_handle(s, sock)))
     return s
 end
+
 Base.close(s::S3TestServer) = close(s.server)
+
+"""
+    with_s3_server(f; bucket, credentials, region = "eu-north-1", page_size = 1000)
+
+Return `f(server)` for a fresh `S3TestServer`, closed afterwards.
+"""
+function with_s3_server(f; kw...)
+    server = S3TestServer(; kw...)
+    return try
+        f(server)
+    finally
+        close(server)
+    end
+end
+
 s3test_endpoint(s::S3TestServer) = "http://127.0.0.1:$(s.port)"
+
+# Accept until the server closes; each connection is served in its own task, whose
+# failure `errormonitor` prints rather than hides.
+function serve_connections(server, handle)
+    while isopen(server)
+        sock = accept_or_nothing(server)
+        sock === nothing && return nothing
+        errormonitor(@async serve_connection(handle, sock))
+    end
+    return nothing
+end
+
+function accept_or_nothing(server)
+    return try
+        accept(server)
+    catch e
+        e isa Base.IOError || rethrow()
+        isopen(server) && rethrow()
+        nothing
+    end
+end
+
+function serve_connection(handle, sock)
+    return try
+        handle(sock)
+    finally
+        close(sock)
+    end
+end
+
+"""
+    read_request(sock)
+
+Return one HTTP/1.1 request from `sock` as `(; method, rawpath, path, rawquery, query,
+headers, body)`, or `nothing` when the peer sent nothing.
+"""
+function read_request(sock)
+    line = readline(sock)
+    isempty(line) && return nothing
+    method, target, _ = split(line, ' ')
+    headers = read_headers(sock)
+    get(headers, "expect", "") == "100-continue" &&
+        write(sock, "HTTP/1.1 100 Continue\r\n\r\n")
+    body = read(sock, parse(Int, get(headers, "content-length", "0")))
+    rawpath, rawquery = occursin('?', target) ? split(target, '?'; limit = 2) : (target, "")
+    query = map(query_pair, split(rawquery, '&'; keepempty = false))
+    return (;
+        method = String(method), rawpath = String(rawpath),
+        path = s3test_percent_decode(rawpath), rawquery = String(rawquery), query, headers,
+        body,
+    )
+end
+
+function read_headers(sock)
+    headers = Dict{String, String}()
+    while (line = readline(sock)) != ""
+        name, value = split(line, ":"; limit = 2)
+        headers[lowercase(name)] = strip(value)
+    end
+    return headers
+end
+
+function query_pair(parameter)
+    name_value = split(parameter, '='; limit = 2)
+    return s3test_percent_decode(first(name_value)) =>
+        s3test_percent_decode(get(name_value, 2, ""))
+end
+
+function write_response(sock, method, (status, headers, body))
+    write(sock, "HTTP/1.1 $status $(status == 200 ? "OK" : "Error")\r\n")
+    foreach(((name, value),) -> write(sock, "$name: $value\r\n"), headers)
+    write(sock, "content-length: $(length(body))\r\nconnection: close\r\n\r\n")
+    method == "HEAD" || write(sock, body)
+    flush(sock)
+    return nothing
+end
+
+function s3test_handle(s::S3TestServer, sock)
+    req = read_request(sock)
+    req === nothing && return nothing
+    push!(s.requests, req)
+    # `respond` is assigned after the accept task started.
+    scripted = Base.invokelatest(s.respond, req)
+    reply = scripted === nothing ? s3test_default(s, req) : scripted
+    write_response(sock, req.method, reply)
+    return nothing
+end
 
 function s3test_percent_decode(s::AbstractString)
     out = UInt8[]
     bytes = codeunits(s)
     i = 1
     while i <= length(bytes)
-        if bytes[i] == UInt8('%') && i + 2 <= length(bytes)
-            push!(out, parse(UInt8, String(bytes[(i + 1):(i + 2)]); base = 16)); i += 3
-        else
-            push!(out, bytes[i]); i += 1
-        end
+        is_escape = bytes[i] == UInt8('%') && i + 2 <= length(bytes)
+        push!(out, is_escape ? hex_byte(bytes, i) : bytes[i])
+        i += is_escape ? 3 : 1
     end
     return String(out)
 end
 
-s3test_xml_escape(s) = replace(s, "&" => "&amp;", "<" => "&lt;", ">" => "&gt;", "\"" => "&quot;")
+hex_byte(bytes, i) = parse(UInt8, String(bytes[(i + 1):(i + 2)]); base = 16)
 
-const S3TEST_WEEKDAYS = ("Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed")      # 1970-01-01 was a Thursday
-const S3TEST_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+function s3test_xml_escape(s)
+    return replace(s, "&" => "&amp;", "<" => "&lt;", ">" => "&gt;", "\"" => "&quot;")
+end
+
+function s3test_clock(t::Integer)
+    days, secs = fldmod(Int64(t), 86400)
+    y, m, d = ChainTables.civil_from_days(days)
+    h, rest = fldmod(secs, 3600)
+    mi, s = fldmod(rest, 60)
+    return (; days, y, m, d, hms = join(map(x -> string(x; pad = 2), (h, mi, s)), ':'))
+end
+
 function s3test_http_date(t::Integer)
-    days, secs = fldmod(Int64(t), 86400)
-    y, m, d = S3T.civil_from_days(days)
-    h, r = fldmod(secs, 3600); mi, s = fldmod(r, 60)
-    return "$(S3TEST_WEEKDAYS[mod(days, 7) + 1]), $(string(d; pad = 2)) $(S3TEST_MONTHS[m]) $y " *
-        "$(string(h; pad = 2)):$(string(mi; pad = 2)):$(string(s; pad = 2)) GMT"
+    c = s3test_clock(t)
+    weekday = S3TEST_WEEKDAYS[mod(c.days, 7) + 1]
+    return "$weekday, $(string(c.d; pad = 2)) $(S3TEST_MONTHS[c.m]) $(c.y) $(c.hms) GMT"
 end
+
 function s3test_iso_date(t::Integer)
-    days, secs = fldmod(Int64(t), 86400)
-    y, m, d = S3T.civil_from_days(days)
-    h, r = fldmod(secs, 3600); mi, s = fldmod(r, 60)
-    return "$y-$(string(m; pad = 2))-$(string(d; pad = 2))T$(string(h; pad = 2)):$(string(mi; pad = 2)):$(string(s; pad = 2)).000Z"
+    c = s3test_clock(t)
+    return "$(c.y)-$(string(c.m; pad = 2))-$(string(c.d; pad = 2))T$(c.hms).000Z"
 end
 
-s3test_error(code, message) = Vector{UInt8}(
-    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Error><Code>$code</Code>" *
-        "<Message>$message</Message></Error>"
-)
+function s3test_error(code, message)
+    return Vector{UInt8}(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Error><Code>$code</Code>" *
+            "<Message>$message</Message></Error>"
+    )
+end
 
-function s3test_handle(s::S3TestServer, sock)
-    line = readline(sock)
-    isempty(line) && return nothing
-    method, target, _ = split(line, ' ')
-    headers = Dict{String, String}()
-    while (h = readline(sock)) != ""
-        k, v = split(h, ":"; limit = 2)
-        headers[lowercase(k)] = strip(v)
-    end
-    get(headers, "expect", "") == "100-continue" && write(sock, "HTTP/1.1 100 Continue\r\n\r\n")
-    len = parse(Int, get(headers, "content-length", "0"))
-    body = len > 0 ? read(sock, len) : UInt8[]
-    rawpath, rawquery = occursin('?', target) ? split(target, '?'; limit = 2) : (target, "")
-    query = Pair{String, String}[
-        s3test_percent_decode(first(kv)) => s3test_percent_decode(get(kv, 2, ""))
-            for kv in (split(p, '='; limit = 2) for p in split(rawquery, '&'; keepempty = false))
-    ]
-    req = (; method = String(method), rawpath = String(rawpath), path = s3test_percent_decode(rawpath), query, headers, body)
-    push!(s.requests, req)
-    scripted = Base.invokelatest(s.respond, req)          # `respond` is assigned after the accept task started
-    status, rheaders, rbody = scripted === nothing ? s3test_default(s, req) : scripted
-    write(sock, "HTTP/1.1 $status $(status == 200 ? "OK" : "Error")\r\n")
-    for (k, v) in rheaders
-        write(sock, "$k: $v\r\n")
-    end
-    write(sock, "content-length: $(length(rbody))\r\nconnection: close\r\n\r\n")
-    method == "HEAD" || write(sock, rbody)
-    flush(sock)
-    return nothing
+function s3test_refusal(status, code, message)
+    return (status, Pair{String, String}[], s3test_error(code, message))
 end
 
 # The signature the request should carry, recomputed from what was received.
 function s3test_check_signature(s::S3TestServer, req)
-    auth = get(req.headers, "authorization", "")
-    m = match(r"^AWS4-HMAC-SHA256 Credential=([^/]+)/(\d{8})/([^/]+)/s3/aws4_request, SignedHeaders=([^,]+), Signature=([0-9a-f]{64})$", auth)
-    m === nothing && return (403, [], s3test_error("AccessDenied", "malformed Authorization header $(repr(auth))"))
+    m = match(S3TEST_AUTHORIZATION, get(req.headers, "authorization", ""))
+    m === nothing && return s3test_refusal(403, "AccessDenied", "malformed Authorization")
     id, datestamp, region, signed, signature = m.captures
-    id == s.credentials.access_key_id || return (403, [], s3test_error("InvalidAccessKeyId", "unknown access key $id"))
-    region == s.region || return (400, [], s3test_error("AuthorizationHeaderMalformed", "the region '$region' is wrong; expecting '$(s.region)'"))
-    for name in split(signed, ';')
-        haskey(req.headers, name) || return (403, [], s3test_error("AccessDenied", "signed header $name not sent"))
-    end
-    headers = [name => req.headers[name] for name in split(signed, ';')]
+    id == s.credentials.access_key_id ||
+        return s3test_refusal(403, "InvalidAccessKeyId", "unknown access key $id")
+    region == s.region || return s3test_refusal(
+        400, "AuthorizationHeaderMalformed",
+        "the region '$region' is wrong; expecting '$(s.region)'"
+    )
+    names = split(signed, ';')
+    all(name -> haskey(req.headers, name), names) ||
+        return s3test_refusal(403, "AccessDenied", "a signed header was not sent")
     payload_hash = get(req.headers, "x-amz-content-sha256", "")
-    payload_hash == bytes2hex(sha256(req.body)) || return (400, [], s3test_error("XAmzContentSHA256Mismatch", "payload hash"))
+    payload_hash == bytes2hex(sha256(req.body)) ||
+        return s3test_refusal(400, "XAmzContentSHA256Mismatch", "payload hash")
     amzdate = get(req.headers, "x-amz-date", "")
-    startswith(amzdate, datestamp) || return (403, [], s3test_error("AccessDenied", "x-amz-date $amzdate outside scope $datestamp"))
-    if s.credentials.session_token !== nothing
-        get(req.headers, "x-amz-security-token", "") == s.credentials.session_token ||
-            return (403, [], s3test_error("InvalidToken", "session token missing or wrong"))
-    end
-    expected = S3T.sign_request(s.credentials, region, req.method, req.rawpath, req.query, headers, payload_hash, amzdate)
-    expected.signature == signature ||
-        return (403, [], s3test_error("SignatureDoesNotMatch", "expected $(expected.signature), got $signature"))
+    startswith(amzdate, datestamp) ||
+        return s3test_refusal(403, "AccessDenied", "x-amz-date outside scope")
+    s3test_token_matches(s, req) ||
+        return s3test_refusal(403, "InvalidToken", "session token missing or wrong")
+    headers = [name => req.headers[name] for name in names]
+    expected = ChainTables.sign_request(
+        s.credentials, region, req.method, req.rawpath, req.query, headers, payload_hash,
+        amzdate
+    )
+    expected.signature == signature || return s3test_refusal(
+        403, "SignatureDoesNotMatch", "expected $(expected.signature), got $signature"
+    )
     return nothing
 end
 
-# A presigned PUT (ADR-0046), as S3 answers one: the signature must be one a minter
-# granted (`s.presigned`), unexpired, for this key; every signed header must be sent with
-# its value, no unsigned `x-amz-*` header may be, the body must hash to the signed
-# checksum, and `If-None-Match: *` refuses a present key.
-function s3test_presigned(s::S3TestServer, req)
-    grant = get(s.presigned, Dict(req.query)["X-Amz-Signature"], nothing)
-    grant === nothing && return (403, [], s3test_error("SignatureDoesNotMatch", "no such signature"))
-    time() > grant.expires && return (403, [], s3test_error("AccessDenied", "Request has expired"))
-    (req.method == "PUT" && req.path == "/$(s.bucket)/$(grant.key)") ||
-        return (403, [], s3test_error("SignatureDoesNotMatch", "not the signed method and key"))
-    for (k, v) in grant.headers
-        get(req.headers, k, nothing) == v || return (403, [], s3test_error("SignatureDoesNotMatch", "signed header $k"))
-    end
-    any(k -> startswith(k, "x-amz-") && !haskey(grant.headers, k), keys(req.headers)) &&
-        return (403, [], s3test_error("AccessDenied", "There were headers present in the request which were not signed"))
-    S3T.Base64.base64encode(sha256(req.body)) == grant.headers["x-amz-checksum-sha256"] ||
-        return (400, [], s3test_error("BadDigest", "The SHA256 you specified did not match the calculated checksum."))
-    haskey(s.objects, grant.key) &&
-        return (412, [], s3test_error("PreconditionFailed", "At least one of the pre-conditions you specified did not hold"))
-    s.objects[grant.key] = copy(req.body)
-    s.modified[grant.key] = floor(Int64, time())
-    return (200, [], UInt8[])
+function s3test_token_matches(s::S3TestServer, req)
+    token = s.credentials.session_token
+    return token === nothing || get(req.headers, "x-amz-security-token", "") == token
 end
 
 function s3test_default(s::S3TestServer, req)
     any(kv -> first(kv) == "X-Amz-Signature", req.query) && return s3test_presigned(s, req)
     refused = s3test_check_signature(s, req)
     refused === nothing || return refused
-    startswith(req.path, "/" * s.bucket) || return (404, [], s3test_error("NoSuchBucket", req.path))
-    key = req.path[(length(s.bucket) + 2):end]
-    startswith(key, "/") && (key = key[2:end])
-    if req.method == "PUT"
-        if get(req.headers, "if-none-match", "") == "*" && haskey(s.objects, key)
-            return (412, [], s3test_error("PreconditionFailed", "At least one of the pre-conditions you specified did not hold"))
-        end
-        s.objects[key] = copy(req.body)
-        s.modified[key] = floor(Int64, time())
-        return (200, ["etag" => "\"" * bytes2hex(sha256(req.body))[1:32] * "\""], UInt8[])
-    elseif req.method == "HEAD"
-        haskey(s.objects, key) || return (404, [], UInt8[])
-        return (200, ["last-modified" => s3test_http_date(s.modified[key])], s.objects[key])
-    elseif req.method == "GET" && isempty(key)
-        return s3test_list(s, req)
-    elseif req.method == "GET"
-        haskey(s.objects, key) || return (404, [], s3test_error("NoSuchKey", "The specified key does not exist."))
-        return (200, ["last-modified" => s3test_http_date(s.modified[key])], s.objects[key])
-    end
-    return (405, [], s3test_error("MethodNotAllowed", req.method))
+    startswith(req.path, "/" * s.bucket) ||
+        return s3test_refusal(404, "NoSuchBucket", req.path)
+    key = chopprefix(req.path[(length(s.bucket) + 2):end], "/")
+    req.method == "PUT" && return s3test_put(s, req, key)
+    req.method == "HEAD" && return s3test_head(s, key)
+    req.method == "GET" && isempty(key) && return s3test_list(s, req)
+    req.method == "GET" && return s3test_get(s, key)
+    return s3test_refusal(405, "MethodNotAllowed", req.method)
 end
+
+function s3test_put(s::S3TestServer, req, key)
+    (get(req.headers, "if-none-match", "") == "*" && haskey(s.objects, key)) &&
+        return s3test_refusal(412, "PreconditionFailed", S3TEST_PRECONDITION)
+    s3test_store!(s, key, req.body)
+    etag = "\"" * bytes2hex(sha256(req.body))[1:32] * "\""
+    return (200, ["etag" => etag], UInt8[])
+end
+
+function s3test_store!(s::S3TestServer, key, body)
+    s.objects[key] = copy(body)
+    s.modified[key] = floor(Int64, time())
+    return nothing
+end
+
+function s3test_head(s::S3TestServer, key)
+    haskey(s.objects, key) || return (404, Pair{String, String}[], UInt8[])
+    return (200, ["last-modified" => s3test_http_date(s.modified[key])], s.objects[key])
+end
+
+function s3test_get(s::S3TestServer, key)
+    haskey(s.objects, key) ||
+        return s3test_refusal(404, "NoSuchKey", "The specified key does not exist.")
+    return (200, ["last-modified" => s3test_http_date(s.modified[key])], s.objects[key])
+end
+
+# A presigned PUT (ADR-0046), as S3 answers one: a signature a minter granted, unexpired,
+# for this key; every signed header sent with its value and no unsigned `x-amz-*` one;
+# the body hashing to the signed checksum; `If-None-Match: *` refusing a present key.
+function s3test_presigned(s::S3TestServer, req)
+    grant = get(s.presigned, Dict(req.query)["X-Amz-Signature"], nothing)
+    grant === nothing &&
+        return s3test_refusal(403, "SignatureDoesNotMatch", "no such signature")
+    time() > grant.expires &&
+        return s3test_refusal(403, "AccessDenied", "Request has expired")
+    (req.method == "PUT" && req.path == "/$(s.bucket)/$(grant.key)") ||
+        return s3test_refusal(403, "SignatureDoesNotMatch", "not the signed method and key")
+    all(((k, v),) -> get(req.headers, k, nothing) == v, grant.headers) ||
+        return s3test_refusal(403, "SignatureDoesNotMatch", "a signed header differs")
+    any(k -> startswith(k, "x-amz-") && !haskey(grant.headers, k), keys(req.headers)) &&
+        return s3test_refusal(403, "AccessDenied", S3TEST_UNSIGNED)
+    checksum = ChainTables.Base64.base64encode(sha256(req.body))
+    checksum == grant.headers["x-amz-checksum-sha256"] ||
+        return s3test_refusal(400, "BadDigest", S3TEST_BAD_DIGEST)
+    haskey(s.objects, grant.key) &&
+        return s3test_refusal(412, "PreconditionFailed", S3TEST_PRECONDITION)
+    s3test_store!(s, grant.key, req.body)
+    return (200, Pair{String, String}[], UInt8[])
+end
+
+const S3TEST_UNSIGNED = "There were headers present in the request which were not signed"
+
+const S3TEST_BAD_DIGEST = "The SHA256 you specified did not match the calculated checksum."
 
 function s3test_list(s::S3TestServer, req)
     q = Dict(req.query)
-    get(q, "list-type", "") == "2" || return (400, [], s3test_error("InvalidRequest", "list-type=2 only"))
+    get(q, "list-type", "") == "2" ||
+        return s3test_refusal(400, "InvalidRequest", "list-type=2 only")
     prefix = get(q, "prefix", "")
-    after = get(q, "start-after", nothing)
-    token = get(q, "continuation-token", nothing)
-    keys = sort!([k for k in Base.keys(s.objects) if S3T.startswith_bytes(k, prefix)])   # S3 lists in byte order
-    after === nothing || filter!(k -> cmp(k, after) > 0, keys)
-    from = token === nothing ? 1 : parse(Int, token)
-    page = keys[from:min(end, from + s.page_size - 1)]
-    truncated = from + s.page_size <= length(keys)
-    io = IOBuffer()
-    write(
-        io, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ListBucketResult><Name>$(s.bucket)</Name>",
-        "<Prefix>$(s3test_xml_escape(prefix))</Prefix><KeyCount>$(length(page))</KeyCount>",
-        "<IsTruncated>$(truncated)</IsTruncated>"
-    )
-    truncated && write(io, "<NextContinuationToken>$(from + s.page_size)</NextContinuationToken>")
-    for k in page
-        write(
-            io, "<Contents><Key>$(s3test_xml_escape(k))</Key><LastModified>$(s3test_iso_date(s.modified[k]))</LastModified>",
-            "<ETag>\"x\"</ETag><Size>$(length(s.objects[k]))</Size><StorageClass>STANDARD</StorageClass></Contents>"
-        )
-    end
-    write(io, "</ListBucketResult>")
-    return (200, ["content-type" => "application/xml"], take!(io))
+    after = get(q, "start-after", "")
+    # S3 lists in byte order.
+    listed = sort!(filter(k -> s3test_listed(k, prefix, after), collect(keys(s.objects))))
+    from = parse(Int, get(q, "continuation-token", "1"))
+    page = listed[from:min(end, from + s.page_size - 1)]
+    truncated = from + s.page_size <= length(listed)
+    body = s3test_listing(s, prefix, page, truncated ? from + s.page_size : nothing)
+    return (200, ["content-type" => "application/xml"], Vector{UInt8}(body))
+end
+
+function s3test_listed(key, prefix, after)
+    return ChainTables.startswith_bytes(key, prefix) && cmp(key, after) > 0
+end
+
+function s3test_listing(s::S3TestServer, prefix, page, next)
+    token = next === nothing ? "" : "<NextContinuationToken>$next</NextContinuationToken>"
+    return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ListBucketResult>" *
+        "<Name>$(s.bucket)</Name><Prefix>$(s3test_xml_escape(prefix))</Prefix>" *
+        "<KeyCount>$(length(page))</KeyCount>" *
+        "<IsTruncated>$(next !== nothing)</IsTruncated>" *
+        token * join(map(k -> s3test_contents(s, k), page)) * "</ListBucketResult>"
+end
+
+function s3test_contents(s::S3TestServer, key)
+    return "<Contents><Key>$(s3test_xml_escape(key))</Key>" *
+        "<LastModified>$(s3test_iso_date(s.modified[key]))</LastModified>" *
+        "<ETag>\"x\"</ETag><Size>$(length(s.objects[key]))</Size>" *
+        "<StorageClass>STANDARD</StorageClass></Contents>"
 end
