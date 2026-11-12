@@ -67,15 +67,29 @@ end
 
 # No operation logs in by itself (ADR-0029): `login` is the opt-in, and only interactively.
 function exported_text(s::SSOCredentials)
-    attempt = s.exporter(s.profile)
+    attempt = export_attempt(s)
     if !attempt.ok && s.login && s.interactive()
         s.login_with(s.profile)
-        attempt = s.exporter(s.profile)
+        attempt = export_attempt(s)
     end
     detail = export_failure_message(s, attempt.text)
     attempt.ok || throw(CredentialsError(; s.profile, detail))
     return attempt.text
 end
+
+# The exporter returns what the CLI printed or throws (BioMeCore's fakes throw an
+# ErrorException), so any exception is a failed export whose text is the CLI's.
+function export_attempt(s::SSOCredentials)
+    return try
+        (; ok = true, text = String(s.exporter(s.profile)))
+    catch e
+        e isa Exception || rethrow()
+        (; ok = false, text = failure_text(e))
+    end
+end
+
+failure_text(e::CredentialsError) = e.detail
+failure_text(e::Exception) = sprint(showerror, e)
 
 function export_failure_message(s::SSOCredentials, cli_text)
     failed = "aws configure export-credentials --profile $(s.profile) failed: $cli_text\n"
@@ -100,15 +114,18 @@ end
 """
     run_export_credentials(profile)
 
-Run `aws configure export-credentials` for `profile` and return `(; ok, text)`: what it
-printed on success, else its error output.
+Run `aws configure export-credentials` for `profile` and return what it printed. Throws
+`CredentialsError` with the CLI's error output when it fails.
 """
 function run_export_credentials(profile::AbstractString)
-    Sys.which("aws") === nothing && return (; ok = false, text = AWS_CLI_MISSING)
+    Sys.which("aws") === nothing &&
+        throw(CredentialsError(; profile, detail = AWS_CLI_MISSING))
     out, err = IOBuffer(), IOBuffer()
     command = `aws configure export-credentials --profile $profile --format env-no-export`
     ok = success(pipeline(command; stdout = out, stderr = err))
-    return (; ok, text = String(strip(String(take!(ok ? out : err)))))
+    text = String(strip(String(take!(ok ? out : err))))
+    ok || throw(CredentialsError(; profile, detail = text))
+    return text
 end
 
 # For an error message only: the profile's value of `key`, or why reading it failed, so

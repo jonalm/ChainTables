@@ -9,8 +9,8 @@ function export_text(id, expiry)
         "AWS_CREDENTIAL_EXPIRATION=$expiry\n"
 end
 
-exported(text) = (; ok = true, text)
-refused(text) = (; ok = false, text)
+exported(text) = text
+refused(text) = throw(ErrorException(text))
 
 # A fake CLI that prints `text` and counts its runs in `runs`.
 function counting_exporter(runs, text)
