@@ -378,3 +378,7 @@ Note: the deletion of `HANDOVER.md` and `trial_notes/` was committed in `a100664
 Token counts: asked for at the end of session 2; the user had neither session's count.
 Final commit: the commit that adds this note, the head of the pushed branch; last code
 commit `a100664`.
+
+User decision after session 2: drop CI completely.
+
+- `.github/workflows/CI.yml | testing.md Rule: every Package root is tested by CI | blocked (CI cannot resolve TestConventions from the private BioMeRegistry) | user: drop CI; the workflow is deleted, so the package now breaks this Rule by the user's decision`
