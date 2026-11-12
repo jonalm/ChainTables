@@ -27,14 +27,20 @@ abstract type AbstractObjectStore end
 # Layout follows the build order of #34 §3. Nothing is exported (ADR-0019).
 # errors.jl comes first so every lane raises the same types (ADR-0020).
 
-include("hashes.jl")     # step 8: TransactionHash, StateFingerprint (ADR-0019)
+include("hashes.jl")
 include("errors.jl")
 include("local_copy_errors.jl")
 include("attachment_errors.jl")
 include("legacy_error_constructors.jl")
-include("cbor.jl")       # step 1
-include("model.jl")      # step 2
-include("ops.jl")        # step 3
+include("CBOR/CBOR.jl")
+include("model_error.jl")
+include("shape.jl")
+include("row_checks.jl")
+include("table.jl")
+include("content.jl")
+include("table_file.jl")
+include("fingerprint.jl")
+include("Ops/Ops.jl")
 include("builder.jl")    # step 4
 include("localcopy.jl")  # steps 5, 8
 include("views.jl")      # step 8: TableView, table, shape (ADR-0024)

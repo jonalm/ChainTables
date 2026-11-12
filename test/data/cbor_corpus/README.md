@@ -1,13 +1,13 @@
 # Conformance corpus
 
-The frozen corpus of `test/cbor.jl` ("frozen conformance corpus") was
+The frozen corpus of `test/test_cbor_encode.jl` (`CORPUS_VALUES`, `FROZEN_CORPUS`) was
 differential-tested **once** (ADR-0006) against two third-party RFC 8949
 §4.2.1 encoders, and the resulting hex literals are checked in. This directory
 holds what that run consumed, so it can be audited or repeated.
 
 - `corpus.json` — the 96 cases as typed nodes (`int` as decimal text, `float` as
   the 16 hex digits of the binary64 bits, `bytes` as hex), exported from the
-  Julia definitions in `test/cbor.jl`.
+  Julia definitions in `test/test_cbor_encode.jl`.
 - `cbor2_encode.py` — encodes it with [cbor2](https://pypi.org/project/cbor2/)
   `dumps(value, canonical=True)`.
 - `fxamacker_encode.go` (+ `go.mod`, `go.sum`) — encodes it with
@@ -23,6 +23,6 @@ go build -o encode fxamacker_encode.go && ./encode corpus.json > fxamacker.txt
 diff cbor2.txt fxamacker.txt
 ```
 
-Each output line is `name hex`; compare against the `frozen` table in
-`test/cbor.jl`. The literals never change without an ADR: a different byte is a
+Each output line is `name hex`; compare against `FROZEN_CORPUS` in
+`test/test_cbor_encode.jl`. The literals never change without an ADR: a different byte is a
 chain break.
