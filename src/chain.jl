@@ -3,7 +3,7 @@
 # `write_builder(copy)` and `commit!`. The lanes converge here: everything runs against
 # the port through `chain.store`; the S3 client behind `store = nothing` is step 9's.
 
-using .Ops: Client
+using .Ops: Client, Record
 
 # ---------------------------------------------------------------------------
 # Chain (ADR-0019): location and configuration, no I/O

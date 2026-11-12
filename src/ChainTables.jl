@@ -5,6 +5,7 @@ sequence of records in an S3 bucket. Terms: see `CONTEXT.md`.
 module ChainTables
 
 using SHA: SHA
+using Tables: Tables
 
 public AbstractObjectStore, AttachmentAbsentError, AttachmentCacheError,
     AttachmentChangedError, AttachmentDigestError, AttachmentURLExpiredError, Bucket, CBOR,
@@ -41,9 +42,14 @@ include("content.jl")
 include("table_file.jl")
 include("fingerprint.jl")
 include("Ops/Ops.jl")
-include("builder.jl")    # step 4
-include("localcopy.jl")  # steps 5, 8
-include("views.jl")      # step 8: TableView, table, shape (ADR-0024)
+include("builder.jl")
+include("row_sets.jl")
+include("chain_id_text.jl")
+include("head_file.jl")
+include("table_view.jl")
+include("local_copy.jl")
+include("table_files.jl")
+include("views.jl")
 include("store.jl")      # steps 6, 7
 include("chain.jl")      # step 7: Chain, create_chain, sync!, commit!
 include("recovery.jl")   # step 8: verify, repair!, as_of, slot_at (ADR-0014, ADR-0015)
