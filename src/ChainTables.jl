@@ -26,16 +26,12 @@ public AbstractObjectStore, AttachmentAbsentError, AttachmentCacheError,
     sso_credentials, sso_login, stat_object, sync!, table, table_with_slots, tables,
     touch_attachment, try_create_chain, unpin!, update_rows!, verify, write_builder
 
-abstract type AbstractObjectStore end
-
-# Layout follows the build order of #34 §3. Nothing is exported (ADR-0019).
-# errors.jl comes first so every lane raises the same types (ADR-0020).
-
 include("hashes.jl")
 include("errors.jl")
 include("local_copy_errors.jl")
 include("attachment_errors.jl")
-include("legacy_error_constructors.jl")
+include("store.jl")
+include("record_cache.jl")
 include("CBOR/CBOR.jl")
 include("model_error.jl")
 include("shape.jl")
@@ -53,9 +49,16 @@ include("table_view.jl")
 include("local_copy.jl")
 include("table_files.jl")
 include("views.jl")
-include("store.jl")      # steps 6, 7
-include("chain.jl")      # step 7: Chain, create_chain, sync!, commit!
-include("recovery.jl")   # step 8: verify, repair!, as_of, slot_at (ADR-0014, ADR-0015)
+include("chain.jl")
+include("put_record.jl")
+include("create_chain.jl")
+include("read_forward.jl")
+include("sync.jl")
+include("commit.jl")
+include("verify.jl")
+include("repair.jl")
+include("as_of.jl")
+include("commit_log.jl")
 include("credentials.jl")
 include("sso.jl")
 include("dates.jl")

@@ -1,25 +1,23 @@
-# #34 steps 6, 7 — ADR-0010, ADR-0019, ADR-0011, ADR-0012, ADR-0002: object-store port,
-# PutOutcome/ObjectMeta, record cache, the commit retry loop with its read-back, galloping.
-#
-# `ChainTables.open` is defined in localcopy.jl, so every file below is opened with
-# `Base.open`.
+"""
+    AbstractObjectStore
 
-# ---------------------------------------------------------------------------
-# The port (ADR-0010; public per ADR-0019). Four verbs, one request each, no delete.
-# `AbstractObjectStore` itself is declared in errors.jl so every lane can dispatch on it.
-# There is deliberately no fallback method: a store that leaves a verb unimplemented
-# fails with a `MethodError` at the first call, not with a wrong answer.
-# ---------------------------------------------------------------------------
+The object store a chain reaches its bucket through: four operations, `fetch_object`,
+`put_object_if_absent`, `stat_object` and `list_objects`, and no delete. Subtype it to
+reach another store; the subtype implements the four and `cache_namespace`. There is no
+fallback method: a store that leaves an operation out fails with a `MethodError`.
+
+Examples: test/test_store_examples.jl
+"""
+abstract type AbstractObjectStore end
 
 """
     PutOutcome(created, status)
 
-What a conditional put reported (ADR-0010). `created` is `true` when the key did not
-exist and now holds the bytes, and `false` only for a genuine `412 Precondition Failed`
-(ADR-0019): a `409` is retried inside the commit layer and never surfaces here, and
-every other failure raises. `status` is the HTTP status the transport saw, carried for
-messages; nothing in the protocol depends on it — the read-back of the slot decides a
-commit's outcome (ADR-0002).
+What a conditional put reported: `created` is `true` when the key was absent and now
+holds the bytes, and `false` only for a `412 Precondition Failed`. `status` is the HTTP
+status, kept for messages; the read-back of the slot decides a commit's outcome.
+
+Examples: test/test_store_examples.jl
 """
 struct PutOutcome
     created::Bool
@@ -29,10 +27,11 @@ end
 """
     ObjectMeta(key, size, modified)
 
-What `stat_object` and `list_objects` report about one object: its `key`, its `size`
-in bytes, and `modified` as whole seconds since the Unix epoch. Whole seconds because
-that is all S3 promises, so two objects written in one second tie; nothing in the
-protocol orders by it (ADR-0002, ADR-0010).
+What `stat_object` and `list_objects` report about one object: its `key`, its `size` in
+bytes, and `modified` in whole seconds since the Unix epoch. Two objects written in one
+second tie; nothing in the protocol orders by it.
+
+Examples: test/test_store_examples.jl
 """
 struct ObjectMeta
     key::String
@@ -41,436 +40,120 @@ struct ObjectMeta
 end
 
 """
-    fetch_object(store, key) -> Vector{UInt8} | nothing
+    fetch_object(store, key)
 
-The whole object at `key`, or `nothing` when no such key exists. **Absent is `nothing`,
-failure raises**: a transport or authorisation failure is an exception, never `nothing`
-(ADR-0010, ADR-0019). One request; no retry inside.
+Return the bytes of the object at `key`, or `nothing` when no such key exists.
+
+A transport or authorisation failure throws; it is never `nothing`. One request, no
+retry.
+
+Examples: test/test_store_examples.jl
 """
 function fetch_object end
 
 """
-    put_object_if_absent(store, key, bytes) -> PutOutcome
+    put_object_if_absent(store, key, bytes)
 
-Create `key` holding `bytes` if and only if no such key exists, the bare
-`If-None-Match: *` conditional put of ADR-0002. Returns a [`PutOutcome`](@ref) whose
-`created` is `false` only for a genuine `412`; a `409` and every transport failure raise,
-and the commit layer owns the retry loop and the read-back that decides the outcome
-(ADR-0010). The store must never overwrite an existing key under any condition
-(ADR-0016 rule 1). This is the port's only write verb: there is no delete (ADR-0012).
+Create `key` holding `bytes` only if no such key exists, and return a `PutOutcome`.
+
+`created` is `false` only for a `412`; a `409` and every transport failure throw. The
+store never overwrites an existing key: a store that does splits the chain.
+
+Examples: test/test_store_examples.jl
 """
 function put_object_if_absent end
 
 """
-    stat_object(store, key) -> ObjectMeta | nothing
+    stat_object(store, key)
 
-The [`ObjectMeta`](@ref) of `key`, or `nothing` when no such key exists; failure raises
-(ADR-0010). One request — a `HEAD` — which is what head discovery gallops with (ADR-0012).
+Return the `ObjectMeta` of `key`, or `nothing` when no such key exists. One `HEAD`
+request; a failure throws.
+
+Examples: test/test_store_examples.jl
 """
 function stat_object end
 
 """
-    startswith_bytes(key, prefix) -> Bool
+    list_objects(store, prefix; start_after = nothing)
 
-Whether `key` starts with `prefix` compared byte for byte, the comparison `list_objects`
-promises (ADR-0010): half of a multi-byte code point is a legal prefix.
-"""
-function startswith_bytes(key::AbstractString, prefix::AbstractString)
-    k, p = codeunits(key), codeunits(prefix)
-    length(p) <= length(k) || return false
-    for i in eachindex(p)
-        p[i] == k[i] || return false
-    end
-    return true
-end
+Return the `ObjectMeta` of every object whose key starts with `prefix`, compared by
+bytes, and sorts strictly after `start_after` in byte order when it is given.
 
-"""
-    list_objects(store, prefix; start_after = nothing) -> Vector{ObjectMeta}
+The order of the result is not promised. A failure throws; no match is an empty vector.
 
-Every object whose key starts with `prefix`, compared **by bytes**, and, when
-`start_after` is given, whose key sorts strictly after it in byte order. **Order is not
-promised** (ADR-0010, ADR-0012): nothing in the protocol reads a listing's order, and
-the double shuffles to keep it that way. Failure raises; an empty listing is an empty
-vector, not `nothing`.
+Examples: test/test_store_examples.jl
 """
 function list_objects end
 
-# ---------------------------------------------------------------------------
-# What the commit layer asks a store beyond the four verbs (ADR-0028): the record cap and
-# the author. Internal dispatch, not port verbs — the port stays four verbs (ADR-0010).
-# ---------------------------------------------------------------------------
+"""
+    startswith_bytes(key, prefix)
+
+Return whether `key` starts with `prefix` compared byte by byte, so half of a multi-byte
+code point is a valid prefix.
+"""
+function startswith_bytes(key::AbstractString, prefix::AbstractString)
+    k, p = codeunits(key), codeunits(prefix)
+    return length(p) <= length(k) && view(k, 1:length(p)) == p
+end
 
 """
-    record_cap(store) -> Int
+    record_cap(store)
 
-The largest transaction record `commit!` and `create_chain` will put through `store`, in
-bytes: `Ops.MAX_RECORD_BYTES` (64 MiB, ADR-0006) unless the store says otherwise — a
-[`GatewayObjectStore`](@ref) says 4 MiB (ADR-0028). Checked after `encode_record`, before
-the put; over it is `WriteBuilderError` naming the byte count, the cap and the store.
+Return the largest transaction record, in bytes, that a commit puts through `store`:
+`Ops.MAX_RECORD_BYTES` unless the store's own method says less.
 """
 record_cap(::AbstractObjectStore) = Ops.MAX_RECORD_BYTES
 
 """
-    record_author(store) -> String | nothing
+    record_author(store)
 
-The name a record committed through `store` carries as its author, `client.user`
-(ADR-0006, ADR-0028): `USER`, else `USERNAME`, from the environment, or `nothing` when
-neither is set — unless the store says otherwise. A [`GatewayObjectStore`](@ref) returns
-the caller's name from `sts:GetCallerIdentity` and ignores the environment. Called by
-`commit!` and `create_chain` before anything is applied; never at `Chain` construction.
+Return the author a record committed through `store` names: `USER`, else `USERNAME`,
+from the environment, or `nothing` when neither is set. A store whose own method knows
+the caller (a gateway bucket) returns that name instead.
+
+Examples: test/test_store_examples.jl
 """
 function record_author(::AbstractObjectStore)
     user = get(ENV, "USER", get(ENV, "USERNAME", ""))
     return isempty(user) ? nothing : user
 end
 
-# ---------------------------------------------------------------------------
-# The record cache (ADR-0010, ADR-0012, ADR-0013, ADR-0019, ADR-0040). Keyed by the
-# store's namespace, bucket and key under one directory; a hit is served from disk
-# without asking the store, because every key ChainTables writes is written once
-# (ADR-0002, ADR-0012). It is not the chain's word: the chain's readers hold every hit
-# against the chain, and a hit that fails is fetched again past the cache before the
-# chain is blamed (ADR-0040). A miss is never memoized.
-# ---------------------------------------------------------------------------
-
-"""
-    default_cache_dir() -> String
-
-Where the record cache lives unless a chain says otherwise: `CHAINTABLES_CACHE_DIR`
-when set, else `first(DEPOT_PATH)/chaintables/records` (ADR-0019, ADR-0010). Resolved
-at each call, so a test can point it at a `mktempdir()` through the environment.
-"""
-default_cache_dir() = get(ENV, "CHAINTABLES_CACHE_DIR") do
-    joinpath(first(DEPOT_PATH), "chaintables", "records")
-end
-
-"""
-    RecordCache(; dir = default_cache_dir())
-
-The record cache: the machine-wide directory of objects a client has fetched, keyed by
-the store's [`cache_namespace`](@ref), bucket and key (ADR-0010, ADR-0040). Disposable —
-delete the directory and every record is fetched again. A hit is served without asking
-the store, because a key's bytes are immutable by protocol (ADR-0002, ADR-0012), but it
-is not the chain's word: a file can be damaged, or outlive a bucket that was emptied and
-reused, so the chain's readers hold what it serves against the chain and fetch again
-what fails (ADR-0040). Distinct from the local copy, which is derived from the records
-rather than a copy of them (ADR-0023).
-"""
-struct RecordCache
-    dir::String
-end
-RecordCache(; dir = default_cache_dir()) = RecordCache(String(dir))
-
-"""
-    cache_namespace(store) -> String
-
-The record-cache directory above the bucket for objects read through `store`: two stores
-that may hold different objects under one bucket name and key — AWS and a MinIO, two
-MinIOs — must not share cached files (ADR-0040). At most
-[`MAX_NAMESPACE_LENGTH`](@ref) characters, a portable segment (ADR-0034), and not
-`attachments`, the attachment cache's directory beside the namespaces (ADR-0046).
-[`S3ObjectStore`](@ref) returns its partition for AWS's own URL — `aws`, `aws-cn`,
-`aws-us-gov`, where bucket names are unique — and `ep-` with 8 hex digits of the
-SHA-256 of `scheme://host[:port]` for a configured endpoint. A
-[`GatewayObjectStore`](@ref) reads through its S3 client and shares its namespace. A
-`Testing.InMemoryObjectStore` is its own namespace, `mem-` and 8 hex digits. Any other
-store must define it: there is no shared fallback, because two stores sharing a namespace
-overwrite each other's cached files on every read (ADR-0040), so a store that leaves it
-undefined is refused when a `Chain` is built over it. Internal dispatch, not a port verb
-(ADR-0010).
-"""
-cache_namespace(store::AbstractObjectStore) = throw(
-    ArgumentError(
-        "cache_namespace: $(nameof(typeof(store))) does not " *
-            "define ChainTables.cache_namespace, the record cache's directory for objects read through it. Define " *
-            "ChainTables.cache_namespace(::$(nameof(typeof(store)))) to return a portable name of at most " *
-            "$MAX_NAMESPACE_LENGTH characters that no other store holding different objects under the same bucket and " *
-            "key returns (ADR-0040)"
-    )
-)
-
-# The attachment cache's directory inside `cache_dir`, beside the namespaces (ADR-0046), so
-# no store may take it as its namespace.
-const ATTACHMENT_CACHE_NAME = "attachments"
-
 # The longest `cache_namespace`: `mem-` and 8 hex digits.
 const MAX_NAMESPACE_LENGTH = 12
 
-# Windows' MAX_PATH less the terminating NUL, in UTF-16 code units: the longest path that
-# opens on every platform without opting in to long paths (ADR-0034).
-const MAX_PORTABLE_PATH = 259
-# A record is written to `<16 hex digits>.tmp` beside its final name, then renamed (`cache_record!`).
-const CACHE_TEMP_NAME_LENGTH = 20
+const NAMESPACE_CONTRACT =
+    "to return a portable name of at most $MAX_NAMESPACE_LENGTH characters " *
+    "that no other store holding different objects under the same bucket and key returns"
 
 """
-    longest_cache_path(path) -> Int
+    cache_namespace(store)
 
-The length, in UTF-16 code units (Windows' measure), of the longest path the cache writes
-for the record at `path`: its absolute directory plus the longer of its name and the
-temporary file's.
+Return the record cache's directory, above the bucket, for objects read through `store`.
+
+Two stores that may hold different objects under one bucket and key must return
+different names, so every subtype defines its own method; this one throws.
+
+Examples: test/test_store_examples.jl
 """
-longest_cache_path(path::AbstractString) =
-    length(transcode(UInt16, abspath(dirname(path)))) + 1 + max(length(basename(path)), CACHE_TEMP_NAME_LENGTH)
-
-# Windows reserves these names, with or without an extension, in every directory.
-const WINDOWS_DEVICE_NAMES = Set(["con", "prn", "aux", "nul", ("com$i" for i in 0:9)..., ("lpt$i" for i in 0:9)...])
-
-"""
-    portable_segment_problem(s) -> String | nothing
-
-Why `s` cannot be one segment of a record-cache path on every platform, or `nothing` if
-it can (ADR-0034). A segment is lowercase ASCII letters, digits, `.`, `_` and `-`, is not
-`.` or `..`, does not end in `.`, and is not a Windows device name (`con`, `nul.txt`, …).
-Narrower than any one filesystem needs, so a key that maps on one platform maps on all:
-no separator, no drive colon, no case pair a case-insensitive filesystem folds together.
-"""
-function portable_segment_problem(s::AbstractString)
-    isempty(s) && return "is empty"
-    s in (".", "..") && return "names a directory relative to its parent"
-    for c in s
-        ('a' <= c <= 'z' || '0' <= c <= '9' || c in ('.', '_', '-')) ||
-            return "contains $(repr(c)); only a-z, 0-9, '.', '_' and '-' are portable to every filesystem"
-    end
-    endswith(s, '.') && return "ends with '.', which Windows strips"
-    first(split(s, '.')) in WINDOWS_DEVICE_NAMES && return "is a Windows device name"
-    return nothing
+function cache_namespace(store::AbstractObjectStore)
+    name = nameof(typeof(store))
+    msg = "$name does not define ChainTables.cache_namespace; define it $NAMESPACE_CONTRACT"
+    throw(ArgumentError(msg))
 end
 
 """
-    record_path(cache, store, bucket, key) -> String
+    retryable(e)
 
-The file a record is cached at: `cache.dir/namespace/bucket/key`, the namespace being
-`store`'s [`cache_namespace`](@ref) (ADR-0040) and each `/`-separated segment of `key` a
-directory (ADR-0011: the mapping from keys to paths is local and ours). The namespace,
-the bucket and every segment must pass [`portable_segment_problem`](@ref), and the
-[`longest_cache_path`](@ref) is at most $MAX_PORTABLE_PATH, so the path stays inside the
-cache and opens on every platform (ADR-0034).
+Return whether a failed request may be issued again: a `TransportError` with no answer
+(`status === nothing`), a `5xx`, a `409` or a `429`. No other status, and no other
+exception, is retried.
 """
-function record_path(cache::RecordCache, store::AbstractObjectStore, bucket::AbstractString, key::AbstractString)
-    namespace = cache_namespace(store)
-    length(namespace) <= MAX_NAMESPACE_LENGTH || throw(
-        ArgumentError(
-            "record_path: the cache namespace " *
-                "$(repr(namespace)) of $(typeof(store)) is over $MAX_NAMESPACE_LENGTH characters (ADR-0034, ADR-0040); " *
-                "its cache_namespace method must return a shorter name"
-        )
-    )
-    namespace == ATTACHMENT_CACHE_NAME && throw(
-        ArgumentError(
-            "record_path: the cache namespace " *
-                "$(repr(namespace)) of $(typeof(store)) is the attachment cache's directory (ADR-0046); its cache_namespace " *
-                "method must return another name"
-        )
-    )
-    segments = split(key, '/')
-    for s in (namespace, bucket, segments...)
-        problem = portable_segment_problem(s)
-        problem === nothing || throw(
-            ArgumentError(
-                "record_path: segment $(repr(s)) of bucket $(repr(bucket)), key $(repr(key)) $problem (ADR-0034)"
-            )
-        )
-    end
-    path = joinpath(cache.dir, namespace, bucket, segments...)
-    n = longest_cache_path(path)
-    n <= MAX_PORTABLE_PATH || throw(
-        ArgumentError(
-            "record_path: the record cache path $(repr(path)) is $n characters " *
-                "long with its temporary file, over the $MAX_PORTABLE_PATH Windows allows (ADR-0034); use a shorter cache_dir or prefix"
-        )
-    )
-    return path
+function retryable(e::TransportError)
+    return e.status === nothing || 500 <= e.status < 600 || e.status in (409, 429)
 end
-
-"""
-    fetch_record(cache, store, bucket, key) -> Vector{UInt8} | nothing
-
-`fetch_object` through the record cache. A cached record is served from disk without
-consulting the store; a miss fetches from `store` and, when the object exists, writes it
-to a temporary file in the destination directory and renames it into place, so an
-interrupted fetch never caches a truncated record (ADR-0010, ADR-0013). An absent object
-returns `nothing` and caches nothing: a client polling a slot that is still empty must
-see the record the moment it lands (ADR-0012). Failure raises.
-
-The cache does not hash what it serves. Every read returns the file's bytes fresh, and
-the caller rehashes them against the hash it holds — a child's `prev_hash`, or the head
-file's `transaction_hash` (ADR-0006, ADR-0013) — because only the chain knows the
-expected value. The caller fetches bytes that fail that check again past the cache
-(`fetch_object`), and replaces the file with [`heal_record!`](@ref) once they pass,
-before the chain is blamed (ADR-0040).
-"""
-fetch_record(cache::RecordCache, store::AbstractObjectStore, bucket::AbstractString, key::AbstractString) =
-    first(fetch_record_from(cache, store, bucket, key))
-
-# `fetch_record`, and whether the bytes came from the cache (`true`) or the store: a
-# reader vouches for what the store returned, not for a hit (ADR-0040).
-function fetch_record_from(cache::RecordCache, store::AbstractObjectStore, bucket::AbstractString, key::AbstractString)
-    path = record_path(cache, store, bucket, key)
-    isfile(path) && return read(path), true
-    bytes = fetch_object(store, key)
-    bytes === nothing && return nothing, false
-    cache_record!(cache, store, bucket, key, bytes)
-    return bytes, false
-end
-
-"""
-    heal_record!(cache, store, bucket, key, bytes) -> nothing
-
-Put `bytes`, which `store` returned for `key` past the cache, in the record cache
-(ADR-0040). A cached file that differs — damaged, or left by a bucket that was emptied
-and reused — is replaced, with a warning naming it; an absent one is filled silently.
-The chain's readers call it only once the store's bytes pass their check, so a check the
-store fails too leaves the cached file in place as evidence. `put_record!`'s read-back
-calls it unchecked: the store's bytes at the slot are the authority (ADR-0010).
-"""
-function heal_record!(cache::RecordCache, store::AbstractObjectStore, bucket::AbstractString, key::AbstractString, bytes)
-    path = record_path(cache, store, bucket, key)
-    held = isfile(path) ? read(path) : nothing
-    held == bytes && return nothing
-    held === nothing || @warn(
-        "record cache: the cached copy of $key in bucket $bucket is not what the store holds; " *
-            "replaced with the store's bytes (ADR-0040)", path, cached_bytes = length(held), store_bytes = length(bytes)
-    )
-    cache_record!(cache, store, bucket, key, bytes)
-    return nothing
-end
-
-"""
-    cache_record!(cache, store, bucket, key, bytes) -> nothing
-
-Put `bytes` in the cache as the record at `key`: written to a temporary file in the
-destination directory and renamed into place. What [`fetch_record`](@ref) does with a
-fetched object, and what the commit layer does with a record it has just put — a record
-of our own is as immutable as a fetched one, and `repair!` and `verify` replay from the
-cache (ADR-0014), so our own commits belong there too.
-"""
-function cache_record!(cache::RecordCache, store::AbstractObjectStore, bucket::AbstractString, key::AbstractString, bytes)
-    path = record_path(cache, store, bucket, key)
-    dir = dirname(path)
-    mkpath(dir)
-    tmp = joinpath(dir, bytes2hex(rand(UInt8, 8)) * ".tmp")    # CACHE_TEMP_NAME_LENGTH characters
-    try
-        Base.open(tmp, "w") do io
-            write(io, bytes)
-        end
-        Base.Filesystem.rename(tmp, path)
-    catch
-        rm(tmp; force = true)
-        rethrow()
-    end
-    return nothing
-end
-
-# ---------------------------------------------------------------------------
-# Transport failures and the retry rule (ADR-0010). One request per port
-# call; the commit layer owns the loop, because the read-back that decides a
-# commit's outcome has to happen between attempts.
-# ---------------------------------------------------------------------------
-
-"""
-    retryable(e) -> Bool
-
-ADR-0010's rule: a connect failure or timeout (`status === nothing`), a `5xx`, a `409`
-and a `429` are retried; every other status — an auth `4xx` above all — is not, and
-neither is any exception that is not a [`TransportError`](@ref). A `412` never reaches
-here: the port returns it as a `PutOutcome`. `429` joined the set with ADR-0028: a Lambda
-gateway throttles with it, S3 throttles with `503`, so a plain bucket is unchanged.
-"""
-retryable(e::TransportError) = e.status === nothing || 500 <= e.status < 600 || e.status == 409 || e.status == 429
 retryable(e) = false
 
-"""
-    PUT_ATTEMPTS, PUT_BACKOFF_S
-
-How many times [`put_record!`](@ref) issues its conditional put before giving up, and
-the pause before each re-issue. Bounded and short: a commit that cannot land in four
-attempts is a transport the user should hear about, not one to wait on.
-"""
+# A commit that cannot land in four attempts is a transport the user should hear
+# about, not one to wait on.
 const PUT_ATTEMPTS = 4
 const PUT_BACKOFF_S = (0.05, 0.1, 0.2)
-
-"""
-    put_record!(store, cache, bucket, key, bytes) -> nothing | Vector{UInt8}
-
-The conditional put of a record with ADR-0010's retry loop and read-back.
-Returns `nothing` when `bytes` are at `key` — created by this call, or found there by
-the read-back after a lost acknowledgement — and the **other** record's bytes when a
-different object holds the slot, which is a lost race for the caller to raise. The
-outcome is decided by the read-back, never by the status:
-
-| the slot then holds | the outcome |
-|---|---|
-| our bytes | success — only the acknowledgement was lost |
-| other bytes | the race is lost; never retried |
-| nothing | the request never landed; retry, bounded |
-
-A retryable failure ([`retryable`](@ref)) is re-issued after the read-back, up to
-[`PUT_ATTEMPTS`](@ref); any other exception propagates at once. The read-back asks the
-store, past the record cache (ADR-0040) — it is the authority, and a cache file is not
-— and what it finds is cached as the slot's record ([`heal_record!`](@ref)); so is a
-record this call created.
-"""
-function put_record!(store::AbstractObjectStore, cache::RecordCache, bucket::AbstractString, key::AbstractString, bytes)
-    ours = Ops.transaction_hash(bytes)
-    failure = nothing
-    for attempt in 1:PUT_ATTEMPTS
-        attempt == 1 || sleep(PUT_BACKOFF_S[attempt - 1])
-        outcome = try
-            put_object_if_absent(store, key, bytes)
-        catch e
-            retryable(e) || rethrow()
-            failure = e
-            nothing
-        end
-        if outcome !== nothing
-            outcome.created && (cache_record!(cache, store, bucket, key, bytes); return nothing)
-            outcome.status == 412 || error(
-                "put_object_if_absent($(typeof(store))) returned created = false with status " *
-                    "$(outcome.status); the port promises false only for a 412 (ADR-0019)"
-            )
-        end
-        found = fetch_object(store, key)
-        if found !== nothing
-            heal_record!(cache, store, bucket, key, found)
-            return Ops.transaction_hash(found) == ours ? nothing : found
-        end
-    end
-    failure === nothing || throw(failure)
-    throw(
-        RewrittenChainError(
-            "rewritten chain: the put to $key was refused as existing (412) and a fetch found nothing " *
-                "there, $PUT_ATTEMPTS times over. Objects are appearing and vanishing from outside the protocol; nothing heals it."
-        )
-    )
-end
-
-# ---------------------------------------------------------------------------
-# Head discovery (ADR-0012): gallop, then bisect. Stat probes only; nothing is
-# listed and nothing is cached — a miss must be seen again the moment the slot lands.
-# ---------------------------------------------------------------------------
-
-"""
-    gallop(store, keyof, lo) -> Int64
-
-The highest slot that exists, probing `stat_object(store, keyof(s))` at `lo + 1`,
-`lo + 2`, `lo + 4`, … until a miss and then bisecting the last gap (ADR-0012). `lo` is
-a slot known to exist — the local head — or `-1` for a copy with no head, and is
-returned unchanged when `lo + 1` is absent. Sound because the chain has no gaps
-(ADR-0002): a miss is the end of the chain. `O(log Δ)` probes warm, `O(log N)` cold.
-"""
-function gallop(store::AbstractObjectStore, keyof, lo::Integer)
-    exists(s) = stat_object(store, keyof(s)) !== nothing
-    lo = Int64(lo)
-    hit, step = lo, Int64(1)
-    probe = lo + step
-    while exists(probe)
-        hit = probe
-        step *= 2
-        probe = lo + step
-    end
-    while probe - hit > 1
-        mid = (hit + probe) ÷ 2
-        exists(mid) ? (hit = mid) : (probe = mid)
-    end
-    return hit
-end
