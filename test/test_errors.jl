@@ -1,7 +1,7 @@
 using Test
 using ChainTables: ChainTables, ChainNotFoundError, ChainTablesError,
     CommitOutcomeUnknownError, GatewayMismatchError, LostRaceError, MalformedRecordError,
-    RewrittenChainError, StaleHeadError, StateFingerprint, TransactionHash, TransportError,
+    RewrittenChainError, StaleHeadError, StateFingerprint, TransactionHash, TransportError, CredentialsError,
     UnsupportedStoreError, WriteBuilderError, WriteRefusedError
 
 const ZEROS = zeros(UInt8, 32)
@@ -105,7 +105,7 @@ const ERRORS = [
             chain_id = CHAIN, slot = 4, key = "p/000000000004", bucket = "bkt",
             gateway = "https://gw", detail = "the object is absent",
         ),
-        summary = "the gateway wrote to another bucket than this chain's",
+        summary = "the gateway answered for another bucket or object",
         evidence = "gateway = https://gw",
         next_move = "Pair the bucket with its own gateway",
     ),
@@ -115,6 +115,13 @@ const ERRORS = [
         summary = "a request failed",
         evidence = "status = 503",
         next_move = "Check the network and the store, then try again.",
+    ),
+    (
+        name = "CredentialsError",
+        error = CredentialsError(; profile = "team", detail = "the AWS CLI is not on PATH"),
+        summary = "no AWS credentials could be had",
+        evidence = "profile = team",
+        next_move = "log in with `sso_login`",
     ),
 ]
 
@@ -168,7 +175,7 @@ end
 const REFUSAL_REASONS = [
     (reason = "not_allowed", next_move = "Ask the bucket's operator to add this author"),
     (reason = "author_mismatch", next_move = "report it as a bug"),
-    (reason = "forbidden", next_move = "Ask the operator for the writer permission set"),
+    (reason = "forbidden", next_move = "ask the operator for the writer permission set"),
     (reason = "something_new", next_move = "A person must act before a retry can succeed."),
 ]
 
@@ -206,4 +213,5 @@ end
     @test @inferred(WriteRefusedError(; reason = "forbidden")).reason == "forbidden"
     @test @inferred(GatewayMismatchError(; gateway = "g")).gateway == "g"
     @test @inferred(TransportError("x"; status = 500)).status == 500
+    @test @inferred(CredentialsError(; profile = "p")).profile == "p"
 end

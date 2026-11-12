@@ -42,7 +42,7 @@ function credentials_from_env()
     secret = get(ENV, "AWS_SECRET_ACCESS_KEY", "")
     variables = (("AWS_ACCESS_KEY_ID", id), ("AWS_SECRET_ACCESS_KEY", secret))
     unset = [name for (name, value) in variables if isempty(value)]
-    isempty(unset) || throw(ArgumentError(unset_keys_message(unset)))
+    isempty(unset) || throw(CredentialsError(; detail = unset_keys_message(unset)))
     token = get(ENV, "AWS_SESSION_TOKEN", "")
     return Credentials(id, secret; session_token = isempty(token) ? nothing : token)
 end

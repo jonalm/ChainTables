@@ -4,6 +4,8 @@
 S3 refused an attachment upload because the bytes sent do not hash to the key's
 hash: the file changed between hashing and upload. Nothing was stored. Stop whatever
 writes the file, and put it again.
+
+Examples: test/test_attachment_errors_examples.jl
 """
 struct AttachmentChangedError <: ChainTablesError
     chain_id::MaybeString
@@ -28,6 +30,8 @@ end
 S3 refused an attachment upload because the URL the gateway minted had expired
 (`expires`, ISO 8601 in UTC). Nothing was stored. Put the attachment again, which
 mints a new URL; over a faster link if the upload outlasted the URL.
+
+Examples: test/test_attachment_errors_examples.jl
 """
 struct AttachmentURLExpiredError <: ChainTablesError
     chain_id::MaybeString
@@ -58,6 +62,8 @@ end
 The gateway answered the mint with `503 session_ending`: the environment that answered
 is too old to sign a URL. Not retried, since the next request most likely meets the
 same environment. Nothing was stored. Put the attachment again later.
+
+Examples: test/test_attachment_errors_examples.jl
 """
 struct GatewaySessionEndingError <: ChainTablesError
     chain_id::MaybeString
@@ -87,6 +93,8 @@ end
 
 The chain's store holds no attachment at `key`: it was never put, or its retention
 ended. Whoever holds the file puts it again with `put_attachment(chain, file)`.
+
+Examples: test/test_attachment_errors_examples.jl
 """
 struct AttachmentAbsentError <: ChainTablesError
     chain_id::MaybeString
@@ -111,19 +119,23 @@ end
 The store returned `size` bytes for an attachment that do not hash to the key's hash
 (`found`, `nothing` when nothing was downloaded). Nothing was cached. The bucket was
 written outside the protocol: stop and report it.
+
+Examples: test/test_attachment_errors_examples.jl
 """
 struct AttachmentDigestError <: ChainTablesError
     chain_id::MaybeString
     key::MaybeString
     found::MaybeString # hex SHA-256 of what was downloaded
-    size::MaybeInt
+    size::MaybeInt # what the store holds
+    cached_size::MaybeInt
     detail::String
 end
 
 function AttachmentDigestError(;
-        chain_id = nothing, key = nothing, found = nothing, size = nothing, detail = ""
+        chain_id = nothing, key = nothing, found = nothing, size = nothing,
+        cached_size = nothing, detail = ""
     )
-    return AttachmentDigestError(chain_id, key, found, size, detail)
+    return AttachmentDigestError(chain_id, key, found, size, cached_size, detail)
 end
 
 function Base.showerror(io::IO, e::AttachmentDigestError)
@@ -139,18 +151,23 @@ end
 The attachment cache's file at `path` does not hash to its name. The cache is
 damaged, not the chain. Delete the file and its `.meta`, which is always safe, or run
 `repair!(copy)`.
+
+Examples: test/test_attachment_errors_examples.jl
 """
 struct AttachmentCacheError <: ChainTablesError
     chain_id::MaybeString
     key::MaybeString
     path::MaybeString
+    found::MaybeString # hex SHA-256 of the cached file
+    size::MaybeInt # what the store holds
     detail::String
 end
 
 function AttachmentCacheError(;
-        chain_id = nothing, key = nothing, path = nothing, detail = ""
+        chain_id = nothing, key = nothing, path = nothing, found = nothing,
+        size = nothing, detail = ""
     )
-    return AttachmentCacheError(chain_id, key, path, detail)
+    return AttachmentCacheError(chain_id, key, path, found, size, detail)
 end
 
 function Base.showerror(io::IO, e::AttachmentCacheError)

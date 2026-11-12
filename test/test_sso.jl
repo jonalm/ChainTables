@@ -1,5 +1,5 @@
 using Test
-using ChainTables: ChainTables, Credentials, S3ObjectStore, sso_credentials, sso_login
+using ChainTables: ChainTables, Credentials, CredentialsError, S3ObjectStore, sso_credentials, sso_login
 
 const T0 = 1255369800.0 # 2009-10-12T17:50:00Z
 
@@ -84,16 +84,16 @@ const BAD_EXPORT_CASES = [
 
 @testset "sso_credentials refuses an export: $(case.name)" for case in BAD_EXPORT_CASES
     get_credentials = sso_credentials("team"; exporter = _ -> exported(case.text))
-    @test_throws ArgumentError case.says get_credentials()
+    @test_throws CredentialsError case.says get_credentials()
 end
 
 const EXPIRED = "The SSO session associated with this profile has expired"
 
 @testset "sso_credentials names the login command when the export fails" begin
     failing = sso_credentials("team"; exporter = _ -> refused(EXPIRED))
-    @test_throws ArgumentError "aws sso login --profile team" failing()
-    @test_throws ArgumentError "--use-device-code" failing()
-    @test_throws ArgumentError EXPIRED failing()
+    @test_throws CredentialsError "aws sso login --profile team" failing()
+    @test_throws CredentialsError "--use-device-code" failing()
+    @test_throws CredentialsError EXPIRED failing()
 end
 
 @testset "sso_credentials names the role when the identity lacks it" begin
@@ -104,7 +104,7 @@ end
         "team"; exporter = _ -> refused(forbidden), setting = (p, k) -> settings[k]
     )
     says = "not assigned role writer on account 123456789012"
-    e = (@test_throws ArgumentError says no_access()).value
+    e = (@test_throws CredentialsError says no_access()).value
     @test occursin("No access", sprint(showerror, e))
     @test !occursin("aws sso login", sprint(showerror, e))
 end
@@ -113,7 +113,7 @@ end
     mktempdir() do dir
         withenv("PATH" => dir) do
             get_credentials = sso_credentials("team")
-            @test_throws ArgumentError "the AWS CLI (aws) is not on PATH" get_credentials()
+            @test_throws CredentialsError "the AWS CLI (aws) is not on PATH" get_credentials()
         end
     end
 end
@@ -141,7 +141,7 @@ end
         "team"; login = true, exporter = flaky_exporter(exports, 2),
         login_with = p -> push!(logins, p), interactive = () -> true
     )
-    @test_throws ArgumentError "aws sso login --profile team" still()
+    @test_throws CredentialsError "aws sso login --profile team" still()
     @test logins == ["team"]
 end
 
@@ -167,7 +167,7 @@ const NO_LOGIN_CASES = [
         "team"; case.login, exporter = flaky_exporter(Ref(0), 9),
         login_with = p -> push!(logins, p), interactive = () -> case.interactive
     )
-    @test_throws ArgumentError EXPIRED batch()
+    @test_throws CredentialsError EXPIRED batch()
     @test isempty(logins)
 end
 
@@ -207,7 +207,7 @@ const NO_CLI = "aws sso login --profile team --use-device-code failed: " *
 @testset "sso_login without the CLI on PATH names the command" begin
     mktempdir() do dir
         withenv("PATH" => dir) do
-            @test_throws ArgumentError NO_CLI sso_login("team"; device_code = true)
+            @test_throws CredentialsError NO_CLI sso_login("team"; device_code = true)
         end
     end
 end

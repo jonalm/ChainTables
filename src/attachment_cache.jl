@@ -163,12 +163,10 @@ function check_hit_in_store(target::CachedAttachment)
     cached = filesize(path)
     meta.size == cached && return nothing
     found = bytes2hex(hash_file(path))
-    sound = "the cached file, which hashes to the key's hash, is $cached bytes"
-    found == target.hash.hex &&
-        throw(AttachmentDigestError(; chain_id, key, size = meta.size, detail = sound))
-    damaged = "the cached file is $cached bytes and hashes to $found, where the store " *
-        "holds $(meta.size)"
-    throw(AttachmentCacheError(; chain_id, key, path, detail = damaged))
+    found == target.hash.hex && throw(
+        AttachmentDigestError(; chain_id, key, size = meta.size, cached_size = cached)
+    )
+    throw(AttachmentCacheError(; chain_id, key, path, found, size = meta.size))
 end
 
 function fetch_or_throw_absent(target::CachedAttachment)

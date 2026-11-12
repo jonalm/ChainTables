@@ -3,6 +3,8 @@
 
 The supertype of every error ChainTables throws. Catch it to handle any operational
 failure of the package; catch a concrete subtype to branch on one.
+
+Examples: test/test_errors_examples.jl
 """
 abstract type ChainTablesError <: Exception end
 
@@ -47,7 +49,7 @@ Write the type name, the fixed `summary` and, when there is one, `e.detail`.
 function print_summary(io::IO, e::ChainTablesError, summary::AbstractString)
     print(io, nameof(typeof(e)), ": ", summary)
     isempty(e.detail) || print(io, ": ", e.detail)
-    print(io, ".")
+    endswith(e.detail, '.') || print(io, ".")
     return nothing
 end
 
@@ -57,6 +59,8 @@ end
 A commit found that the write builder's head is behind its local copy or the chain:
 the row set was computed against a state that has moved. The builder is spent. Run
 `sync!(copy)`, recompute the row set and build again.
+
+Examples: test/test_errors_examples.jl
 """
 struct StaleHeadError <: ChainTablesError
     path::MaybeString
@@ -89,6 +93,8 @@ end
 Another client's record already fills the slot this call tried to fill. The call is
 spent and never retried. Sync and build again, or, for a new chain, open the existing
 one or create under another prefix.
+
+Examples: test/test_errors_examples.jl
 """
 struct LostRaceError <: ChainTablesError
     location::MaybeString # bucket/prefix
@@ -123,6 +129,8 @@ end
 A commit failed after the put of its record began, so it is unknown whether the commit
 happened. After `sync!(copy)`, it happened exactly when `commit_log(copy)` shows
 `transaction_hash` at `slot`. The builder is spent.
+
+Examples: test/test_errors_examples.jl
 """
 struct CommitOutcomeUnknownError <: ChainTablesError
     chain_id::MaybeString
@@ -160,6 +168,8 @@ end
 A commit was refused because the store is not AWS S3, the only store whose conditional
 put ChainTables trusts. Use AWS S3, or set `assume_first_writer_wins` for a store you
 know keeps that promise.
+
+Examples: test/test_errors_examples.jl
 """
 struct UnsupportedStoreError <: ChainTablesError
     endpoint::MaybeString
@@ -187,6 +197,8 @@ end
 
 A write builder call or a commit was refused: a wrong table, column, row or key, a
 spent or empty builder, or a record over the size cap. Fix the call `call` names.
+
+Examples: test/test_errors_examples.jl
 """
 struct WriteBuilderError <: ChainTablesError
     call::MaybeString
@@ -198,7 +210,10 @@ WriteBuilderError(; call = nothing, detail = "") = WriteBuilderError(call, detai
 function Base.showerror(io::IO, e::WriteBuilderError)
     print_summary(io, e, "the write was refused")
     print_evidence(io, e)
-    print(io, "\nFix the call named above; nothing was written.")
+    print(
+        io, "\nFix the call named above; nothing was written. A spent builder is not ",
+        "reused: take a new one with `write_builder(copy)`."
+    )
     return nothing
 end
 
@@ -208,6 +223,8 @@ end
 There is no slot 0 at the chain's bucket and prefix. Either the bucket or prefix is
 not the chain's, or no chain was created there; the two cannot be told apart. Check
 the address, or call `create_chain(chain)`.
+
+Examples: test/test_errors_examples.jl
 """
 struct ChainNotFoundError <: ChainTablesError
     bucket::MaybeString
@@ -239,6 +256,8 @@ end
 The bucket contradicts what the local copy has applied: a slot holds bytes of another
 hash, an applied slot is absent, or a record names a parent the copy does not hold.
 Never healed; the copy stays readable. Stop and find out who rewrote the chain.
+
+Examples: test/test_errors_examples.jl
 """
 struct RewrittenChainError <: ChainTablesError
     chain_id::MaybeString
@@ -273,6 +292,8 @@ end
 A record that no client can apply under this format version. The chain cannot be
 read beyond `slot`. `op` is the 1-based index of the op that broke a rule, when it was
 an op's. Report it to whoever writes to the chain.
+
+Examples: test/test_errors_examples.jl
 """
 struct MalformedRecordError <: ChainTablesError
     chain_id::MaybeString
@@ -297,7 +318,10 @@ end
 const WRITE_REFUSED_NEXT_MOVES = Dict(
     "not_allowed" => "Ask the bucket's operator to add this author to the gateway policy.",
     "author_mismatch" => "The record's author is not the caller; report it as a bug.",
-    "forbidden" => "Ask the operator for the writer permission set (InvokeFunctionUrl).",
+    "forbidden" => "Check that the credentials are current and the clock is right; else " *
+        "ask the operator for the writer permission set (InvokeFunctionUrl).",
+    "no_mint_route" => "The gateway predates attachments; ask the operator to redeploy it.",
+    "s3_refused" => "The gateway's deployment is wrong; report it to the operator.",
 )
 
 """
@@ -306,6 +330,8 @@ const WRITE_REFUSED_NEXT_MOVES = Dict(
 The gateway refused to fill a slot, and nothing is retried. `reason` says who must
 act: `"not_allowed"` (the policy has no entry for this author), `"author_mismatch"` (a
 bug) or `"forbidden"` (the principal may not invoke the gateway).
+
+Examples: test/test_errors_examples.jl
 """
 struct WriteRefusedError <: ChainTablesError
     chain_id::MaybeString
@@ -334,9 +360,12 @@ end
 """
     GatewayMismatchError
 
-The gateway answered `created`, but the bucket this chain reads does not hold the
-object: the gateway fills another bucket. Nothing is retried. Pair the bucket with
-its own gateway, as one `Bucket` value.
+The gateway's answer does not fit this chain's bucket: it answered `created` and the
+bucket does not hold the object, or it minted a URL or headers for something else.
+Nothing is retried. Pair the bucket with its own gateway, as one `Bucket` value,
+deployed from this ChainTables version.
+
+Examples: test/test_errors_examples.jl
 """
 struct GatewayMismatchError <: ChainTablesError
     chain_id::MaybeString
@@ -355,11 +384,11 @@ function GatewayMismatchError(;
 end
 
 function Base.showerror(io::IO, e::GatewayMismatchError)
-    print_summary(io, e, "the gateway wrote to another bucket than this chain's")
+    print_summary(io, e, "the gateway answered for another bucket or object")
     print_evidence(io, e)
     print(
-        io, "\nThe object now sits in the gateway's own bucket. Pair the bucket with ",
-        "its own gateway, as one `Bucket` value."
+        io, "\nAnything it created sits in the gateway's own bucket. Pair the bucket ",
+        "with its own gateway, as one `Bucket` value, deployed from this version."
     )
     return nothing
 end
@@ -370,6 +399,8 @@ end
 A request to the object store, the gateway or STS failed: no answer, or an answer
 that is neither success nor a refusal the package names. `status` is the HTTP status,
 `nothing` when there was no answer. Retry later, or fix the network.
+
+Examples: test/test_errors_examples.jl
 """
 struct TransportError <: ChainTablesError
     status::MaybeInt
@@ -382,5 +413,31 @@ function Base.showerror(io::IO, e::TransportError)
     print_summary(io, e, "a request failed")
     print_evidence(io, e)
     print(io, "\nCheck the network and the store, then try again.")
+    return nothing
+end
+
+"""
+    CredentialsError
+
+AWS credentials could not be had: none in the environment, the AWS CLI missing, or
+its login or export failing for `profile`. Act on what the detail says (log in with
+`sso_login`, export the credentials, or ask an admin), and call again.
+
+Examples: test/test_errors_examples.jl
+"""
+struct CredentialsError <: ChainTablesError
+    profile::MaybeString
+    detail::String
+end
+
+CredentialsError(; profile = nothing, detail = "") = CredentialsError(profile, detail)
+
+function Base.showerror(io::IO, e::CredentialsError)
+    print_summary(io, e, "no AWS credentials could be had")
+    print_evidence(io, e)
+    print(
+        io, "\nAct on what the detail says (log in with `sso_login`, export the ",
+        "credentials, or ask an admin), and call again."
+    )
     return nothing
 end

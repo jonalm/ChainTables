@@ -112,8 +112,8 @@ end
         @test e isa LocalCopyInconsistentError
         @test e.file == "tables/$f"
         @test e.slot == 1
-        hashes_to = "table file tables/$f (table \"w\") hashes to $(bytes2hex(sha256(bad)))"
-        @test e.detail == hashes_to
+        @test e.table == "w"
+        @test e.detail == "hashes to $(bytes2hex(sha256(bad)))"
         @test occursin("repair!(copy)", sprint(showerror, e))
         @test isempty(damaged.content)
         close(damaged)
@@ -140,8 +140,7 @@ end
         write(head_file(path, 1), slot_one)
         write_head_naming!(path, ["w" => slot_two_w])
         again = ChainTables.open(chain, path)
-        detail = "table file tables/$(bytes2hex(slot_two_w)) (table \"w\") holds a row " *
-            "slot 2, above the head's slot 1"
+        detail = "holds a row slot 2, above the head's slot 1"
         @test_throws LocalCopyInconsistentError detail table(again, :w)
         @test isempty(again.content)
         close(again)

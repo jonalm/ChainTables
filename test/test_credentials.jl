@@ -1,5 +1,5 @@
 using Test
-using ChainTables: ChainTables, Chain, Credentials, S3ObjectStore
+using ChainTables: ChainTables, Chain, Credentials, CredentialsError, S3ObjectStore
 
 const SECRET_ENV = ("AWS_ACCESS_KEY_ID" => "AKIAX", "AWS_SECRET_ACCESS_KEY" => "s3cret")
 
@@ -47,8 +47,8 @@ const UNSET_CASES = [
 
 @testset "Chain refuses an environment without keys: $(case.name)" for case in UNSET_CASES
     withenv(case.env...) do
-        @test_throws ArgumentError case.says Chain("bkt", "p"; region = "eu-north-1")
-        @test_throws ArgumentError "aws-vault exec" Chain("bkt", "p"; region = "eu-north-1")
+        @test_throws CredentialsError case.says Chain("bkt", "p"; region = "eu-north-1")
+        @test_throws CredentialsError "aws-vault exec" Chain("bkt", "p"; region = "eu-north-1")
     end
 end
 

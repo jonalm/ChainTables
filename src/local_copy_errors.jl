@@ -3,6 +3,8 @@
 
 The local copy is pinned at a slot, so a call that would move it is refused. Run
 `unpin!(copy)` to make it live, or use a live copy.
+
+Examples: test/test_local_copy_errors_examples.jl
 """
 struct PinnedCopyError <: ChainTablesError
     path::MaybeString
@@ -27,6 +29,8 @@ end
 
 A record's state fingerprint (`expected`) differs from the one this client holds or
 computes (`computed`, `nothing` when a table file is missing). Run `repair!(copy)`.
+
+Examples: test/test_local_copy_errors_examples.jl
 """
 struct FingerprintMismatchError <: ChainTablesError
     chain_id::MaybeString
@@ -62,6 +66,8 @@ end
 A fresh replay of the record cache to the head's slot yields `computed`, where the
 head carries `expected`: this machine cannot reproduce the chain. It does not say
 which side is right. Report it with both client versions.
+
+Examples: test/test_local_copy_errors_examples.jl
 """
 struct DivergenceError <: ChainTablesError
     path::MaybeString
@@ -97,6 +103,8 @@ end
 
 The path is not a local copy: a file, or a non-empty directory without `heads/` and
 `tables/`, or a head no client can read. Open another path.
+
+Examples: test/test_local_copy_errors_examples.jl
 """
 struct NotALocalCopyError <: ChainTablesError
     path::MaybeString
@@ -117,6 +125,8 @@ end
 
 A head file of the local copy was written by a newer client, in a layout this one
 cannot read. Upgrade ChainTables, or delete the copy and sync again.
+
+Examples: test/test_local_copy_errors_examples.jl
 """
 struct LayoutVersionError <: ChainTablesError
     path::MaybeString
@@ -140,16 +150,21 @@ end
 
 The local copy is bound to chain `bound`, and the chain being opened is `opened`.
 Open another path for this chain.
+
+Examples: test/test_local_copy_errors_examples.jl
 """
 struct WrongChainError <: ChainTablesError
     path::MaybeString
     bound::MaybeString
+    slot::MaybeInt # the copy's head
     opened::MaybeString
     detail::String
 end
 
-function WrongChainError(; path = nothing, bound = nothing, opened = nothing, detail = "")
-    return WrongChainError(path, bound, opened, detail)
+function WrongChainError(;
+        path = nothing, bound = nothing, slot = nothing, opened = nothing, detail = ""
+    )
+    return WrongChainError(path, bound, slot, opened, detail)
 end
 
 function Base.showerror(io::IO, e::WrongChainError)
@@ -165,18 +180,21 @@ end
 The local copy is damaged: a head that is not self-consistent, a named file missing,
 or a table file whose bytes do not hash to its name. Run `repair!(copy)`; with no
 readable head, delete the directory and sync.
+
+Examples: test/test_local_copy_errors_examples.jl
 """
 struct LocalCopyInconsistentError <: ChainTablesError
     path::MaybeString
     slot::MaybeInt
     file::MaybeString # relative to `path`
+    table::MaybeString
     detail::String
 end
 
 function LocalCopyInconsistentError(;
-        path = nothing, slot = nothing, file = nothing, detail = ""
+        path = nothing, slot = nothing, file = nothing, table = nothing, detail = ""
     )
-    return LocalCopyInconsistentError(path, slot, file, detail)
+    return LocalCopyInconsistentError(path, slot, file, table, detail)
 end
 
 function Base.showerror(io::IO, e::LocalCopyInconsistentError)
@@ -195,6 +213,8 @@ end
 The record cache lacks a slot's record (`found` is `nothing`) or holds bytes of
 another hash. The cache is damaged, not the chain: run `repair!(copy)`. When the file
 changed while it was being checked, run the call again.
+
+Examples: test/test_local_copy_errors_examples.jl
 """
 struct RecordCacheError <: ChainTablesError
     chain_id::MaybeString

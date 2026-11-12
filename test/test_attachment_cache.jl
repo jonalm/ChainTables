@@ -232,8 +232,7 @@ end
         e = thrown(() -> attachment(two, HASH))
         @test e isa AttachmentDigestError
         @test (e.key, e.size, e.found, e.chain_id) == (KEY, 120, nothing, two.head.chain_id)
-        detail = "the cached file, which hashes to the key's hash, is 5000 bytes"
-        @test occursin(detail, sprint(showerror, e))
+        @test e.cached_size == 5000
         @test t.store.calls == [(:stat_object, KEY)]
         @test !is_confirmed(two, HASH)
         @test read(t.path) == BYTES
@@ -250,9 +249,7 @@ end
         e = thrown(() -> attachment(three, HASH))
         @test e isa AttachmentCacheError
         @test (e.path, e.key, e.chain_id) == (t.path, KEY, three.head.chain_id)
-        detail = "the cached file is 80 bytes and hashes to $(bytes2hex(sha256(other))), " *
-            "where the store holds 5000"
-        @test occursin(detail, sprint(showerror, e))
+        @test (e.found, e.size) == (bytes2hex(sha256(other)), 5000)
         @test !is_confirmed(three, HASH)
         remove_read_only(t.path)
         rm(t.path * ".meta")

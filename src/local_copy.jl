@@ -245,8 +245,7 @@ function check_bound_chain(copy::LocalCopy, h::Head, expected)
     (expected === nothing || h.chain_id == expected) && return nothing
     throw(
         WrongChainError(;
-            path = copy.path, bound = h.chain_id, opened = String(expected),
-            detail = "the head is at slot $(h.slot)"
+            path = copy.path, bound = h.chain_id, h.slot, opened = String(expected)
         )
     )
 end

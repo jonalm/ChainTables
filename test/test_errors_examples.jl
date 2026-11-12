@@ -2,7 +2,7 @@ using Test
 using ChainTables: ChainNotFoundError, ChainTablesError, CommitOutcomeUnknownError,
     GatewayMismatchError, LostRaceError, MalformedRecordError, RewrittenChainError,
     StaleHeadError, TransportError, UnsupportedStoreError, WriteBuilderError,
-    WriteRefusedError
+    WriteRefusedError, CredentialsError
 
 @testset "ChainTablesError example" begin
     # Catch ChainTablesError to handle any operational failure of the package.
@@ -76,4 +76,11 @@ end
     # `status` is the HTTP status, `nothing` when there was no answer.
     e = TransportError("GET lab/000000000001: HTTP 503 SlowDown"; status = 503)
     @test e.status == 503
+end
+
+@testset "CredentialsError example" begin
+    # Thrown when no AWS credentials can be had; the profile is evidence.
+    e = CredentialsError(; profile = "team", detail = "the AWS CLI (aws) is not on PATH")
+    @test e.profile == "team"
+    @test occursin("sso_login", sprint(showerror, e))
 end

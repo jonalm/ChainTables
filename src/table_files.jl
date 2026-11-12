@@ -169,9 +169,9 @@ end
 
 function throw_damaged_table(copy::LocalCopy, name, hash, what)
     file = "tables/$(bytes2hex(hash))"
-    detail = "table file $file (table $(repr(name))) $what"
     slot = copy.head.slot
-    throw(LocalCopyInconsistentError(; path = copy.path, slot, file, detail))
+    table = String(name)
+    throw(LocalCopyInconsistentError(; path = copy.path, slot, file, table, detail = what))
 end
 
 # Every file is written to a .tmp in its directory and renamed into place; a table

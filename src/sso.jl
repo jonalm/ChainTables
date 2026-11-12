@@ -72,7 +72,8 @@ function exported_text(s::SSOCredentials)
         s.login_with(s.profile)
         attempt = s.exporter(s.profile)
     end
-    attempt.ok || throw(ArgumentError(export_failure_message(s, attempt.text)))
+    detail = export_failure_message(s, attempt.text)
+    attempt.ok || throw(CredentialsError(; s.profile, detail))
     return attempt.text
 end
 
@@ -133,7 +134,7 @@ function parse_export_credentials(profile, text::AbstractString)
         assignment(line) for line in eachline(IOBuffer(text)) if occursin('=', line)
     )
     has_keys = haskey(lines, "AWS_ACCESS_KEY_ID") && haskey(lines, "AWS_SECRET_ACCESS_KEY")
-    has_keys || throw(ArgumentError(no_keys_message(profile, lines)))
+    has_keys || throw(CredentialsError(; profile, detail = no_keys_message(profile, lines)))
     credentials = Credentials(
         lines["AWS_ACCESS_KEY_ID"], lines["AWS_SECRET_ACCESS_KEY"];
         session_token = get(lines, "AWS_SESSION_TOKEN", nothing)
@@ -157,7 +158,8 @@ end
 # `YYYY-MM-DDThh:mm:ss[.fff](Z|±hh:mm)`, as the CLI prints it, in seconds since the epoch.
 function parse_expiry(profile, text::AbstractString)
     m = match(EXPIRY_FORMAT, text)
-    m === nothing && throw(ArgumentError(expiry_message(profile, text)))
+    detail = expiry_message(profile, text)
+    m === nothing && throw(CredentialsError(; profile, detail))
     utc = unix_seconds(map(parse_int, m.captures[1:6])...)
     m.captures[7] === nothing && return utc
     offset = parse(Int, m.captures[8]) * 3600 + parse(Int, m.captures[9]) * 60
@@ -195,11 +197,13 @@ function sso_login(profile::AbstractString; device_code = false, runner = run_ss
 end
 
 # The login prints a URL and a code and waits, so the CLI gets this process's terminal.
+const CLI_FAILED = "the CLI exited non-zero"
+
 function run_sso_login(command::Cmd)
     Sys.which("aws") === nothing &&
-        throw(ArgumentError(login_failure_message(command, AWS_CLI_MISSING)))
+        throw(CredentialsError(; detail = login_failure_message(command, AWS_CLI_MISSING)))
     success(command) ||
-        throw(ArgumentError(login_failure_message(command, "the CLI exited non-zero")))
+        throw(CredentialsError(; detail = login_failure_message(command, CLI_FAILED)))
     return nothing
 end
 
