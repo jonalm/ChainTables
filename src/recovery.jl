@@ -3,7 +3,6 @@
 # what does not hash to its name; `as_of` builds a pinned copy at a slot; `slot_at` turns
 # a time into a slot by scan. Nothing here heals anything by itself.
 
-using .Model: Content
 
 # ---------------------------------------------------------------------------
 # The record cache as the chain (ADR-0014): what verify(full) walks and repair! replays.
@@ -148,7 +147,7 @@ function verify(copy::LocalCopy; full = false)
             Ops.apply!(content, records[s + 1])
         end; content
     )
-    reproduces(content, s) = Model.state_fingerprint(content) == records[s + 1].state_fingerprint
+    reproduces(content, s) = state_fingerprint(content) == records[s + 1].state_fingerprint
     top = replay_to(Content(), 0, h.slot)
     reproduces(top, h.slot) && (verify_attachments(copy, chain); return nothing)
     # bisect: `lo` reproduces (or is -1), `hi` does not; `base` is the content at `lo`
@@ -163,7 +162,7 @@ function verify(copy::LocalCopy; full = false)
         end
     end
     content = replay_to(deepcopy(base), lo + 1, hi)
-    computed = Model.state_fingerprint(content)
+    computed = state_fingerprint(content)
     record = records[hi + 1]
     here = written_by_here()
     below = hi == 0 ? "it is the first record" : "slots 0 to $(hi - 1) reproduce"
@@ -198,9 +197,9 @@ function verify_files(copy::LocalCopy)
                 (got === nothing ? "is missing" : "hashes to $(bytes2hex(got)), not its name")
         )
     end
-    isempty(problems) && Model.state_fingerprint(h.tables) == h.state_fingerprint && return nothing
+    isempty(problems) && state_fingerprint(h.tables) == h.state_fingerprint && return nothing
     computed = any(isnothing, values(hashed)) ? nothing :
-        Model.state_fingerprint(name => hashed[hash] for (name, hash) in h.tables)
+        state_fingerprint(name => hashed[hash] for (name, hash) in h.tables)
     files = computed === nothing ? "" : "its table files hash to $(bytes2hex(computed)): "
     throw(
         FingerprintMismatchError(
@@ -274,8 +273,8 @@ function repair!(copy::LocalCopy)
     for s in 0:h.slot
         Ops.apply!(content, cached_record_at(chain, h.chain_id, s, hashes, call))
     end
-    replayed = sort!([name => Model.table_hash(t) for (name, t) in content]; by = first)
-    computed = Model.state_fingerprint(replayed)
+    replayed = sort!([name => table_hash(t) for (name, t) in content]; by = first)
+    computed = state_fingerprint(replayed)
     if replayed != h.tables
         ours, theirs = Dict(replayed), Dict(h.tables)
         differ = String[]
@@ -307,10 +306,10 @@ end
 
 # The one write that replaces a file: to a .tmp, checked to hash to the name it is
 # about to take, then renamed over the damaged or missing file.
-function rewrite_table_file!(copy::LocalCopy, t::Model.Table, hash)
+function rewrite_table_file!(copy::LocalCopy, t::Table, hash)
     dir = tables_dir(copy)
     tmp = joinpath(dir, bytes2hex(rand(UInt8, 8)) * ".tmp")
-    got = Base.open(io -> Model.write_table(io, t), tmp, "w")
+    got = Base.open(io -> write_table(io, t), tmp, "w")
     got == hash || (
         rm(tmp; force = true); error(
             "repair!(copy): the replayed table encodes to $(bytes2hex(got)), the head " *
@@ -365,7 +364,7 @@ function as_of(chain::Chain, target; path = nothing)
     try
         h = copy.head
         if h !== nothing
-            ispinned(copy) || throw(
+            is_pinned(copy) || throw(
                 ArgumentError(
                     "$call: the local copy at $(copy.path) is live (slot $(h.slot), not " *
                         "pinned); as_of never touches a live local copy. Give another path, or none for a temporary one."

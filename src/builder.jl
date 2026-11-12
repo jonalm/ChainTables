@@ -8,7 +8,6 @@
 # `commit!` against the model (#34 step 7). Every refusal is a
 # `WriteBuilderError` whose message starts with the call to fix (ADR-0020).
 
-using .Model: fail
 
 """
     WriteBuilder
@@ -16,7 +15,7 @@ using .Model: fail
 The single-use write builder (ADR-0019, ADR-0001): the ops of one transaction
 record, collected by the op functions below and consumed by `commit!`. Taken
 with [`write_builder`](@ref) over a local copy, or constructed over a
-`Model.Content` directly (the tests do); `copy` and `head` — the copy's
+`Content` directly (the tests do); `copy` and `head` — the copy's
 `(; slot, transaction_hash)` when the builder was taken — ride along for
 `commit!`'s stale-head check.
 
@@ -34,7 +33,7 @@ Fields: `ops`, the canonical ops in call order; `spent`, set by [`spend!`](@ref)
 once `commit!` has consumed the builder.
 """
 mutable struct WriteBuilder{C, H}
-    scratch::Model.Content     # every table named so far as an empty Table carrying its shape, evolved by this builder's shape ops
+    scratch::Content     # every table named so far as an empty Table carrying its shape, evolved by this builder's shape ops
     pending::Set{String}       # the copy's tables not yet in scratch; a name here exists and is loaded on first mention
     ops::Vector{Ops.Op}
     spent::Bool
@@ -42,8 +41,8 @@ mutable struct WriteBuilder{C, H}
     head::H
 end
 
-function WriteBuilder(content::Model.Content; copy = nothing, head = nothing, pending = Set{String}())
-    scratch = Model.Content(name => Model.Table(t.shape) for (name, t) in content)
+function WriteBuilder(content::Content; copy = nothing, head = nothing, pending = Set{String}())
+    scratch = Content(name => Table(t.shape) for (name, t) in content)
     return WriteBuilder{typeof(copy), typeof(head)}(scratch, Set{String}(pending), Ops.Op[], false, copy, head)
 end
 
@@ -53,10 +52,10 @@ end
 function scratch_table(w::WriteBuilder, name::AbstractString)
     if name in w.pending
         t = load_table!(w.copy, name)
-        w.scratch[name] = Model.Table(t.shape)
+        w.scratch[name] = Table(t.shape)
         delete!(w.pending, name)
     end
-    return Model.table(w.scratch, name)
+    return content_table(w.scratch, name)
 end
 
 """
@@ -102,7 +101,7 @@ function guarded(f, call)
     try
         f()
     catch e
-        e isa Model.ModelError || rethrow()
+        e isa ModelError || rethrow()
         throw(WriteBuilderError("$call: $(e.msg)"))
     end
     return nothing
@@ -142,17 +141,17 @@ end
 # text checked — then the model's own check_cell refuses anything else by type.
 # ---------------------------------------------------------------------------
 
-cell(::Model.Column, x::Int64) = x
-cell(::Model.Column, x::Float64) = isnan(x) ? NaN : x          # every NaN is f97e00: sign and payload dropped
-cell(c::Model.Column, x::String) = Ops.check_text("column $(repr(c.name))", x)
-cell(::Model.Column, x::Vector{UInt8}) = x                       # copied by the model when it takes the row
-cell(::Model.Column, ::Missing) = missing
-cell(c::Model.Column, x::Union{Int8, Int16, Int32}) = cell(c, Int64(x))
-cell(c::Model.Column, x::Union{Float16, Float32}) = cell(c, Float64(x))
-cell(c::Model.Column, x::AbstractString) = cell(c, String(x))
-cell(c::Model.Column, x::AbstractVector{UInt8}) = cell(c, Vector{UInt8}(x))
-cell(c::Model.Column, ::Nothing) = fail("column $(repr(c.name)): nothing is not a value; null is spelt missing")
-cell(::Model.Column, x) = x                                      # refused by Model.check_cell, naming the column and the type
+cell(::Column, x::Int64) = x
+cell(::Column, x::Float64) = isnan(x) ? NaN : x          # every NaN is f97e00: sign and payload dropped
+cell(c::Column, x::String) = Ops.check_text("column $(repr(c.name))", x)
+cell(::Column, x::Vector{UInt8}) = x                       # copied by the model when it takes the row
+cell(::Column, ::Missing) = missing
+cell(c::Column, x::Union{Int8, Int16, Int32}) = cell(c, Int64(x))
+cell(c::Column, x::Union{Float16, Float32}) = cell(c, Float64(x))
+cell(c::Column, x::AbstractString) = cell(c, String(x))
+cell(c::Column, x::AbstractVector{UInt8}) = cell(c, Vector{UInt8}(x))
+cell(c::Column, ::Nothing) = fail("column $(repr(c.name)): nothing is not a value; null is spelt missing")
+cell(::Column, x) = x                                      # refused by check_cell, naming the column and the type
 
 cells(cols, row) = Any[cell(c, getproperty(row, Symbol(c.name))) for c in cols]
 
@@ -196,7 +195,7 @@ The `t` of `create_table!(w, :t) do t … end`: the columns declared so far by
 [`column!`](@ref), and the key once [`primary_key!`](@ref) has named it.
 """
 mutable struct TableDeclaration
-    columns::Vector{Model.Column}
+    columns::Vector{Column}
     key::Union{Nothing, Vector{String}}
 end
 
@@ -218,11 +217,11 @@ function create_table!(f, w::WriteBuilder, table)
     return guarded("create_table!(w, $(repr(table)))") do
         live(w)
         name = tablename(table)
-        d = TableDeclaration(Model.Column[], nothing)
+        d = TableDeclaration(Column[], nothing)
         f(d)
-        shape = Model.Shape(d.columns, something(d.key, String[]))   # every rule of a shape, the model's own
+        shape = Shape(d.columns, something(d.key, String[]))   # every rule of a shape, the model's own
         name in w.pending && fail("table $(repr(name)) already exists")
-        Model.create_table!(w.scratch, name, shape)
+        add_table!(w.scratch, name, shape)
         push!(w.ops, Ops.CreateTable(name, shape))
     end
 end
@@ -238,9 +237,9 @@ tags — `Int64`, `Float64`, `String`, `Vector{UInt8}` — by identity (ADR-0019
 function column!(d::TableDeclaration, column, T; nullable = false)
     return guarded("column!(t, $(repr(column)), $(repr(T)))") do
         name = colname(column)
-        Model.check_column_name(name)
+        check_column_name(name)
         any(c -> c.name == name, d.columns) && fail("duplicate column name $(repr(name))")
-        push!(d.columns, Model.Column(name, tag_value_type(T, name), nullable))
+        push!(d.columns, Column(name, tag_value_type(T, name), nullable))
     end
 end
 
@@ -255,7 +254,7 @@ function primary_key!(d::TableDeclaration, columns...)
     return guarded("primary_key!(t$(join(", " .* repr.(columns))))") do
         d.key === nothing || fail("primary_key! was already called; a table has one primary key")
         key = String[colname(c) for c in columns]
-        Model.Shape(d.columns, key)                                 # every rule of a key, the model's own
+        Shape(d.columns, key)                                 # every rule of a key, the model's own
         d.key = key
     end
 end
@@ -266,8 +265,8 @@ end
 
 # The slot a scratch table's column op stamps: a placeholder 0, since a scratch
 # table holds a shape and never rows, so nothing is stamped (ADR-0032).
-function scratch_slot(t::Model.Table)
-    Model.nrows(t) == 0 || error("scratch table holds $(Model.nrows(t)) rows; it holds a shape and never rows")
+function scratch_slot(t::Table)
+    nrows(t) == 0 || error("scratch table holds $(nrows(t)) rows; it holds a shape and never rows")
     return 0
 end
 
@@ -283,10 +282,10 @@ function add_column!(w::WriteBuilder, table, column, T; nullable = false, fill)
         live(w)
         name = tablename(table)
         cname = colname(column)
-        c = Model.Column(cname, tag_value_type(T, cname), nullable)
+        c = Column(cname, tag_value_type(T, cname), nullable)
         t = scratch_table(w, name)
         f = cell(c, fill)
-        Model.add_column!(t, c, f, scratch_slot(t))                 # exists, fill against the column, identifier
+        append_column!(t, c, f, scratch_slot(t))                 # exists, fill against the column, identifier
         push!(w.ops, Ops.AddColumn(name, c, f))
     end
 end
@@ -303,7 +302,7 @@ function drop_column!(w::WriteBuilder, table, column)
         name = tablename(table)
         cname = colname(column)
         t = scratch_table(w, name)
-        Model.drop_column!(t, cname, scratch_slot(t))
+        remove_column!(t, cname, scratch_slot(t))
         push!(w.ops, Ops.DropColumn(name, cname))
     end
 end
@@ -321,7 +320,7 @@ function drop_table!(w::WriteBuilder, table)
         if name in w.pending                 # dropped unread: nothing of it is needed until commit!
             delete!(w.pending, name)
         else
-            Model.drop_table!(w.scratch, name)
+            remove_table!(w.scratch, name)
         end
         push!(w.ops, Ops.DropTable(name))
     end
@@ -345,12 +344,12 @@ function insert_rows!(w::WriteBuilder, table, rows)
         name = tablename(table)
         s = scratch_table(w, name).shape
         rs, names = rowset(rows)
-        foreach(n -> Model.column_index(s, String(n)), names)
+        foreach(n -> column_index(s, String(n)), names)
         for c in s.columns
             Symbol(c.name) in names || fail("row set names no column $(repr(c.name)); an insert names every column")
         end
-        vecs = Ops.sort_rows((cells(s.columns, r) for r in rs), r -> Model.key_of(s, r))
-        Model.check_insert(s, vecs)
+        vecs = Ops.sort_rows((cells(s.columns, r) for r in rs), r -> key_of(s, r))
+        check_insert(s, vecs)
         push!(w.ops, Ops.Insert(name, vecs))
     end
 end
@@ -369,7 +368,7 @@ function update_rows!(w::WriteBuilder, table, rows)
         name = tablename(table)
         s = scratch_table(w, name).shape
         rs, names = rowset(rows)
-        foreach(n -> Model.column_index(s, String(n)), names)
+        foreach(n -> column_index(s, String(n)), names)
         for k in s.key
             Symbol(k) in names || fail("row set names no key column $(repr(k)); an update names the full key")
         end
@@ -378,7 +377,7 @@ function update_rows!(w::WriteBuilder, table, rows)
         columns = String[c.name for c in valcols]
         nk = length(s.keyidx)
         vecs = Ops.sort_rows((vcat(cells(keycols, r), cells(valcols, r)) for r in rs), r -> Tuple(r[1:nk]))
-        Model.check_update(s, columns, vecs)
+        check_update(s, columns, vecs)
         push!(w.ops, Ops.Update(name, columns, vecs))
     end
 end
@@ -396,7 +395,7 @@ function delete_rows!(w::WriteBuilder, table, rows)
         s = scratch_table(w, name).shape
         rs, names = rowset(rows)
         for n in names
-            c = s.columns[Model.column_index(s, String(n))]
+            c = s.columns[column_index(s, String(n))]
             c.name in s.key || fail("row set names column $(repr(c.name)); a delete names the key columns only")
         end
         for k in s.key
@@ -404,7 +403,7 @@ function delete_rows!(w::WriteBuilder, table, rows)
         end
         keycols = [s.columns[j] for j in s.keyidx]
         vecs = Ops.sort_rows((cells(keycols, r) for r in rs), Tuple)
-        Model.check_delete(s, vecs)
+        check_delete(s, vecs)
         push!(w.ops, Ops.Delete(name, vecs))
     end
 end

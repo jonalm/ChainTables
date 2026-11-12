@@ -368,23 +368,6 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    TransportError(msg; status = nothing) <: Exception
-
-What a port verb raises when a request failed: `status` is the HTTP status when there
-was a response, `nothing` for a connect failure or a timeout. Deliberately outside
-ADR-0020's taxonomy: it is the transport's word, and the commit layer decides what it
-means — [`retryable`](@ref) says whether the request is re-issued. A test's
-`InMemoryObjectStore` `fault` throws one to simulate a failed request.
-"""
-struct TransportError <: Exception
-    msg::String
-    status::Union{Nothing, Int}
-end
-TransportError(msg; status = nothing) = TransportError(msg, status)
-Base.showerror(io::IO, e::TransportError) =
-    print(io, "TransportError: ", e.msg, e.status === nothing ? "" : " (HTTP $(e.status))")
-
-"""
     retryable(e) -> Bool
 
 ADR-0010's rule: a connect failure or timeout (`status === nothing`), a `5xx`, a `409`

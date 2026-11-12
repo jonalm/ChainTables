@@ -1,10 +1,16 @@
 module ChainTables
 
+using SHA: SHA
+
+abstract type AbstractObjectStore end
+
 # Layout follows the build order of #34 §3. Nothing is exported (ADR-0019).
 # errors.jl comes first so every lane raises the same types (ADR-0020).
 
 include("hashes.jl")     # step 8: TransactionHash, StateFingerprint (ADR-0019)
-include("errors.jl")     # ADR-0020: ChainTablesError and the twenty-four concrete types; AbstractObjectStore (ADR-0010)
+include("errors.jl")
+include("local_copy_errors.jl")
+include("attachment_errors.jl")
 include("cbor.jl")       # step 1
 include("model.jl")      # step 2
 include("ops.jl")        # step 3

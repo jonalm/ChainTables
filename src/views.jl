@@ -4,7 +4,6 @@
 # `shape` is the declaration. ADR-0043: the cached view is shared by every caller at its
 # head, so it hands out read-only columns, and it implements Tables.jl natively.
 
-using .Model: Shape
 import Tables
 
 """
@@ -72,8 +71,8 @@ own_cell(x) = x
 
 # The rows of a model table, copied out in typed key order: every column vector is fresh,
 # and a bytes cell is copied so that nothing a user does to the view reaches the model.
-function TableView(name::AbstractString, h::Head, t::Model.Table)
-    perm = sortperm(Model.key_vector(t))
+function TableView(name::AbstractString, h::Head, t::Table)
+    perm = sortperm(key_vector(t))
     names = Tuple(Symbol(c.name) for c in t.shape.columns)
     vectors = map(zip(t.shape.columns, t.columns)) do (c, col)
         out = col[perm]
@@ -83,7 +82,7 @@ function TableView(name::AbstractString, h::Head, t::Model.Table)
     columns = NamedTuple{names}(Tuple(vectors))
     index = Dict{Any, Int}()
     for (i, p) in enumerate(perm)
-        index[Model.key_at(t, p)] = i
+        index[key_at(t, p)] = i
     end
     return TableView(
         String(name), h.chain_id, h.slot, TransactionHash(h.transaction_hash), t.shape, columns, t.slots[perm],
@@ -230,6 +229,6 @@ end
 shape(v::TableView) = public_shape(v.shape)
 
 public_shape(s::Shape) = (;
-    columns = [(; name = Symbol(c.name), type = Model.julia_type(c.type), nullable = c.nullable) for c in s.columns],
+    columns = [(; name = Symbol(c.name), type = julia_type(c.type), nullable = c.nullable) for c in s.columns],
     key = Symbol[Symbol(k) for k in s.key],
 )

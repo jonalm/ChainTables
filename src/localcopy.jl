@@ -7,7 +7,6 @@
 # is ChainTables.open: every file below is opened with `Base.open`.
 
 import SHA
-using .Model: Content, ModelError
 using .Ops: Record
 
 """
@@ -159,7 +158,7 @@ function check_head(h::Head)
     names = first.(h.tables)
     issorted(names; lt = isless) || throw(ArgumentError("tables are not sorted by name: $(repr(names))"))
     fp = try
-        Model.state_fingerprint(h.tables)    # 32-byte hashes, no duplicate name
+        state_fingerprint(h.tables)    # 32-byte hashes, no duplicate name
     catch e
         e isa ModelError || rethrow()
         throw(ArgumentError(e.msg))
@@ -513,12 +512,12 @@ function Base.close(copy::LocalCopy)
 end
 
 """
-    ispinned(copy) -> Bool
+    is_pinned(copy) -> Bool
 
 Whether the `pin` file exists: `as_of` creates it, [`unpin!`](@ref) deletes it,
 `sync!` and `commit!` refuse while it exists (ADR-0015, ADR-0023).
 """
-ispinned(copy::LocalCopy) = isfile(joinpath(copy.path, "pin"))
+is_pinned(copy::LocalCopy) = isfile(joinpath(copy.path, "pin"))
 
 pin!(copy::LocalCopy) = (touch(joinpath(copy.path, "pin")); nothing)
 
@@ -533,7 +532,7 @@ temporary `as_of` copy stays temporary, and `close` still deletes it.
 """
 function unpin!(copy::LocalCopy)
     check_open(copy)
-    ispinned(copy) || throw(ArgumentError("unpin!(copy): the local copy at $(copy.path) is not pinned; it is live already"))
+    is_pinned(copy) || throw(ArgumentError("unpin!(copy): the local copy at $(copy.path) is not pinned; it is live already"))
     rm(joinpath(copy.path, "pin"))
     return nothing
 end
@@ -595,7 +594,7 @@ function damaged(copy::LocalCopy, name, hash, what)
 end
 
 """
-    load_table!(copy, name) -> Model.Table
+    load_table!(copy, name) -> Table
 
 The table `name`, read whole from its file on first touch and resident until
 close (ADR-0023). The file is hashed and the hash compared with its name before
@@ -603,19 +602,19 @@ any byte of it reaches the model; a mismatch, or a file that hashes to its name
 but is not a canonical table file, or one holding a row slot above the head's
 slot (ADR-0032), is a damaged copy — `LocalCopyInconsistentError` naming
 `repair!(copy)`. An unknown name raises
-`Model.ModelError`.
+`ModelError`.
 """
 function load_table!(copy::LocalCopy, name::AbstractString)
     check_open(copy)
     haskey(copy.content, name) && return copy.content[name]
-    (haskey(copy.tables, name) && name ∉ copy.loaded) || Model.fail("unknown table $(repr(name))")
+    (haskey(copy.tables, name) && name ∉ copy.loaded) || fail("unknown table $(repr(name))")
     hash = copy.tables[name]
     file = table_path(copy, hash)
     isfile(file) || throw(damaged(copy, name, hash, "is missing"))
     got = hash_file(file)
     got == hash || throw(damaged(copy, name, hash, "hashes to $(bytes2hex(got)): its bytes are not the content the head names"))
     t = try
-        Base.open(Model.read_table, file)
+        Base.open(read_table, file)
     catch e
         e isa ModelError || e isa CBOR.DecodeError || rethrow()
         throw(damaged(copy, name, hash, "hashes to its name but is not a canonical table file ($(sprint(showerror, e)))"))
@@ -654,10 +653,10 @@ load_tables!(copy::LocalCopy, r::Record) = load_tables!(copy, unique(op.table fo
 
 # Every file is written to a .tmp in its directory and renamed into place; a
 # table file's name is only known once it is hashed, so its .tmp is random.
-function write_table_file!(copy::LocalCopy, t::Model.Table)
+function write_table_file!(copy::LocalCopy, t::Table)
     dir = tables_dir(copy)
     tmp = joinpath(dir, bytes2hex(rand(UInt8, 8)) * ".tmp")
-    hash = Base.open(io -> Model.write_table(io, t), tmp, "w")
+    hash = Base.open(io -> write_table(io, t), tmp, "w")
     target = joinpath(dir, bytes2hex(hash))
     if isfile(target)                       # an existing name is skipped (ADR-0009)
         rm(tmp; force = true)
@@ -687,7 +686,7 @@ function stage!(copy::LocalCopy)
         push!(entries, name => write_table_file!(copy, t))
     end
     sort!(entries; by = first)
-    return (; tables = entries, state_fingerprint = Model.state_fingerprint(entries))
+    return (; tables = entries, state_fingerprint = state_fingerprint(entries))
 end
 
 function check_advance(copy::LocalCopy, chain_id, slot)

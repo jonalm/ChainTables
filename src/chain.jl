@@ -224,7 +224,7 @@ chain_of(copy::LocalCopy, call) = copy.chain isa Chain ? copy.chain :
     throw(ArgumentError("$call: the local copy at $(copy.path) was opened over a $(typeof(copy.chain)), not a ChainTables.Chain"))
 
 function refuse_pinned(copy::LocalCopy, call)
-    ispinned(copy) || return nothing
+    is_pinned(copy) || return nothing
     slot = copy.head === nothing ? "no slot" : "slot $(copy.head.slot)"
     throw(
         PinnedCopyError(
@@ -315,7 +315,7 @@ function create_chain(chain::Chain)
     cid = chain_id_string(chain_id)
     user = write_author(chain, cid, 0)                         # ADR-0028: the author, before anything is written
     record = Record(
-        chain_id, 0, nothing, Model.state_fingerprint(Content()),
+        chain_id, 0, nothing, state_fingerprint(Content()),
         Ops.local_client(; chain.record_host, user), nothing, Ops.Op[]
     )
     bytes = Ops.encode_record(record)

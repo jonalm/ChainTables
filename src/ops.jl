@@ -39,7 +39,7 @@ over the stored bytes ([`transaction_hash`](@ref)); a record never carries its o
 
 # Apply (ADR-0025, ADR-0022)
 
-[`apply!`](@ref) runs a record's ops on a `Model.Content` in order. Every
+[`apply!`](@ref) runs a record's ops on a `ChainTables.Content` in order. Every
 structural check the write builder runs is re-run here through the model's own
 primitives — value type and nullability, every column named by an insert, known
 table and column, a non-key column for `drop_column`, no duplicate key in an op,
@@ -53,9 +53,7 @@ module Ops
 
 import SHA
 using ..CBOR
-using ..Model
-using ..Model: Shape, Column, Content, ModelError, fail
-using ..ChainTables: ChainTables, MalformedRecordError, WriteBuilderError
+using ..ChainTables: ChainTables, Shape, Column, Content, ModelError, fail, MalformedRecordError, WriteBuilderError
 
 # ---------------------------------------------------------------------------
 # The seven ops (ADR-0025)
@@ -160,7 +158,7 @@ rows_wire(rows) = Any[Any[r...] for r in rows]
 
 The op's wire form, ready for `CBOR.encode` (ADR-0025).
 """
-wire(op::CreateTable) = Dict{String, Any}("op" => op_name(op), "table" => op.table, "shape" => Model.wire(op.shape))
+wire(op::CreateTable) = Dict{String, Any}("op" => op_name(op), "table" => op.table, "shape" => ChainTables.shape_wire(op.shape))
 wire(op::AddColumn) = Dict{String, Any}(
     "op" => op_name(op), "table" => op.table,
     "column" => Any[op.column.name, op.column.type, op.column.nullable], "fill" => op.fill
@@ -215,7 +213,7 @@ end
     op_from_wire(w) -> Op
 
 Read one op from its wire form as `CBOR.decode` yields it. Refuses with a
-`Model.ModelError` an unknown op name, a missing or unknown field, or a field
+`ChainTables.ModelError` an unknown op name, a missing or unknown field, or a field
 of the wrong shape; the cells themselves are checked against the shape at
 apply, where the shape is known.
 """
@@ -340,7 +338,7 @@ field: a `Record` is always [`FORMAT_VERSION`](@ref). The constructor holds
 every envelope rule — 16-byte chain id, 32-byte hashes, a non-negative slot,
 `prev_hash` present exactly after genesis, no op at genesis and at least one after
 it (so every row slot is at least 1), a comment of
-well-formed UTF-8 without U+0000 — raising `Model.ModelError`, so the builder
+well-formed UTF-8 without U+0000 — raising `ChainTables.ModelError`, so the builder
 and [`decode_record`](@ref) share one check. A record never holds its own
 `transaction_hash`: that is a function of its stored bytes.
 """
@@ -548,7 +546,7 @@ sort_rows(rows, keyof) = sort(collect(rows); by = keyof)
     apply!(content, op::Op, slot) -> nothing
     apply!(content, record::Record) -> nothing
 
-Apply one op, or every op of a record in order, to a `Model.Content`. Each op
+Apply one op, or every op of a record in order, to a `ChainTables.Content`. Each op
 is a delegation to the model primitive it reduces to, and every structural
 check the write builder runs is run there (ADR-0025): value type and
 nullability against the shape, every column named by an insert, known table and
@@ -563,19 +561,19 @@ row of the table. The op form takes the slot as a required argument; the
 record form copies it from the envelope's `slot`, which is copying a value, not
 computing one.
 
-The op form raises `Model.ModelError` for the builder to fold into
+The op form raises `ChainTables.ModelError` for the builder to fold into
 `WriteBuilderError`; the record form folds it into `MalformedRecordError`
 naming the slot, the op index and the rule (ADR-0020), and applies nothing
 after the op that failed — the content is then partially applied and the
 caller discards it; the local copy's files are untouched (ADR-0013).
 """
-apply!(c::Content, op::CreateTable, slot) = (Model.create_table!(c, op.table, op.shape); nothing)
-apply!(c::Content, op::AddColumn, slot) = (Model.add_column!(Model.table(c, op.table), op.column, op.fill, slot); nothing)
-apply!(c::Content, op::DropColumn, slot) = (Model.drop_column!(Model.table(c, op.table), op.column, slot); nothing)
-apply!(c::Content, op::DropTable, slot) = (Model.drop_table!(c, op.table); nothing)
-apply!(c::Content, op::Insert, slot) = (Model.insert_rows!(Model.table(c, op.table), op.rows, slot); nothing)
-apply!(c::Content, op::Update, slot) = (Model.update_rows!(Model.table(c, op.table), op.columns, op.rows, slot); nothing)
-apply!(c::Content, op::Delete, slot) = (Model.delete_rows!(Model.table(c, op.table), op.keys); nothing)
+apply!(c::Content, op::CreateTable, slot) = (ChainTables.add_table!(c, op.table, op.shape); nothing)
+apply!(c::Content, op::AddColumn, slot) = (ChainTables.append_column!(ChainTables.content_table(c, op.table), op.column, op.fill, slot); nothing)
+apply!(c::Content, op::DropColumn, slot) = (ChainTables.remove_column!(ChainTables.content_table(c, op.table), op.column, slot); nothing)
+apply!(c::Content, op::DropTable, slot) = (ChainTables.remove_table!(c, op.table); nothing)
+apply!(c::Content, op::Insert, slot) = (ChainTables.insert_table_rows!(ChainTables.content_table(c, op.table), op.rows, slot); nothing)
+apply!(c::Content, op::Update, slot) = (ChainTables.update_table_rows!(ChainTables.content_table(c, op.table), op.columns, op.rows, slot); nothing)
+apply!(c::Content, op::Delete, slot) = (ChainTables.delete_table_rows!(ChainTables.content_table(c, op.table), op.keys); nothing)
 
 function apply!(c::Content, r::Record)
     for (i, op) in enumerate(r.ops)

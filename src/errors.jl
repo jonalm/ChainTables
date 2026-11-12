@@ -1,33 +1,10 @@
-# ADR-0020 (errors are types, the message is the contract). Every lane raises these
-# types; #34 step 7 completed the taxonomy with the evidence fields, step 8 typed the hashes.
-#
-# Each type carries `msg` — the three-part message: what happened in the glossary's
-# words, the evidence, the next move naming the function — and the same evidence as
-# fields, so a caller can branch on the type and read the chain id, slot and hashes
-# without parsing text. Every evidence field is keyword-optional and `nothing` when
-# the raiser does not know it; a hash is a `TransactionHash` or a `StateFingerprint`
-# (ADR-0019), built from the raw 32 bytes a raiser passes.
-
 """
     ChainTablesError <: Exception
 
-Abstract supertype of every error ChainTables raises (ADR-0020). Every concrete type
-holds `msg`, the message that is the contract, and its evidence as fields.
+The supertype of every error ChainTables throws. Catch it to handle any operational
+failure of the package; catch a concrete subtype to branch on one.
 """
 abstract type ChainTablesError <: Exception end
-
-"""
-    AbstractObjectStore
-
-The object-store port: fetch one object, put one object only if its key is absent,
-stat one key, list a prefix (ADR-0010, ADR-0019). Declared here rather than in
-`store.jl` so the local-copy lane can dispatch on it before the store lane lands.
-
-A store of your own implements the four verbs and `ChainTables.cache_namespace`, the
-record cache's directory for what it reads (ADR-0040); a `Chain` over a store without it
-is refused.
-"""
-abstract type AbstractObjectStore end
 
 const MaybeTxn = Union{Nothing, TransactionHash}
 const MaybeFp = Union{Nothing, StateFingerprint}
@@ -35,424 +12,375 @@ const MaybeString = Union{Nothing, String}
 const MaybeInt = Union{Nothing, Int64}
 
 """
-    StaleHeadError(msg; chain_id, slot, chain_slot)
+    ClientVersion
 
-Raised by `commit!`: the builder's head is behind the local copy's or the chain's
-(ADR-0002, ADR-0013). `slot` is the builder's head, `chain_slot` where the chain was
-seen, `nothing` when unknown. Next move: `sync!(copy)`, recompute the row set, build again.
+The `lib` and `julia` versions a record's client map names, kept as forensics when two
+clients disagree on a state fingerprint.
+"""
+const ClientVersion = @NamedTuple{lib::String, julia::String}
+
+"""
+    print_evidence(io, e::ChainTablesError)
+
+Write each Evidence field of `e` that is known (not `nothing`) on its own line.
+`detail` is not evidence: `print_summary` writes it.
+"""
+function print_evidence(io::IO, e::ChainTablesError)
+    for name in fieldnames(typeof(e))
+        value = getfield(e, name)
+        (name === :detail || value === nothing) && continue
+        print(io, "\n  ", name, " = ", evidence_text(value))
+    end
+    return nothing
+end
+
+evidence_text(h::Union{TransactionHash, StateFingerprint}) = bytes2hex(h)
+evidence_text(s::String) = s
+evidence_text(e::Exception) = sprint(showerror, e)
+evidence_text(x) = repr(x)
+
+"""
+    print_summary(io, e, summary)
+
+Write the type name, the fixed `summary` and, when there is one, `e.detail`.
+"""
+function print_summary(io::IO, e::ChainTablesError, summary::AbstractString)
+    print(io, nameof(typeof(e)), ": ", summary)
+    isempty(e.detail) || print(io, ": ", e.detail)
+    print(io, ".")
+    return nothing
+end
+
+"""
+    StaleHeadError
+
+A commit found that the write builder's head is behind its local copy or the chain:
+the row set was computed against a state that has moved. The builder is spent. Run
+`sync!(copy)`, recompute the row set and build again.
 """
 struct StaleHeadError <: ChainTablesError
-    msg::String
+    path::MaybeString
     chain_id::MaybeString
-    slot::MaybeInt
-    chain_slot::MaybeInt
+    slot::MaybeInt # the builder's or the copy's head
+    chain_slot::MaybeInt # where the copy or the chain was seen
+    detail::String
 end
-StaleHeadError(msg; chain_id = nothing, slot = nothing, chain_slot = nothing) =
-    StaleHeadError(msg, chain_id, slot, chain_slot)
+
+function StaleHeadError(;
+        path = nothing, chain_id = nothing, slot = nothing, chain_slot = nothing,
+        detail = ""
+    )
+    return StaleHeadError(path, chain_id, slot, chain_slot, detail)
+end
+
+function Base.showerror(io::IO, e::StaleHeadError)
+    print_summary(io, e, "the write builder's head is behind the chain")
+    print_evidence(io, e)
+    print(
+        io, "\nRun `sync!(copy)`, recompute the row set against the fresh state and ",
+        "build again with `write_builder(copy)`. This builder is spent and never re-run."
+    )
+    return nothing
+end
 
 """
-    LostRaceError(msg; chain_id, slot, transaction_hash)
+    LostRaceError
 
-Raised by `commit!` and `create_chain`: another client's record is at `slot`, and
-`transaction_hash` is its hash (ADR-0002, ADR-0010). Never retried: the builder is spent.
+Another client's record already fills the slot this call tried to fill. The call is
+spent and never retried. Sync and build again, or, for a new chain, open the existing
+one or create under another prefix.
 """
 struct LostRaceError <: ChainTablesError
-    msg::String
+    location::MaybeString # bucket/prefix
     chain_id::MaybeString
     slot::MaybeInt
-    transaction_hash::MaybeTxn
+    transaction_hash::MaybeTxn # the winner's record
+    detail::String
 end
-LostRaceError(msg; chain_id = nothing, slot = nothing, transaction_hash = nothing) =
-    LostRaceError(msg, chain_id, slot, maybe_hash(TransactionHash, transaction_hash))
+
+function LostRaceError(;
+        location = nothing, chain_id = nothing, slot = nothing, transaction_hash = nothing,
+        detail = ""
+    )
+    winner = maybe_hash(TransactionHash, transaction_hash)
+    return LostRaceError(location, chain_id, slot, winner, detail)
+end
+
+function Base.showerror(io::IO, e::LostRaceError)
+    print_summary(io, e, "another client's record already fills the slot")
+    print_evidence(io, e)
+    print(
+        io, "\nThis call is spent and never retried. For a commit: `sync!(copy)` and ",
+        "build again with `write_builder(copy)`. For `create_chain`: open the existing ",
+        "chain with `open(chain, path)`, or create under another prefix."
+    )
+    return nothing
+end
 
 """
-    CommitOutcomeUnknownError(msg; chain_id, slot, transaction_hash, landed, cause)
+    CommitOutcomeUnknownError
 
-Raised by `commit!` when it failed after the put of its record began, so the failure
-does not say whether the commit happened (ADR-0045). `transaction_hash` is the hash of
-the record it put at `slot`: after `sync!(copy)`, the commit happened exactly when
-`commit_log(copy)` shows that hash at that slot. `landed` is `true` when the record is
-known to be in the chain (the local copy's head was not written), `nothing` when
-unknown. `cause` is the failure. Never retried: the builder is spent.
+A commit failed after the put of its record began, so it is unknown whether the commit
+happened. After `sync!(copy)`, it happened exactly when `commit_log(copy)` shows
+`transaction_hash` at `slot`. The builder is spent.
 """
 struct CommitOutcomeUnknownError <: ChainTablesError
-    msg::String
     chain_id::MaybeString
     slot::MaybeInt
-    transaction_hash::MaybeTxn
-    landed::Union{Nothing, Bool}
+    transaction_hash::MaybeTxn # our record's
+    landed::Union{Nothing, Bool} # `true`: the record is known to be in the chain
+    # Downstream packages read `cause` to report and settle the outcome; the exception
+    # stack is gone once they store the error.
+    # style: field the failure may be any exception type
     cause::Any
+    detail::String
 end
-CommitOutcomeUnknownError(msg; chain_id = nothing, slot = nothing, transaction_hash = nothing, landed = nothing, cause = nothing) =
-    CommitOutcomeUnknownError(msg, chain_id, slot, maybe_hash(TransactionHash, transaction_hash), landed, cause)
+
+function CommitOutcomeUnknownError(;
+        chain_id = nothing, slot = nothing, transaction_hash = nothing, landed = nothing,
+        cause = nothing, detail = ""
+    )
+    ours = maybe_hash(TransactionHash, transaction_hash)
+    return CommitOutcomeUnknownError(chain_id, slot, ours, landed, cause, detail)
+end
+
+function Base.showerror(io::IO, e::CommitOutcomeUnknownError)
+    print_summary(io, e, "the commit may or may not have happened")
+    print_evidence(io, e)
+    print(
+        io, "\nRun `sync!(copy)`: the commit happened exactly when `commit_log(copy)` ",
+        "shows `transaction_hash` at `slot`. This builder is spent and never re-run."
+    )
+    return nothing
+end
 
 """
-    UnsupportedStoreError(msg; endpoint)
+    UnsupportedStoreError
 
-Raised by `commit!` against a store that is not AWS S3 unless
-`assume_first_writer_wins` is set (ADR-0016). Raised by #34 step 9.
+A commit was refused because the store is not AWS S3, the only store whose conditional
+put ChainTables trusts. Use AWS S3, or set `assume_first_writer_wins` for a store you
+know keeps that promise.
 """
 struct UnsupportedStoreError <: ChainTablesError
-    msg::String
     endpoint::MaybeString
+    call::MaybeString
+    detail::String
 end
-UnsupportedStoreError(msg; endpoint = nothing) = UnsupportedStoreError(msg, endpoint)
+
+function UnsupportedStoreError(; endpoint = nothing, call = nothing, detail = "")
+    return UnsupportedStoreError(endpoint, call, detail)
+end
+
+function Base.showerror(io::IO, e::UnsupportedStoreError)
+    print_summary(io, e, "the store is not AWS S3, so a commit to it is refused")
+    print_evidence(io, e)
+    print(
+        io, "\nA conditional put (`If-None-Match: *`) must create the key or fail with ",
+        "412, and never overwrite. Use AWS S3, or set `assume_first_writer_wins = true` ",
+        "for a store you know keeps that promise."
+    )
+    return nothing
+end
 
 """
-    WriteBuilderError(msg)
+    WriteBuilderError
 
-Raised by the write builder in the call that is wrong, and by `commit!` for the
-state gate, a spent or empty builder, or a record over the cap (ADR-0001, ADR-0019).
-The message starts with the call to fix; that is the whole evidence.
+A write builder call or a commit was refused: a wrong table, column, row or key, a
+spent or empty builder, or a record over the size cap. Fix the call `call` names.
 """
 struct WriteBuilderError <: ChainTablesError
-    msg::String
+    call::MaybeString
+    detail::String
+end
+
+WriteBuilderError(; call = nothing, detail = "") = WriteBuilderError(call, detail)
+
+function Base.showerror(io::IO, e::WriteBuilderError)
+    print_summary(io, e, "the write was refused")
+    print_evidence(io, e)
+    print(io, "\nFix the call named above; nothing was written.")
+    return nothing
 end
 
 """
-    PinnedCopyError(msg; path, slot)
+    ChainNotFoundError
 
-Raised by `sync!` and `commit!` on a pinned copy (ADR-0015). Next move: `unpin!(copy)`.
-"""
-struct PinnedCopyError <: ChainTablesError
-    msg::String
-    path::MaybeString
-    slot::MaybeInt
-end
-PinnedCopyError(msg; path = nothing, slot = nothing) = PinnedCopyError(msg, path, slot)
-
-"""
-    FingerprintMismatchError(msg; chain_id, slot, expected, computed, record_client, this_client)
-
-Raised at a checkpoint, by the commit and `as_of` pre-checks and by `verify`: the
-record's `state_fingerprint` (`expected`) against what this client holds or computes
-(`computed`) (ADR-0007, ADR-0023); from `verify(copy)` without `full`, the head's
-fingerprint against the one its table files hash to, `computed = nothing` when a file
-is missing. `record_client` and `this_client` are `(; lib, julia)` — the forensics
-ADR-0006 and ADR-0022 named — when known. Next move: `repair!(copy)`.
-"""
-struct FingerprintMismatchError <: ChainTablesError
-    msg::String
-    chain_id::MaybeString
-    slot::MaybeInt
-    expected::MaybeFp
-    computed::MaybeFp
-    record_client::Any
-    this_client::Any
-end
-FingerprintMismatchError(
-    msg; chain_id = nothing, slot = nothing, expected = nothing, computed = nothing,
-    record_client = nothing, this_client = nothing
-) =
-    FingerprintMismatchError(
-    msg, chain_id, slot, maybe_hash(StateFingerprint, expected), maybe_hash(StateFingerprint, computed),
-    record_client, this_client
-)
-
-"""
-    DivergenceError(msg; chain_id, slot, expected, computed)
-
-Raised by `repair!`: a fresh replay of the record cache to the head's `slot` yields
-`computed`, the head carries `expected`, so this machine cannot reproduce the chain
-(ADR-0014). Deliberately does not say which side is right.
-"""
-struct DivergenceError <: ChainTablesError
-    msg::String
-    chain_id::MaybeString
-    slot::MaybeInt
-    expected::MaybeFp
-    computed::MaybeFp
-end
-DivergenceError(msg; chain_id = nothing, slot = nothing, expected = nothing, computed = nothing) =
-    DivergenceError(msg, chain_id, slot, maybe_hash(StateFingerprint, expected), maybe_hash(StateFingerprint, computed))
-
-"""
-    RewrittenChainError(msg; chain_id, slot, expected, found)
-
-Raised by `sync!` and `commit!`: the bucket contradicts what the copy has applied — a
-slot fetching bytes of another hash, an applied slot absent, or a record naming a parent
-the copy does not hold (ADR-0014). `found` is the hash fetched, `nothing` when the slot
-was absent. Never healed; the copy stays readable.
-"""
-struct RewrittenChainError <: ChainTablesError
-    msg::String
-    chain_id::MaybeString
-    slot::MaybeInt
-    expected::MaybeTxn
-    found::MaybeTxn
-end
-RewrittenChainError(msg; chain_id = nothing, slot = nothing, expected = nothing, found = nothing) =
-    RewrittenChainError(msg, chain_id, slot, maybe_hash(TransactionHash, expected), maybe_hash(TransactionHash, found))
-
-"""
-    ChainNotFoundError(msg; bucket, prefix)
-
-Raised by `sync!` on a copy with no head against a prefix with no slot 0: a wrong bucket
-or prefix, **or** a chain not created or truncated — deliberately uncertain (ADR-0019,
-ADR-0020).
+There is no slot 0 at the chain's bucket and prefix. Either the bucket or prefix is
+not the chain's, or no chain was created there; the two cannot be told apart. Check
+the address, or call `create_chain(chain)`.
 """
 struct ChainNotFoundError <: ChainTablesError
-    msg::String
     bucket::MaybeString
     prefix::MaybeString
+    call::MaybeString
+    detail::String
 end
-ChainNotFoundError(msg; bucket = nothing, prefix = nothing) = ChainNotFoundError(msg, bucket, prefix)
 
-"""
-    NotALocalCopyError(msg; path)
-
-Raised by `open`: `path` is not a local copy of ours (ADR-0023).
-"""
-struct NotALocalCopyError <: ChainTablesError
-    msg::String
-    path::MaybeString
+function ChainNotFoundError(;
+        bucket = nothing, prefix = nothing, call = nothing, detail = ""
+    )
+    return ChainNotFoundError(bucket, prefix, call, detail)
 end
-NotALocalCopyError(msg; path = nothing) = NotALocalCopyError(msg, path)
 
-"""
-    LayoutVersionError(msg; path, file)
-
-Raised by `open`: head `file` of the copy at `path` was written by a newer client
-(ADR-0023). Rebuild, never migrate — or upgrade.
-"""
-struct LayoutVersionError <: ChainTablesError
-    msg::String
-    path::MaybeString
-    file::MaybeString
+function Base.showerror(io::IO, e::ChainNotFoundError)
+    print_summary(io, e, "no chain at this bucket and prefix (no slot 0)")
+    print_evidence(io, e)
+    print(
+        io, "\nEither the bucket or prefix is not the chain's, or no chain was created ",
+        "there; the two cannot be told apart. Check the address, or call ",
+        "`create_chain(chain)`, which writes slot 0."
+    )
+    return nothing
 end
-LayoutVersionError(msg; path = nothing, file = nothing) = LayoutVersionError(msg, path, file)
 
 """
-    WrongChainError(msg; path, bound, opened)
+    RewrittenChainError
 
-Raised by `open`: the copy at `path` is bound to chain `bound`, the chain being opened
-is `opened` (ADR-0023).
+The bucket contradicts what the local copy has applied: a slot holds bytes of another
+hash, an applied slot is absent, or a record names a parent the copy does not hold.
+Never healed; the copy stays readable. Stop and find out who rewrote the chain.
 """
-struct WrongChainError <: ChainTablesError
-    msg::String
-    path::MaybeString
-    bound::MaybeString
-    opened::MaybeString
-end
-WrongChainError(msg; path = nothing, bound = nothing, opened = nothing) = WrongChainError(msg, path, bound, opened)
-
-"""
-    LocalCopyInconsistentError(msg; path, slot, file)
-
-Raised by `open` and at load: a damaged copy — a head not self-consistent, a named file
-missing, or a table file whose bytes do not hash to its name (ADR-0023). `file` is the
-offending file relative to `path`, when there is one. Next move: `repair!(copy)`, or, with
-no readable head, delete the directory and sync.
-"""
-struct LocalCopyInconsistentError <: ChainTablesError
-    msg::String
-    path::MaybeString
-    slot::MaybeInt
-    file::MaybeString
-end
-LocalCopyInconsistentError(msg; path = nothing, slot = nothing, file = nothing) =
-    LocalCopyInconsistentError(msg, path, slot, file)
-
-"""
-    RecordCacheError(msg; chain_id, slot, path, expected, found)
-
-Raised by `verify(copy; full = true)`, which is local: the record cache lacks the record
-of `slot` (`found = nothing`), or holds bytes for it hashing to `found` where the chain
-names `expected` — a damaged record cache, not a damaged chain (ADR-0040). `path` is the
-cache file. Next move: `repair!(copy)`, which fetches the record from the store and
-replaces the file. Also raised by `verify` and `repair!` when a cache file they already
-checked changes before they read it again — another process is writing the record
-cache, or the disk damaged it; the next move is to run the call again. The chain's
-readers (`sync!`, `as_of`, `slot_at`) never raise it: they read such a file from the
-store instead.
-"""
-struct RecordCacheError <: ChainTablesError
-    msg::String
+struct RewrittenChainError <: ChainTablesError
     chain_id::MaybeString
     slot::MaybeInt
-    path::MaybeString
     expected::MaybeTxn
-    found::MaybeTxn
+    found::MaybeTxn # `nothing` when the slot was absent
+    detail::String
 end
-RecordCacheError(msg; chain_id = nothing, slot = nothing, path = nothing, expected = nothing, found = nothing) =
-    RecordCacheError(msg, chain_id, slot, path, maybe_hash(TransactionHash, expected), maybe_hash(TransactionHash, found))
+
+function RewrittenChainError(;
+        chain_id = nothing, slot = nothing, expected = nothing, found = nothing,
+        detail = ""
+    )
+    expected_hash = maybe_hash(TransactionHash, expected)
+    found_hash = maybe_hash(TransactionHash, found)
+    return RewrittenChainError(chain_id, slot, expected_hash, found_hash, detail)
+end
+
+function Base.showerror(io::IO, e::RewrittenChainError)
+    print_summary(io, e, "the chain contradicts what this local copy has applied")
+    print_evidence(io, e)
+    print(
+        io, "\nA slot is written once, so someone rewrote the chain outside the ",
+        "protocol. Nothing is healed and the copy stays readable; find out who wrote it."
+    )
+    return nothing
+end
 
 """
-    MalformedRecordError(msg; chain_id, slot, op)
+    MalformedRecordError
 
-Raised at apply and on decoding: a record no client can apply under this format
-version (ADR-0025). `op` is the 1-based index of the op that broke the rule, when the
-rule was an op's. The chain is dead beyond `slot`.
+A record that no client can apply under this format version. The chain cannot be
+read beyond `slot`. `op` is the 1-based index of the op that broke a rule, when it was
+an op's. Report it to whoever writes to the chain.
 """
 struct MalformedRecordError <: ChainTablesError
-    msg::String
     chain_id::MaybeString
     slot::MaybeInt
     op::MaybeInt
+    detail::String
 end
-MalformedRecordError(msg; chain_id = nothing, slot = nothing, op = nothing) = MalformedRecordError(msg, chain_id, slot, op)
+
+function MalformedRecordError(;
+        chain_id = nothing, slot = nothing, op = nothing, detail = ""
+    )
+    return MalformedRecordError(chain_id, slot, op, detail)
+end
+
+function Base.showerror(io::IO, e::MalformedRecordError)
+    print_summary(io, e, "the record cannot be applied under this format version")
+    print_evidence(io, e)
+    print(io, "\nThe chain cannot be read beyond this slot; report it to its writers.")
+    return nothing
+end
+
+const WRITE_REFUSED_NEXT_MOVES = Dict(
+    "not_allowed" => "Ask the bucket's operator to add this author to the gateway policy.",
+    "author_mismatch" => "The record's author is not the caller; report it as a bug.",
+    "forbidden" => "Ask the operator for the writer permission set (InvokeFunctionUrl).",
+)
 
 """
-    WriteRefusedError(msg; chain_id, slot, key, caller, reason)
+    WriteRefusedError
 
-Raised by `commit!` and `create_chain` on a gateway bucket: the gateway refused to fill
-the slot, and nothing is retried (ADR-0028). `key` is the slot's key, `caller` the author
-name this client resolved for itself, and `reason` says who must act:
-
-| `reason` | cause | next move |
-|---|---|---|
-| `"not_allowed"` | the gateway policy has no entry for this name on this prefix (or none from this account or role), or the principal is not a user or assumed role | ask the bucket's operator to add the name to the gateway policy |
-| `"author_mismatch"` | `client.user` ≠ the caller name | a bug, or credentials changed between the STS call and the put; report it |
-| `"forbidden"` | AWS returned 403 before the gateway ran | the principal lacks `lambda:InvokeFunctionUrl` and `lambda:InvokeFunction`; ask the operator for the writer permission set |
-
-One type with a `reason` rather than three: the caller's branch is the same in every case —
-stop, and have a person act.
+The gateway refused to fill a slot, and nothing is retried. `reason` says who must
+act: `"not_allowed"` (the policy has no entry for this author), `"author_mismatch"` (a
+bug) or `"forbidden"` (the principal may not invoke the gateway).
 """
 struct WriteRefusedError <: ChainTablesError
-    msg::String
     chain_id::MaybeString
     slot::MaybeInt
     key::MaybeString
-    caller::MaybeString
+    caller::MaybeString # the author name this client resolved for itself
     reason::MaybeString
+    detail::String
 end
-WriteRefusedError(msg; chain_id = nothing, slot = nothing, key = nothing, caller = nothing, reason = nothing) =
-    WriteRefusedError(msg, chain_id, slot, key, caller, reason)
+
+function WriteRefusedError(;
+        chain_id = nothing, slot = nothing, key = nothing, caller = nothing,
+        reason = nothing, detail = ""
+    )
+    return WriteRefusedError(chain_id, slot, key, caller, reason, detail)
+end
+
+function Base.showerror(io::IO, e::WriteRefusedError)
+    print_summary(io, e, "the gateway refused the write")
+    print_evidence(io, e)
+    fallback = "A person must act before a retry can succeed."
+    print(io, "\n", get(WRITE_REFUSED_NEXT_MOVES, something(e.reason, ""), fallback))
+    return nothing
+end
 
 """
-    GatewayMismatchError(msg; chain_id, slot, key, bucket, gateway)
+    GatewayMismatchError
 
-Raised by `commit!` and `create_chain` on a gateway bucket: the gateway answered
-`200 created` and the bucket this chain reads does not hold the slot — the gateway fills
-another bucket than the one named (ADR-0029). Nothing is retried, and the record now sits
-in the gateway's own bucket, where no delete can reach it. The next move is the
-configuration's: pair the bucket with its own gateway, as one [`Bucket`](@ref) value.
+The gateway answered `created`, but the bucket this chain reads does not hold the
+object: the gateway fills another bucket. Nothing is retried. Pair the bucket with
+its own gateway, as one `Bucket` value.
 """
 struct GatewayMismatchError <: ChainTablesError
-    msg::String
     chain_id::MaybeString
     slot::MaybeInt
     key::MaybeString
     bucket::MaybeString
     gateway::MaybeString
+    detail::String
 end
-GatewayMismatchError(msg; chain_id = nothing, slot = nothing, key = nothing, bucket = nothing, gateway = nothing) =
-    GatewayMismatchError(msg, chain_id, slot, key, bucket, gateway)
 
-"""
-    AttachmentChangedError(msg; chain_id, key)
-
-Raised by `put_attachment`: S3 refused the upload with `BadDigest` — the bytes sent do not
-hash to the `<h>` of the attachment's `key`, so the file changed between hashing and
-upload (ADR-0046). Nothing was stored. The next move: stop whatever writes the file, and
-put it again. `chain_id` is always `nothing`: `put_attachment` works on a `Chain`, and
-only a local copy knows its chain's id without reading the chain.
-"""
-struct AttachmentChangedError <: ChainTablesError
-    msg::String
-    chain_id::MaybeString
-    key::MaybeString
+function GatewayMismatchError(;
+        chain_id = nothing, slot = nothing, key = nothing, bucket = nothing,
+        gateway = nothing, detail = ""
+    )
+    return GatewayMismatchError(chain_id, slot, key, bucket, gateway, detail)
 end
-AttachmentChangedError(msg; chain_id = nothing, key = nothing) = AttachmentChangedError(msg, chain_id, key)
 
-"""
-    AttachmentURLExpiredError(msg; chain_id, key, expires)
-
-Raised by `put_attachment` on a gateway bucket: S3 refused the upload because the URL the
-gateway minted had expired (ADR-0046), and the message says which way: the upload ran past
-the URL's life (S3 refuses an upload still running then, and the client stops it there),
-this process waited past its life before uploading, or S3 called it expired well inside it.
-`expires` is the time the gateway gave, ISO 8601 in UTC. Nothing was stored. The next
-move: put the attachment again, which mints a new URL — over a faster link, if the upload
-outlasted the URL. `chain_id` is always `nothing`, as for [`AttachmentChangedError`](@ref).
-"""
-struct AttachmentURLExpiredError <: ChainTablesError
-    msg::String
-    chain_id::MaybeString
-    key::MaybeString
-    expires::MaybeString
+function Base.showerror(io::IO, e::GatewayMismatchError)
+    print_summary(io, e, "the gateway wrote to another bucket than this chain's")
+    print_evidence(io, e)
+    print(
+        io, "\nThe object now sits in the gateway's own bucket. Pair the bucket with ",
+        "its own gateway, as one `Bucket` value."
+    )
+    return nothing
 end
-AttachmentURLExpiredError(msg; chain_id = nothing, key = nothing, expires = nothing) =
-    AttachmentURLExpiredError(msg, chain_id, key, expires)
 
 """
-    GatewaySessionEndingError(msg; chain_id, key, gateway)
+    TransportError
 
-Raised by `put_attachment` on a gateway bucket: the gateway answered the mint with `503
-session_ending` — the Lambda execution environment that answered is too old to sign a URL,
-its AWS session ending within 15 min (ADR-0046). Not retried: a warm environment that just
-answered most likely takes the next request too, so a retry now would meet the same one
-(#94). Nothing was stored. The next move: put the attachment again later, once Lambda has
-replaced that environment. `gateway` is the gateway's function URL; `chain_id` is always
-`nothing`, as for [`AttachmentChangedError`](@ref).
+A request to the object store, the gateway or STS failed: no answer, or an answer
+that is neither success nor a refusal the package names. `status` is the HTTP status,
+`nothing` when there was no answer. Retry later, or fix the network.
 """
-struct GatewaySessionEndingError <: ChainTablesError
-    msg::String
-    chain_id::MaybeString
-    key::MaybeString
-    gateway::MaybeString
+struct TransportError <: ChainTablesError
+    status::MaybeInt
+    detail::String
 end
-GatewaySessionEndingError(msg; chain_id = nothing, key = nothing, gateway = nothing) =
-    GatewaySessionEndingError(msg, chain_id, key, gateway)
 
-"""
-    AttachmentAbsentError(msg; chain_id, key)
+TransportError(detail::AbstractString; status = nothing) = TransportError(status, detail)
 
-Raised by `touch_attachment` and `attachment`: the chain's store holds no attachment at
-`key` — it was never put, or its retention ended and it was deleted (ADR-0046). The next
-move: whoever holds the file puts it again with `put_attachment(chain, file)`; a reader
-without it cannot. Also raised by `repair!(copy)`, once, after its pass, for every
-confirmed hash the store no longer holds: their markers were removed, and `key` is set
-only when there is one. `chain_id` is set by the copy-level calls, `attachment` and
-`repair!`, and is `nothing` from `touch_attachment`, which works on a `Chain`.
-"""
-struct AttachmentAbsentError <: ChainTablesError
-    msg::String
-    chain_id::MaybeString
-    key::MaybeString
+function Base.showerror(io::IO, e::TransportError)
+    print_summary(io, e, "a request failed")
+    print_evidence(io, e)
+    print(io, "\nCheck the network and the store, then try again.")
+    return nothing
 end
-AttachmentAbsentError(msg; chain_id = nothing, key = nothing) = AttachmentAbsentError(msg, chain_id, key)
-
-"""
-    AttachmentDigestError(msg; chain_id, key, found, size)
-
-Raised by `attachment` (and `repair!`): the store returned `size` bytes for an attachment's
-`key` that hash to `found`, not to the `<h>` the key names (ADR-0046). Nothing was cached,
-and the download was deleted: it can be 5 GiB. Also raised on a cache hit whose HEAD gives
-`size` bytes, other than a cached file that hashes to `<h>`: `found` is `nothing`, since
-nothing was downloaded, and the hash is not confirmed. Not retried — S3 checked the hash when the
-attachment was stored, so the bucket was written from outside the protocol. The next
-move: stop and report it.
-"""
-struct AttachmentDigestError <: ChainTablesError
-    msg::String
-    chain_id::MaybeString
-    key::MaybeString
-    found::MaybeString
-    size::MaybeInt
-end
-AttachmentDigestError(msg; chain_id = nothing, key = nothing, found = nothing, size = nothing) =
-    AttachmentDigestError(msg, chain_id, key, found, size)
-
-"""
-    AttachmentCacheError(msg; chain_id, key, path)
-
-Raised by `attachment` and `verify(copy; full = true)`: the attachment cache's file at
-`path` does not hash to its name — found by `attachment` when the file is not what its
-sidecar records, or a cache hit's HEAD gives another size (ADR-0046). A file that does
-hash to its name has its sidecar rewritten instead.
-The attachment cache is damaged, not the chain. The next move: delete the file and its
-`.meta`, which is always safe; the next read fetches it again. From `verify`, `repair!(copy)`
-does that for every hash the copy confirmed.
-"""
-struct AttachmentCacheError <: ChainTablesError
-    msg::String
-    chain_id::MaybeString
-    key::MaybeString
-    path::MaybeString
-end
-AttachmentCacheError(msg; chain_id = nothing, key = nothing, path = nothing) = AttachmentCacheError(msg, chain_id, key, path)
-
-# The message is the contract (ADR-0020): every type shows as its message, so a
-# `@test_throws "…"` matches the text a user reads.
-Base.showerror(io::IO, e::ChainTablesError) = print(io, nameof(typeof(e)), ": ", e.msg)

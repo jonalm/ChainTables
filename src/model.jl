@@ -55,10 +55,6 @@ for a nullable column — plus a `Dict` from key tuple to row index (ADR-0025's
 recommendation). Rows are appended in arrival order and sorted by key when
 encoded, so an untouched table is never re-sorted.
 """
-module Model
-
-import SHA
-using ..CBOR
 
 const FP_TABLE_SEPARATOR = "chaintables/v1/fp-table"   # ADR-0026
 const FP_SEPARATOR = "chaintables/v1/fp"
@@ -206,12 +202,12 @@ end
 Shape(w) = fail("shape is not a map, got a value of type $(typeof(w))")
 
 """
-    wire(shape) -> Dict
+    shape_wire(shape) -> Dict
 
 The shape's wire form, ready for `CBOR.encode` (ADR-0025): one encoding whether it
 sits in a table file or in a `create_table` op.
 """
-wire(s::Shape) = Dict{String, Any}(
+shape_wire(s::Shape) = Dict{String, Any}(
     "columns" => Any[Any[c.name, c.type, c.nullable] for c in s.columns],
     "key" => Any[s.key...],
 )
@@ -395,7 +391,7 @@ Table(s::Shape) = Table(s, Vector[column_storage(c) for c in s.columns], Int64[]
 
 function Table(s::Shape, rows, slot)
     t = Table(s)
-    insert_rows!(t, rows, slot)
+    insert_table_rows!(t, rows, slot)
     return t
 end
 
@@ -438,14 +434,14 @@ rows_in_key_order(t::Table) = (row_at(t, i) for i in sortperm(key_vector(t)))
 # ---------------------------------------------------------------------------
 
 """
-    insert_rows!(table, rows, slot) -> nothing
+    insert_table_rows!(table, rows, slot) -> nothing
 
 Insert rows (vectors of cells in declaration order, in typed key order):
 [`check_insert`](@ref), then the state gate of ADR-0001 — every key absent
 from the table; nothing is written if any check fails. Each new row is stamped
 with `slot`.
 """
-function insert_rows!(t::Table, rows, slot)
+function insert_table_rows!(t::Table, rows, slot)
     check_insert(t.shape, rows)
     for row in rows
         k = key_of(t.shape, row)
@@ -467,7 +463,7 @@ function push_row!(t::Table, row, slot)
 end
 
 """
-    update_rows!(table, names, rows, slot) -> nothing
+    update_table_rows!(table, names, rows, slot) -> nothing
 
 Update the non-key columns `names` (in declaration order) of the rows named by
 their key. Each row is `[key…, values…]`: the full key in key declaration order
@@ -476,7 +472,7 @@ ADR-0025). [`check_update`](@ref), then the state gate — every key present in
 the table; nothing is written if any check fails. Each named row is stamped
 with `slot`, whether or not its values change: apply never compares them.
 """
-function update_rows!(t::Table, names, rows, slot)
+function update_table_rows!(t::Table, names, rows, slot)
     cols = check_update(t.shape, names, rows)
     nk = length(t.shape.keyidx)
     for row in rows
@@ -494,13 +490,13 @@ function update_rows!(t::Table, names, rows, slot)
 end
 
 """
-    delete_rows!(table, keys) -> nothing
+    delete_table_rows!(table, keys) -> nothing
 
 Delete the rows at `keys` (tuples in key declaration order, in typed key
 order): [`check_delete`](@ref), then the state gate — every key present in the
 table; nothing is written if any check fails. A deleted row's slot goes with it.
 """
-function delete_rows!(t::Table, ks)
+function delete_table_rows!(t::Table, ks)
     check_delete(t.shape, ks)
     for k in ks
         k = Tuple(k)
@@ -528,13 +524,13 @@ function reindex!(t::Table)
 end
 
 """
-    add_column!(table, column, fill, slot) -> nothing
+    append_column!(table, column, fill, slot) -> nothing
 
 Append a column to the shape and give every row the typed value `fill`, checked
 against the column: null only if it is nullable (ADR-0025). Every row's cells
 changed, so every row is stamped with `slot`.
 """
-function add_column!(t::Table, c::Column, fillvalue, slot)
+function append_column!(t::Table, c::Column, fillvalue, slot)
     any(x -> x.name == c.name, t.shape.columns) && fail("column $(repr(c.name)) already exists")
     check_cell(c, fillvalue)
     shape = Shape(vcat(t.shape.columns, c), t.shape.key)   # re-validates the name and type
@@ -549,13 +545,13 @@ function add_column!(t::Table, c::Column, fillvalue, slot)
 end
 
 """
-    drop_column!(table, name, slot) -> nothing
+    remove_column!(table, name, slot) -> nothing
 
 Remove a non-key column from the shape and from every row. Refuses a key column
 and nothing else (ADR-0025). Every row's cells changed, so every row is stamped
 with `slot`.
 """
-function drop_column!(t::Table, name::AbstractString, slot)
+function remove_column!(t::Table, name::AbstractString, slot)
     j = column_index(t.shape, name)
     j in t.shape.keyidx && fail("column $(repr(name)) is a key column and cannot be dropped")
     shape = Shape(deleteat!(copy(t.shape.columns), j), t.shape.key)
@@ -579,31 +575,31 @@ name rules on top of it.
 const Content = Dict{String, Table}
 
 """
-    create_table!(content, name, shape) -> Table
+    add_table!(content, name, shape) -> Table
 
 Add an empty table under `name`, which must be an identifier not yet in use.
 """
-function create_table!(c::Content, name::AbstractString, s::Shape)
+function add_table!(c::Content, name::AbstractString, s::Shape)
     is_identifier(name) || fail("table name $(repr(name)) is not an identifier ([a-z_][a-z0-9_]*)")
     haskey(c, name) && fail("table $(repr(name)) already exists")
     return c[name] = Table(s)
 end
 
 """
-    drop_table!(content, name) -> nothing
+    remove_table!(content, name) -> nothing
 """
-function drop_table!(c::Content, name::AbstractString)
+function remove_table!(c::Content, name::AbstractString)
     haskey(c, name) || fail("unknown table $(repr(name))")
     delete!(c, name)
     return nothing
 end
 
 """
-    table(content, name) -> Table
+    content_table(content, name) -> Table
 
 The table under `name`; a [`ModelError`](@ref) if there is none.
 """
-function table(c::Content, name::AbstractString)
+function content_table(c::Content, name::AbstractString)
     haskey(c, name) || fail("unknown table $(repr(name))")
     return c[name]
 end
@@ -641,7 +637,7 @@ function write_table(io::IO, t::Table)
     h = HashingIO(io)
     write(h, codeunits(FP_TABLE_SEPARATOR))
     CBOR.write_array_header(h, 2)
-    CBOR.encode(h, wire(t.shape))
+    CBOR.encode(h, shape_wire(t.shape))
     CBOR.write_array_header(h, nrows(t))
     for i in sortperm(key_vector(t))
         CBOR.write_array_header(h, length(t.columns) + 1)
@@ -722,4 +718,3 @@ end
 
 state_fingerprint(c::Content) = state_fingerprint(name => table_hash(t) for (name, t) in c)
 
-end # module Model
