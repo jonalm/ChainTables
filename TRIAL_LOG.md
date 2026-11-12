@@ -39,8 +39,8 @@ handover; session 2 finished it.
 
 | Session | Start | End | Tokens |
 |---|---|---|---|
-| 1 | 2026-11-12 12:26:03 CET | ~13:25 CET | <session 1 tokens> |
-| 2 | 2026-11-12 13:27:54 CET | SESSION2_END | SESSION2_TOKENS |
+| 1 | 2026-11-12 12:26:03 CET | ~13:25 CET | not recorded (the user has no count) |
+| 2 | 2026-11-12 13:27:54 CET | 2026-11-12 13:45:24 CET | not recorded (the user has no count) |
 
 The agents' raw notes (`trial_notes/AGENT_BRIEF.md`, `NOTES-{A..E}.md`, first full-suite
 log) and `HANDOVER.md` are in commit `3ddeb20`; their content is carried below and the
@@ -373,3 +373,8 @@ BioMeCore prints DuckDB deprecation warnings, as at baseline.
 Final code commit: `a100664`. The commit that adds this log section follows it on the
 branch.
 
+Note: the deletion of `HANDOVER.md` and `trial_notes/` was committed in `a100664`
+(whose message names only the `sso_credentials` fix), not in the log commit `8b38e2a`.
+Token counts: asked for at the end of session 2; the user had neither session's count.
+Final commit: the commit that adds this note, the head of the pushed branch; last code
+commit `a100664`.
