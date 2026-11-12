@@ -61,6 +61,8 @@ decides which `ChainTablesError` that is (`MalformedRecordError`,
 """
 module CBOR
 
+using ..ChainTables: ChainTablesError, print_evidence, print_summary
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -121,12 +123,16 @@ unsorted or duplicate map key, a non-canonical NaN, …). `offset` is the
 zero-based byte offset at which the decoder detected it. Internal: the caller
 translates it into the `ChainTablesError` its branch needs (ADR-0020).
 """
-struct DecodeError <: Exception
-    msg::String
+struct DecodeError <: ChainTablesError
+    detail::String
     offset::Int
 end
 
-Base.showerror(io::IO, e::DecodeError) = print(io, "CBOR decode error at byte ", e.offset, ": ", e.msg)
+function Base.showerror(io::IO, e::DecodeError)
+    print_summary(io, e, "the bytes are not the CBOR profile of the format")
+    print_evidence(io, e)
+    return nothing
+end
 
 # ---------------------------------------------------------------------------
 # Encoder

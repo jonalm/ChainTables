@@ -102,7 +102,7 @@ function guarded(f, call)
         f()
     catch e
         e isa ModelError || rethrow()
-        throw(WriteBuilderError("$call: $(e.msg)"))
+        throw(WriteBuilderError("$call: $(e.detail)"))
     end
     return nothing
 end

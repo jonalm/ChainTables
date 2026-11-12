@@ -483,7 +483,7 @@ function decode_record(bytes::AbstractVector{UInt8}; slot = nothing)
         CBOR.decode(bytes)
     catch e
         e isa CBOR.DecodeError || rethrow()
-        throw(malformed(slot, nothing, "not deterministic CBOR (byte $(e.offset): $(e.msg))"))
+        throw(malformed(slot, nothing, "not deterministic CBOR (byte $(e.offset): $(e.detail))"))
     end
     w isa AbstractDict || throw(malformed(slot, nothing, "record is not a map, got a value of type $(typeof(w))"))
     # the evidence for the message, if the envelope carries it in readable form
@@ -494,7 +494,7 @@ function decode_record(bytes::AbstractVector{UInt8}; slot = nothing)
         return record_from_wire(w, slot)
     catch e
         e isa ModelError || rethrow()
-        throw(malformed(slot, chain_id, e.msg))
+        throw(malformed(slot, chain_id, e.detail))
     end
 end
 
@@ -523,7 +523,7 @@ function record_from_wire(w, slot)
             push!(ops, op_from_wire(ow))
         catch e
             e isa ModelError || rethrow()
-            fail("op $i: $(e.msg)")
+            fail("op $i: $(e.detail)")
         end
     end
     return Record(chain_id, s, prev, fp, client, comment, ops)
@@ -581,7 +581,7 @@ function apply!(c::Content, r::Record)
             apply!(c, op, r.slot)
         catch e
             e isa ModelError || rethrow()
-            throw(malformed(r.slot, r.chain_id, "op $i ($(op_name(op)) on $(repr(op.table))): $(e.msg)"; op = i))
+            throw(malformed(r.slot, r.chain_id, "op $i ($(op_name(op)) on $(repr(op.table))): $(e.detail)"; op = i))
         end
     end
     return nothing

@@ -206,7 +206,7 @@ function view_table(copy::LocalCopy, call, name, n)
         return load_table!(copy, n)
     catch e
         e isa ModelError || rethrow()
-        throw(ArgumentError("$call(copy, $(repr(name))): $(e.msg)"))
+        throw(ArgumentError("$call(copy, $(repr(name))): $(e.detail)"))
     end
 end
 

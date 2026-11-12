@@ -11,6 +11,7 @@ include("hashes.jl")     # step 8: TransactionHash, StateFingerprint (ADR-0019)
 include("errors.jl")
 include("local_copy_errors.jl")
 include("attachment_errors.jl")
+include("legacy_error_constructors.jl")
 include("cbor.jl")       # step 1
 include("model.jl")      # step 2
 include("ops.jl")        # step 3

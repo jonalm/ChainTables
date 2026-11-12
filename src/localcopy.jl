@@ -161,7 +161,7 @@ function check_head(h::Head)
         state_fingerprint(h.tables)    # 32-byte hashes, no duplicate name
     catch e
         e isa ModelError || rethrow()
-        throw(ArgumentError(e.msg))
+        throw(ArgumentError(e.detail))
     end
     fp == h.state_fingerprint || throw(
         ArgumentError(
@@ -190,9 +190,9 @@ end
 
 # The reasons a head file cannot be read, kept apart because they are different
 # actions (ADR-0020): a foreign file, a newer client's layout, a damaged head.
-struct HeadRejected <: Exception
+struct HeadRejected <: ChainTablesError
     kind::Symbol       # :not_ours, :layout, :damaged
-    msg::String
+    detail::String
 end
 reject_head(kind, msg) = throw(HeadRejected(kind, msg))
 
@@ -253,7 +253,7 @@ function decode_head(bytes::AbstractVector{UInt8})
         CBOR.decode(bytes[(length(sep) + 1):end])
     catch e
         e isa CBOR.DecodeError || rethrow()
-        reject_head(:damaged, "cannot be decoded: $(e.msg) at byte $(length(sep) + e.offset)")
+        reject_head(:damaged, "cannot be decoded: $(e.detail) at byte $(length(sep) + e.offset)")
     end
     w isa AbstractDict || reject_head(:damaged, "is not a map")
     for k in keys(w)
@@ -293,7 +293,7 @@ function decode_head(bytes::AbstractVector{UInt8})
         check_head(h)
     catch e
         e isa ArgumentError || rethrow()
-        reject_head(:damaged, "is not self-consistent: $(e.msg)")
+        reject_head(:damaged, "is not self-consistent: $(e.detail)")
     end
     return h
 end
@@ -421,12 +421,12 @@ function choose_head(copy::LocalCopy, expected)
             e isa HeadRejected || rethrow()
             e.kind === :not_ours && throw(
                 NotALocalCopyError(
-                    "not a local copy: head $file of $(copy.path) $(e.msg). " *
+                    "not a local copy: head $file of $(copy.path) $(e.detail). " *
                         "Open a different path."; path = copy.path
                 )
             )
-            e.kind === :layout && throw(LayoutVersionError(layout_message(copy, file, e.msg); path = copy.path, file))
-            push!(reasons, "head $file $(e.msg)")
+            e.kind === :layout && throw(LayoutVersionError(layout_message(copy, file, e.detail); path = copy.path, file))
+            push!(reasons, "head $file $(e.detail)")
             continue
         end
         slot = parse(Int64, name)

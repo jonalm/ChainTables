@@ -68,11 +68,14 @@ present key, update or delete on an absent one), rows out of key order.
 Internal: the write builder raises it as `WriteBuilderError`, apply as
 `MalformedRecordError` (ADR-0025).
 """
-struct ModelError <: Exception
-    msg::String
+struct ModelError <: ChainTablesError
+    detail::String
 end
 
-Base.showerror(io::IO, e::ModelError) = print(io, "ModelError: ", e.msg)
+function Base.showerror(io::IO, e::ModelError)
+    print_summary(io, e, "a rule of the table model is broken")
+    return nothing
+end
 
 fail(msg) = throw(ModelError(msg))
 
