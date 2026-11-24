@@ -39,6 +39,7 @@ import ChainTables
     include("attachments.jl")    # after gateway.jl: it uses the gateway double
     include("Testing.jl")
     include("readme.jl")
+    include("test_commit_faults_workflow.jl")   # commit! against a reference model
     include("tracked_values.jl")
     include("live_calls.jl")      # the live suite still calls what exists
     include("aqua.jl")
