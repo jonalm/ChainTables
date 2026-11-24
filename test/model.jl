@@ -24,13 +24,14 @@ using SHA: sha256
         # encoded key, so the shorter head byte 0x63 < 0x67 wins)
         @test hex(CBOR.encode(Model.wire(s))) == replace(
             "a2 63 6b6579 81 62 6964 67 636f6c756d6e73 82 83 62 6964 65 696e743634 f4 83 64 6d617373 67 666c6f61743634 f5",
-            " " => "")
+            " " => ""
+        )
         # and back, strictly
         @test Shape(CBOR.decode(CBOR.encode(Model.wire(s)))) == s
-        @test_throws "unknown shape field \"extra\"" Shape(Dict{String,Any}("columns" => Any[Any["id", "int64", false]], "key" => Any["id"], "extra" => 1))
-        @test_throws "shape has no \"key\"" Shape(Dict{String,Any}("columns" => Any[Any["id", "int64", false]]))
-        @test_throws "column entry" Shape(Dict{String,Any}("columns" => Any[Any["id", "int64"]], "key" => Any["id"]))
-        @test_throws "column entry" Shape(Dict{String,Any}("columns" => Any[Any["id", "int64", 0]], "key" => Any["id"]))
+        @test_throws "unknown shape field \"extra\"" Shape(Dict{String, Any}("columns" => Any[Any["id", "int64", false]], "key" => Any["id"], "extra" => 1))
+        @test_throws "shape has no \"key\"" Shape(Dict{String, Any}("columns" => Any[Any["id", "int64", false]]))
+        @test_throws "column entry" Shape(Dict{String, Any}("columns" => Any[Any["id", "int64"]], "key" => Any["id"]))
+        @test_throws "column entry" Shape(Dict{String, Any}("columns" => Any[Any["id", "int64", 0]], "key" => Any["id"]))
 
         # structural rules, each in the constructor
         @test_throws "table has no columns" Shape(Column[], String[])
@@ -59,8 +60,12 @@ using SHA: sha256
     # never converted.
     # ------------------------------------------------------------------------
     @testset "typed values" begin
-        s = Shape([Column("id", "int64", false), Column("x", "float64", true),
-                   Column("s", "text", false), Column("b", "bytes", false)], ["id"])
+        s = Shape(
+            [
+                Column("id", "int64", false), Column("x", "float64", true),
+                Column("s", "text", false), Column("b", "bytes", false),
+            ], ["id"]
+        )
         @test Model.check_row(s, Any[1, missing, "a", UInt8[]]) === nothing
         @test Model.check_row(s, Any[1, NaN, "a", UInt8[1]]) === nothing
         @test_throws "row has 3 cells; the shape has 4 columns" Model.check_row(s, Any[1, 2.0, "a"])
@@ -72,7 +77,7 @@ using SHA: sha256
         @test_throws "column \"s\" is text, got a value of type SubString{String}" Model.check_row(s, Any[1, 1.0, SubString("ab", 1, 1), UInt8[]])
         @test_throws "column \"b\" is bytes, got a value of type String" Model.check_row(s, Any[1, 1.0, "a", "b"])
         @test Model.value_type(1) == "int64" && Model.value_type(1.0) == "float64" &&
-              Model.value_type("s") == "text" && Model.value_type(UInt8[]) == "bytes"
+            Model.value_type("s") == "text" && Model.value_type(UInt8[]) == "bytes"
         @test Model.value_type(true) === nothing && Model.value_type(missing) === nothing
     end
 
@@ -154,8 +159,12 @@ using SHA: sha256
     # ------------------------------------------------------------------------
     @testset "NaN as a key matches itself and sorts after +Inf; -0.0 and 0.0 are two keys" begin
         s = Shape([Column("x", "float64", false), Column("l", "text", false)], ["x"])
-        t = Table(s, [Any[-Inf, "neginf"], Any[-0.0, "negzero"], Any[0.0, "zero"], Any[1.0, "one"],
-                      Any[Inf, "inf"], Any[NaN, "nan"]], 1)
+        t = Table(
+            s, [
+                Any[-Inf, "neginf"], Any[-0.0, "negzero"], Any[0.0, "zero"], Any[1.0, "one"],
+                Any[Inf, "inf"], Any[NaN, "nan"],
+            ], 1
+        )
         @test_throws "rows are not in primary-key order: (Inf,) after (NaN,)" Table(s, [Any[NaN, "nan"], Any[Inf, "inf"]], 1)
         @test_throws "rows are not in primary-key order: (-0.0,) after (0.0,)" Table(s, [Any[0.0, "zero"], Any[-0.0, "negzero"]], 1)
         @test_throws "duplicate key (NaN,) inside one op" Table(s, [Any[NaN, "nan"], Any[signbit_nan, "nan again"]], 1)
@@ -216,7 +225,7 @@ using SHA: sha256
         @test Model.table_hash(Table(keyonly, [Any[1], Any[2]], 1)) != Model.table_hash(t1)
         @test Model.table_hash(t1b) != Model.table_hash(t1)
         @test hex(stream(Table(keyonly, [Any[1]], 2^32))) ==
-              hex(sep_table) * replace("82 $shape_hex 81 82 01 1b0000000100000000", " " => "")   # the 8-byte argument
+            hex(sep_table) * replace("82 $shape_hex 81 82 01 1b0000000100000000", " " => "")   # the 8-byte argument
         @test Model.table_hash(Table(Shape([Column("id", "int64", true == false)], ["id"]))) == Model.table_hash(t0)
         @test Model.table_hash(Table(Shape([Column("k", "int64", false)], ["k"]))) != Model.table_hash(t0)
         # write_table returns the hash and writes the same bytes to any IO
@@ -268,8 +277,8 @@ using SHA: sha256
     # ------------------------------------------------------------------------
     @testset "state_fingerprint" begin
         # a zero-table chain: the separator and an empty array
-        @test Model.state_fingerprint(Pair{String,Vector{UInt8}}[]) == sha256(vcat(sep_fp, hex2bytes("80")))
-        @test Model.state_fingerprint(Content()) == Model.state_fingerprint(Pair{String,Vector{UInt8}}[])
+        @test Model.state_fingerprint(Pair{String, Vector{UInt8}}[]) == sha256(vcat(sep_fp, hex2bytes("80")))
+        @test Model.state_fingerprint(Content()) == Model.state_fingerprint(Pair{String, Vector{UInt8}}[])
         ha = sha256(b"a"); hb = sha256(b"b")
         expected = sha256(vcat(sep_fp, CBOR.encode(Any[Any["a", ha], Any["b", hb]])))
         @test Model.state_fingerprint(["b" => hb, "a" => ha]) == expected      # sorted by name
@@ -282,7 +291,7 @@ using SHA: sha256
         Model.create_table!(c, "b", Shape([Column("k", "int64", false)], ["k"]))
         Model.create_table!(c, "a", Shape([Column("k", "text", false)], ["k"]))
         @test Model.state_fingerprint(c) ==
-              Model.state_fingerprint(["a" => Model.table_hash(c["a"]), "b" => Model.table_hash(c["b"])])
+            Model.state_fingerprint(["a" => Model.table_hash(c["a"]), "b" => Model.table_hash(c["b"])])
         @test length(Model.state_fingerprint(c)) == 32
     end
 
@@ -302,21 +311,31 @@ using SHA: sha256
     # ------------------------------------------------------------------------
     @testset "determinism vector" begin
         c = Content()
-        Model.create_table!(c, "measurements", Shape([
-            Column("sample", "text", false), Column("run", "int64", false),
-            Column("value", "float64", true), Column("payload", "bytes", false)], ["sample", "run"]))
-        Model.insert_rows!(c["measurements"], [           # text keys by UTF-8 bytes: a < z < ß < água < 水
-            Any["a", typemin(Int64), -Inf, UInt8[0]],
-            Any["z", -1, 0.1 + 0.2, UInt8[]],
-            Any["z", 0, missing, UInt8[]],
-            Any["ß", typemax(Int64), Inf, UInt8[1, 2, 3]],
-            Any["água", 2, signbit_nan, UInt8[0x00, 0xff]],
-            Any["水", 1, -0.0, UInt8[]],
-        ], 2^32)
+        Model.create_table!(
+            c, "measurements", Shape(
+                [
+                    Column("sample", "text", false), Column("run", "int64", false),
+                    Column("value", "float64", true), Column("payload", "bytes", false),
+                ], ["sample", "run"]
+            )
+        )
+        Model.insert_rows!(
+            c["measurements"], [           # text keys by UTF-8 bytes: a < z < ß < água < 水
+                Any["a", typemin(Int64), -Inf, UInt8[0]],
+                Any["z", -1, 0.1 + 0.2, UInt8[]],
+                Any["z", 0, missing, UInt8[]],
+                Any["ß", typemax(Int64), Inf, UInt8[1, 2, 3]],
+                Any["água", 2, signbit_nan, UInt8[0x00, 0xff]],
+                Any["水", 1, -0.0, UInt8[]],
+            ], 2^32
+        )
         Model.create_table!(c, "points", Shape([Column("x", "float64", false), Column("label", "text", true)], ["x"]))
-        Model.insert_rows!(c["points"], [
-            Any[-Inf, "-inf"], Any[-0.0, "negative zero"], Any[0.0, "zero"], Any[5.0e-324, "denormal"], Any[1.5, "one and a half"],
-            Any[2.0, missing], Any[1.0e300, "big"], Any[Inf, "inf"], Any[NaN, "nan"]], 2^32)
+        Model.insert_rows!(
+            c["points"], [
+                Any[-Inf, "-inf"], Any[-0.0, "negative zero"], Any[0.0, "zero"], Any[5.0e-324, "denormal"], Any[1.5, "one and a half"],
+                Any[2.0, missing], Any[1.0e300, "big"], Any[Inf, "inf"], Any[NaN, "nan"],
+            ], 2^32
+        )
         Model.add_column!(c["points"], Column("weight", "float64", false), 2.0, 2^32)
         Model.add_column!(c["points"], Column("tag", "text", true), missing, 2^32)
         Model.update_rows!(c["points"], ["label", "weight"], [Any[-0.0, missing, -1.0], Any[NaN, "not a number", 0.5]], 2^32)

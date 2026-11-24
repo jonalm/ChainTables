@@ -21,15 +21,19 @@ Shown with the secret redacted.
 struct Credentials
     access_key_id::String
     secret_access_key::String
-    session_token::Union{Nothing,String}
+    session_token::Union{Nothing, String}
 end
 Credentials(access_key_id, secret_access_key; session_token = nothing) =
-    Credentials(String(access_key_id), String(secret_access_key),
-                session_token === nothing ? nothing : String(session_token))
+    Credentials(
+    String(access_key_id), String(secret_access_key),
+    session_token === nothing ? nothing : String(session_token)
+)
 
 Base.show(io::IO, c::Credentials) =
-    print(io, "Credentials(", repr(c.access_key_id), ", <redacted>",
-          c.session_token === nothing ? "" : "; session_token = <redacted>", ")")
+    print(
+    io, "Credentials(", repr(c.access_key_id), ", <redacted>",
+    c.session_token === nothing ? "" : "; session_token = <redacted>", ")"
+)
 
 """
     credentials_from_env() -> Credentials
@@ -42,10 +46,14 @@ function credentials_from_env()
     id = get(ENV, "AWS_ACCESS_KEY_ID", "")
     secret = get(ENV, "AWS_SECRET_ACCESS_KEY", "")
     missing_vars = [name for (name, value) in (("AWS_ACCESS_KEY_ID", id), ("AWS_SECRET_ACCESS_KEY", secret)) if isempty(value)]
-    isempty(missing_vars) || throw(ArgumentError("Chain: credentials = nothing reads AWS_ACCESS_KEY_ID and " *
-        "AWS_SECRET_ACCESS_KEY from the environment, and $(join(missing_vars, " and ")) is not set. Export them " *
-        "(aws-vault exec <profile> -- julia …), or pass credentials = ChainTables.Credentials(id, secret) or a " *
-        "callable returning one."))
+    isempty(missing_vars) || throw(
+        ArgumentError(
+            "Chain: credentials = nothing reads AWS_ACCESS_KEY_ID and " *
+                "AWS_SECRET_ACCESS_KEY from the environment, and $(join(missing_vars, " and ")) is not set. Export them " *
+                "(aws-vault exec <profile> -- julia …), or pass credentials = ChainTables.Credentials(id, secret) or a " *
+                "callable returning one."
+        )
+    )
     token = get(ENV, "AWS_SESSION_TOKEN", "")
     return Credentials(id, secret; session_token = isempty(token) ? nothing : token)
 end
@@ -79,11 +87,13 @@ session (`isinteractive()`), a failed export runs [`sso_login(profile)`](@ref ss
 and exports again, and a second failure raises as above. Outside one — a script, a job —
 `login = true` changes nothing: the failure raises rather than a browser blocking the run.
 """
-function sso_credentials(profile::AbstractString; login = false, exporter = run_export_credentials, now = time,
-                         login_with = sso_login, interactive = isinteractive, setting = run_configure_get)
+function sso_credentials(
+        profile::AbstractString; login = false, exporter = run_export_credentials, now = time,
+        login_with = sso_login, interactive = isinteractive, setting = run_configure_get
+    )
     isempty(profile) && throw(ArgumentError("sso_credentials: profile must not be empty"))
     profile = String(profile)
-    cached = Ref{Union{Nothing,Tuple{Credentials,Float64}}}(nothing)
+    cached = Ref{Union{Nothing, Tuple{Credentials, Float64}}}(nothing)
     return function ()
         c = cached[]
         c !== nothing && c[2] - now() > SSO_REFRESH_MARGIN && return c[1]
@@ -99,11 +109,15 @@ function sso_credentials(profile::AbstractString; login = false, exporter = run_
             msg = sprint(showerror, e)
             # Logged in, but the identity is not assigned the profile's role: logging in again cannot help.
             occursin("ForbiddenException", msg) && occursin("GetRoleCredentials", msg) &&
-                error("aws configure export-credentials --profile $profile failed: $msg\nThe login worked, but this " *
-                      "identity is not assigned role $(setting(profile, "sso_role_name")) on account " *
-                      "$(setting(profile, "sso_account_id")); an Identity Center admin must assign it.")
-            error("aws configure export-credentials --profile $profile failed: $msg\nLog in with " *
-                  "`aws sso login --profile $profile` (add --use-device-code if the browser cannot reach the authorize page).")
+                error(
+                "aws configure export-credentials --profile $profile failed: $msg\nThe login worked, but this " *
+                    "identity is not assigned role $(setting(profile, "sso_role_name")) on account " *
+                    "$(setting(profile, "sso_account_id")); an Identity Center admin must assign it."
+            )
+            error(
+                "aws configure export-credentials --profile $profile failed: $msg\nLog in with " *
+                    "`aws sso login --profile $profile` (add --use-device-code if the browser cannot reach the authorize page)."
+            )
         end
         credentials, expiry = try
             parse_export_credentials(out)
@@ -175,15 +189,17 @@ The `KEY=value` lines of `aws configure export-credentials --format env-no-expor
 or with an expiry it cannot parse.
 """
 function parse_export_credentials(text::AbstractString)
-    kv = Dict{String,String}()
+    kv = Dict{String, String}()
     for line in eachline(IOBuffer(text))
         k, v = split(line, '='; limit = 2)   # a value may itself contain '='
         kv[String(k)] = String(v)
     end
     haskey(kv, "AWS_ACCESS_KEY_ID") && haskey(kv, "AWS_SECRET_ACCESS_KEY") ||
         error("printed no AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, only $(sort!(collect(keys(kv))))")
-    credentials = Credentials(kv["AWS_ACCESS_KEY_ID"], kv["AWS_SECRET_ACCESS_KEY"];
-                              session_token = get(kv, "AWS_SESSION_TOKEN", nothing))
+    credentials = Credentials(
+        kv["AWS_ACCESS_KEY_ID"], kv["AWS_SECRET_ACCESS_KEY"];
+        session_token = get(kv, "AWS_SESSION_TOKEN", nothing)
+    )
     expiry = haskey(kv, "AWS_CREDENTIAL_EXPIRATION") ? Float64(parse_expiry(kv["AWS_CREDENTIAL_EXPIRATION"])) : Inf
     return credentials, expiry
 end
@@ -204,10 +220,16 @@ end
 Base.convert(::Type{Credentials}, x::Credentials) = x
 function Base.convert(::Type{Credentials}, x)
     props = propertynames(x)
-    (:access_key_id in props && :secret_access_key in props) || throw(ArgumentError("Chain: credentials must be a " *
-        "ChainTables.Credentials, or a value with access_key_id and secret_access_key properties; got a $(typeof(x))"))
-    return Credentials(getproperty(x, :access_key_id), getproperty(x, :secret_access_key);
-                       session_token = :session_token in props ? getproperty(x, :session_token) : nothing)
+    (:access_key_id in props && :secret_access_key in props) || throw(
+        ArgumentError(
+            "Chain: credentials must be a " *
+                "ChainTables.Credentials, or a value with access_key_id and secret_access_key properties; got a $(typeof(x))"
+        )
+    )
+    return Credentials(
+        getproperty(x, :access_key_id), getproperty(x, :secret_access_key);
+        session_token = :session_token in props ? getproperty(x, :session_token) : nothing
+    )
 end
 
 """
@@ -224,9 +246,13 @@ function resolve_credentials(credentials)
     if credentials isa Credentials || hasproperty(credentials, :access_key_id)
         return convert(Credentials, credentials)
     end
-    isempty(methods(credentials)) && throw(ArgumentError("Chain: credentials is a $(typeof(credentials)), which is " *
-        "neither a ChainTables.Credentials, a value with access_key_id and secret_access_key properties, nor a " *
-        "callable returning one"))
+    isempty(methods(credentials)) && throw(
+        ArgumentError(
+            "Chain: credentials is a $(typeof(credentials)), which is " *
+                "neither a ChainTables.Credentials, a value with access_key_id and secret_access_key properties, nor a " *
+                "callable returning one"
+        )
+    )
     convert(Credentials, credentials())          # fail fast: a callable that cannot produce credentials errors here
     return credentials
 end
@@ -246,8 +272,12 @@ function resolve_region(region)
         value = get(ENV, name, "")
         isempty(value) || return value
     end
-    throw(ArgumentError("Chain: region is required by the S3 client — SigV4 signs it — and neither the region keyword " *
-        "nor AWS_REGION nor AWS_DEFAULT_REGION is set. Pass region = \"eu-north-1\" (the bucket's region)."))
+    throw(
+        ArgumentError(
+            "Chain: region is required by the S3 client — SigV4 signs it — and neither the region keyword " *
+                "nor AWS_REGION nor AWS_DEFAULT_REGION is set. Pass region = \"eu-north-1\" (the bucket's region)."
+        )
+    )
 end
 
 # ---------------------------------------------------------------------------
@@ -281,20 +311,26 @@ struct S3ObjectStore <: AbstractObjectStore
     bucket::String
     region::String
     credentials::Any
-    endpoint::Union{Nothing,String}
-    endpoint_host::Union{Nothing,String}      # the configured host without port; nothing for AWS's own URL
+    endpoint::Union{Nothing, String}
+    endpoint_host::Union{Nothing, String}      # the configured host without port; nothing for AWS's own URL
     path_style::Bool
     host::String                              # the Host header, as libcurl derives it from `base`
     base::String                              # scheme://host; `object_path` adds the bucket under path-style
     timeout::Float64
 end
 
-function S3ObjectStore(bucket::AbstractString; region::AbstractString, credentials,
-                       endpoint = nothing, path_style::Bool = false, timeout::Real = 60)
+function S3ObjectStore(
+        bucket::AbstractString; region::AbstractString, credentials,
+        endpoint = nothing, path_style::Bool = false, timeout::Real = 60
+    )
     bucket = String(bucket)
     isempty(bucket) && throw(ArgumentError("S3ObjectStore: the bucket name is empty"))
-    '.' in bucket && throw(ArgumentError("S3ObjectStore: bucket name $(repr(bucket)) contains a dot, which breaks " *
-        "certificate matching under the virtual-hosted URL ChainTables builds (ADR-0010); use a bucket without one"))
+    '.' in bucket && throw(
+        ArgumentError(
+            "S3ObjectStore: bucket name $(repr(bucket)) contains a dot, which breaks " *
+                "certificate matching under the virtual-hosted URL ChainTables builds (ADR-0010); use a bucket without one"
+        )
+    )
     timeout > 0 || throw(ArgumentError("S3ObjectStore: timeout is $timeout; it must be positive seconds"))
     if endpoint === nothing
         scheme, hostport, endpoint_host = "https", "s3.$region.amazonaws.com", nothing
@@ -304,24 +340,32 @@ function S3ObjectStore(bucket::AbstractString; region::AbstractString, credentia
     end
     host = path_style ? hostport : bucket * "." * hostport
     base = scheme * "://" * host
-    return S3ObjectStore(bucket, String(region), credentials, endpoint === nothing ? nothing : String(endpoint),
-                         endpoint_host, path_style, host, base, Float64(timeout))
+    return S3ObjectStore(
+        bucket, String(region), credentials, endpoint === nothing ? nothing : String(endpoint),
+        endpoint_host, path_style, host, base, Float64(timeout)
+    )
 end
 
-Base.show(io::IO, s::S3ObjectStore) = print(io, "S3ObjectStore(", repr(s.bucket), "; region = ", repr(s.region),
-    s.endpoint === nothing ? "" : ", endpoint = " * repr(s.endpoint), s.path_style ? ", path_style = true" : "", ")")
+Base.show(io::IO, s::S3ObjectStore) = print(
+    io, "S3ObjectStore(", repr(s.bucket), "; region = ", repr(s.region),
+    s.endpoint === nothing ? "" : ", endpoint = " * repr(s.endpoint), s.path_style ? ", path_style = true" : "", ")"
+)
 
 # `scheme://host[:port]`, nothing more: a path, query or fragment on the endpoint is
 # refused rather than silently dropped. A default port is stripped, since libcurl omits
 # it from the Host header it sends and the signature covers that header.
 function parse_endpoint(endpoint::AbstractString; what = "endpoint")
     m = match(r"\A(https?)://([^/?#\s]+)/?\z"i, endpoint)
-    m === nothing && throw(ArgumentError("Chain: $what $(repr(endpoint)) is not of the form scheme://host[:port] " *
-        "(http or https, no path); the bucket and key are added by ChainTables"))
+    m === nothing && throw(
+        ArgumentError(
+            "Chain: $what $(repr(endpoint)) is not of the form scheme://host[:port] " *
+                "(http or https, no path); the bucket and key are added by ChainTables"
+        )
+    )
     scheme = lowercase(m.captures[1])
     hostport = lowercase(m.captures[2])
     default = scheme == "https" ? ":443" : ":80"
-    endswith(hostport, default) && (hostport = hostport[1:end-length(default)])
+    endswith(hostport, default) && (hostport = hostport[1:(end - length(default))])
     return scheme, hostport
 end
 
@@ -356,7 +400,7 @@ s3_half(store::S3ObjectStore) = store
 # store is gated on its S3 half: the reads and the read-back go there (ADR-0028).
 # ---------------------------------------------------------------------------
 
-unsupported_store(chain) = chain isa Chain && chain.store isa Union{S3ObjectStore,GatewayObjectStore} && !is_aws(chain.store)
+unsupported_store(chain) = chain isa Chain && chain.store isa Union{S3ObjectStore, GatewayObjectStore} && !is_aws(chain.store)
 
 """
     warn_unsupported_store(chain) -> nothing
@@ -369,8 +413,8 @@ silent.
 function warn_unsupported_store(chain)
     unsupported_store(chain) || return nothing
     @warn "unsupported object store: the endpoint $(s3_half(chain.store).endpoint) is not AWS S3, the only store ChainTables v1 " *
-          "claims (ADR-0016). This local copy syncs and reads normally; commit!(w) will refuse unless the chain is " *
-          "constructed with assume_first_writer_wins = true." maxlog = 1
+        "claims (ADR-0016). This local copy syncs and reads normally; commit!(w) will refuse unless the chain is " *
+        "constructed with assume_first_writer_wins = true." maxlog = 1
     return nothing
 end
 
@@ -387,14 +431,18 @@ become a suppressed refusal (ADR-0019).
 function refuse_unsupported_store(chain, call)
     unsupported_store(chain) && !chain.assume_first_writer_wins || return nothing
     endpoint = s3_half(chain.store).endpoint
-    throw(UnsupportedStoreError("unsupported object store: $call refuses to commit to $endpoint, which is not AWS S3, " *
-        "the only store ChainTables v1 claims (ADR-0016). The commit protocol requires that a PUT carrying " *
-        "`If-None-Match: *` either creates the key or fails with 412 and never overwrites an existing key, and " *
-        "that a GET of a key just created returns it. A store that breaks that promise tells both racing clients " *
-        "they won: the second record replaces the first in a slot written once — a rewritten chain for every " *
-        "client that applied the first, silent data loss for those that did not. Use AWS S3, or construct the " *
-        "Chain with assume_first_writer_wins = true to make that promise on the store's behalf.";
-        endpoint))
+    throw(
+        UnsupportedStoreError(
+            "unsupported object store: $call refuses to commit to $endpoint, which is not AWS S3, " *
+                "the only store ChainTables v1 claims (ADR-0016). The commit protocol requires that a PUT carrying " *
+                "`If-None-Match: *` either creates the key or fails with 412 and never overwrites an existing key, and " *
+                "that a GET of a key just created returns it. A store that breaks that promise tells both racing clients " *
+                "they won: the second record replaces the first in a slot written once — a rewritten chain for every " *
+                "client that applied the first, silent data loss for those that did not. Use AWS S3, or construct the " *
+                "Chain with assume_first_writer_wins = true to make that promise on the store's behalf.";
+            endpoint
+        )
+    )
 end
 
 # ---------------------------------------------------------------------------
@@ -439,8 +487,10 @@ what the reference implementations do — `payload_hash` the hex SHA-256 of the 
 `GetCallerIdentity` (ADR-0028). The `authorization` field is the `Authorization`
 header's value.
 """
-function sign_request(credentials::Credentials, region::AbstractString, method::AbstractString, path::AbstractString,
-                      query, headers, payload_hash::AbstractString, amzdate::AbstractString; service::AbstractString = "s3")
+function sign_request(
+        credentials::Credentials, region::AbstractString, method::AbstractString, path::AbstractString,
+        query, headers, payload_hash::AbstractString, amzdate::AbstractString; service::AbstractString = "s3"
+    )
     sorted = sort([lowercase(String(k)) => strip(String(v)) for (k, v) in headers]; by = first)
     signed_headers = join(first.(sorted), ';')
     canonical_headers = join((k * ":" * v * "\n" for (k, v) in sorted))
@@ -454,7 +504,7 @@ function sign_request(credentials::Credentials, region::AbstractString, method::
     k = hmac_sha256(k, "aws4_request")
     signature = bytes2hex(hmac_sha256(k, string_to_sign))
     authorization = "AWS4-HMAC-SHA256 Credential=$(credentials.access_key_id)/$scope, SignedHeaders=$signed_headers, " *
-                    "Signature=$signature"
+        "Signature=$signature"
     return (; canonical_request, string_to_sign, signature, authorization)
 end
 
@@ -492,11 +542,13 @@ function amz_date(unix_seconds::Integer)
     h, rem = fldmod(secs, 3600)
     mi, s = fldmod(rem, 60)
     return string(y; pad = 4) * string(m; pad = 2) * string(d; pad = 2) * "T" *
-           string(h; pad = 2) * string(mi; pad = 2) * string(s; pad = 2) * "Z"
+        string(h; pad = 2) * string(mi; pad = 2) * string(s; pad = 2) * "Z"
 end
 
-const MONTHS = Dict("Jan" => 1, "Feb" => 2, "Mar" => 3, "Apr" => 4, "May" => 5, "Jun" => 6,
-                    "Jul" => 7, "Aug" => 8, "Sep" => 9, "Oct" => 10, "Nov" => 11, "Dec" => 12)
+const MONTHS = Dict(
+    "Jan" => 1, "Feb" => 2, "Mar" => 3, "Apr" => 4, "May" => 5, "Jun" => 6,
+    "Jul" => 7, "Aug" => 8, "Sep" => 9, "Oct" => 10, "Nov" => 11, "Dec" => 12
+)
 
 # `Last-Modified: Wed, 12 Oct 2009 17:50:00 GMT` (a HEAD's header) and
 # `<LastModified>2009-10-12T17:50:30.000Z</LastModified>` (a listing's element), both
@@ -507,7 +559,7 @@ function parse_http_date(s::AbstractString)
     d, mon, y, h, mi, sec = m.captures
     haskey(MONTHS, mon) || throw(TransportError("cannot parse the Last-Modified header $(repr(s))"))
     return days_from_civil(parse(Int, y), MONTHS[mon], parse(Int, d)) * 86400 +
-           parse(Int, h) * 3600 + parse(Int, mi) * 60 + parse(Int, sec)
+        parse(Int, h) * 3600 + parse(Int, mi) * 60 + parse(Int, sec)
 end
 
 function parse_iso_date(s::AbstractString)
@@ -538,13 +590,15 @@ unsigned, because libcurl owns it — for a `PUT` or `POST`. `path` is the alrea
 canonical URI. `payload_hash` (hex SHA-256) and `content_length` default to `body`'s; a
 body streamed from a file (ADR-0046) passes both instead of `body`.
 """
-function signed_headers(credentials::Credentials, region::AbstractString, service::AbstractString, host::AbstractString,
-                        method::AbstractString, path::AbstractString;
-                        query = Pair{String,String}[], body = UInt8[], headers = Pair{String,String}[],
-                        now::Integer = floor(Int64, time()),
-                        payload_hash::AbstractString = bytes2hex(sha256(body)), content_length::Integer = length(body))
+function signed_headers(
+        credentials::Credentials, region::AbstractString, service::AbstractString, host::AbstractString,
+        method::AbstractString, path::AbstractString;
+        query = Pair{String, String}[], body = UInt8[], headers = Pair{String, String}[],
+        now::Integer = floor(Int64, time()),
+        payload_hash::AbstractString = bytes2hex(sha256(body)), content_length::Integer = length(body)
+    )
     amzdate = amz_date(now)
-    signed = Pair{String,String}["host" => String(host), "x-amz-content-sha256" => payload_hash, "x-amz-date" => amzdate]
+    signed = Pair{String, String}["host" => String(host), "x-amz-content-sha256" => payload_hash, "x-amz-date" => amzdate]
     credentials.session_token === nothing || push!(signed, "x-amz-security-token" => credentials.session_token)
     for (k, v) in headers
         push!(signed, lowercase(String(k)) => String(v))
@@ -563,13 +617,17 @@ The URL and the full header list of one signed S3 request — [`signed_headers`]
 service `s3` at the object's path. Split from [`s3_request`](@ref) so a test can see
 what is signed, and so a streamed request (ADR-0046) can be signed without its body.
 """
-function request_headers(store::S3ObjectStore, method::AbstractString, key::AbstractString;
-                         query = Pair{String,String}[], body = UInt8[], headers = Pair{String,String}[],
-                         now::Integer = floor(Int64, time()),
-                         payload_hash::AbstractString = bytes2hex(sha256(body)), content_length::Integer = length(body))
+function request_headers(
+        store::S3ObjectStore, method::AbstractString, key::AbstractString;
+        query = Pair{String, String}[], body = UInt8[], headers = Pair{String, String}[],
+        now::Integer = floor(Int64, time()),
+        payload_hash::AbstractString = bytes2hex(sha256(body)), content_length::Integer = length(body)
+    )
     path = object_path(store, key)
-    sent = signed_headers(current_credentials(store), store.region, "s3", store.host, method, path; query, body, headers, now,
-                          payload_hash, content_length)
+    sent = signed_headers(
+        current_credentials(store), store.region, "s3", store.host, method, path; query, body, headers, now,
+        payload_hash, content_length
+    )
     return (; url = store.base * path * query_string(query), headers = sent)
 end
 
@@ -582,8 +640,10 @@ TLS — is a `TransportError` with no status. `body` is sent for a `PUT` or `POS
 """
 function http_request(url::AbstractString, method::AbstractString, headers, body, timeout::Real)
     output = IOBuffer()
-    response = Downloads.request(url; method, headers, input = method in ("PUT", "POST") ? IOBuffer(body) : nothing,
-                                 output, timeout, throw = false)
+    response = Downloads.request(
+        url; method, headers, input = method in ("PUT", "POST") ? IOBuffer(body) : nothing,
+        output, timeout, throw = false
+    )
     response isa Downloads.RequestError &&
         throw(TransportError("$method $url: no response — $(response.message)"))
     return (; status = response.status, headers = response.headers, body = take!(output))
@@ -625,16 +685,24 @@ began, when one is given: a presigned URL's end (ADR-0046). A `PUT` must carry a
 libcurl would send a chunked body, which S3 refuses. A failure's message leaves out the
 URL's query, which for a presigned URL is a credential.
 """
-function http_stream(url::AbstractString, method::AbstractString, headers; input = nothing, output = nothing, stall::Real,
-                     deadline::Union{Nothing,Real} = nothing)
+function http_stream(
+        url::AbstractString, method::AbstractString, headers; input = nothing, output = nothing, stall::Real,
+        deadline::Union{Nothing, Real} = nothing
+    )
     stall > 0 || throw(ArgumentError("http_stream: stall is $stall seconds; it must be positive"))
     deadline === nothing || deadline > 0 ||
         throw(ArgumentError("http_stream: deadline is $deadline seconds; it must be positive"))
     method == "PUT" && !any(kv -> lowercase(first(kv)) == "content-length", headers) &&
-        throw(ArgumentError("http_stream: a streamed PUT needs a content-length header; without one libcurl sends a " *
-                            "chunked body, which S3 refuses"))
-    response = Downloads.request(url; method, headers, input, output = something(output, devnull),
-                                 throw = false, downloader = stream_downloader(stall, deadline))
+        throw(
+        ArgumentError(
+            "http_stream: a streamed PUT needs a content-length header; without one libcurl sends a " *
+                "chunked body, which S3 refuses"
+        )
+    )
+    response = Downloads.request(
+        url; method, headers, input, output = something(output, devnull),
+        throw = false, downloader = stream_downloader(stall, deadline)
+    )
     response isa Downloads.RequestError &&
         throw(TransportError("$method $(bare_url(url)): no response — $(response.message)"))
     return (; status = response.status, headers = response.headers)
@@ -667,8 +735,10 @@ function fetch_object_to(store::S3ObjectStore, key::AbstractString, path::Abstra
     throw(failure("GET", store, key, (; response.status, body)))
 end
 
-function s3_request(store::S3ObjectStore, method::AbstractString, key::AbstractString;
-                    query = Pair{String,String}[], body = UInt8[], headers = Pair{String,String}[])
+function s3_request(
+        store::S3ObjectStore, method::AbstractString, key::AbstractString;
+        query = Pair{String, String}[], body = UInt8[], headers = Pair{String, String}[]
+    )
     req = request_headers(store, method, key; query, body, headers)
     return http_request(req.url, method, req.headers, body, store.timeout)
 end
@@ -683,17 +753,19 @@ function failure(method, url::AbstractString, response)
     code = match(r"<Code>([^<]*)</Code>", body)
     message = match(r"<Message>([^<]*)</Message>", body)
     detail = code === nothing ? "" : " " * xml_unescape(code.captures[1]) *
-             (message === nothing ? "" : ": " * xml_unescape(message.captures[1]))
+        (message === nothing ? "" : ": " * xml_unescape(message.captures[1]))
     return TransportError("$method $url: HTTP $(response.status)$detail"; status = response.status)
 end
 
 function xml_unescape(s::AbstractString)
     occursin('&', s) || return String(s)
-    return replace(s, r"&(#x[0-9a-fA-F]+|#[0-9]+|amp|lt|gt|quot|apos);" => m -> begin
-        e = m[2:end-1]
-        e == "amp" ? "&" : e == "lt" ? "<" : e == "gt" ? ">" : e == "quot" ? "\"" : e == "apos" ? "'" :
-        string(Char(startswith(e, "#x") ? parse(Int, e[3:end]; base = 16) : parse(Int, e[2:end])))
-    end)
+    return replace(
+        s, r"&(#x[0-9a-fA-F]+|#[0-9]+|amp|lt|gt|quot|apos);" => m -> begin
+            e = m[2:(end - 1)]
+            e == "amp" ? "&" : e == "lt" ? "<" : e == "gt" ? ">" : e == "quot" ? "\"" : e == "apos" ? "'" :
+                string(Char(startswith(e, "#x") ? parse(Int, e[3:end]; base = 16) : parse(Int, e[2:end])))
+        end
+    )
 end
 
 # ---------------------------------------------------------------------------
@@ -727,11 +799,11 @@ function stat_object(store::S3ObjectStore, key::AbstractString)
     return ObjectMeta(String(key), parse(Int64, strip(size)), parse_http_date(modified))
 end
 
-function list_objects(store::S3ObjectStore, prefix::AbstractString; start_after::Union{Nothing,AbstractString} = nothing)
+function list_objects(store::S3ObjectStore, prefix::AbstractString; start_after::Union{Nothing, AbstractString} = nothing)
     listed = ObjectMeta[]
     token = nothing
     while true
-        query = Pair{String,String}["list-type" => "2", "prefix" => String(prefix)]
+        query = Pair{String, String}["list-type" => "2", "prefix" => String(prefix)]
         start_after === nothing || push!(query, "start-after" => String(start_after))
         token === nothing || push!(query, "continuation-token" => token)
         response = s3_request(store, "GET", ""; query)
@@ -752,4 +824,5 @@ function list_objects(store::S3ObjectStore, prefix::AbstractString; start_after:
         next === nothing && throw(TransportError("GET $(store.base)/?list-type=2: IsTruncated without a NextContinuationToken"; status = 200))
         token = xml_unescape(next.captures[1])
     end
+    return
 end

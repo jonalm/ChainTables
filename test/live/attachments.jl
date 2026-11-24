@@ -68,7 +68,11 @@ random_hash() = bytes2hex(rand(UInt8, 32))
         @testset "the policy is checked against the attachment's chain" begin
             # <base>/_attachments/<h> belongs to chain <base>, which the policy does not list
             key = "$base/_attachments/$(random_hash())"
-            e = try GWT.mint(store, key, Int64(1)); nothing catch e; e end
+            e = try
+                GWT.mint(store, key, Int64(1)); nothing
+            catch e
+                e
+            end
             @test e isa WriteRefusedError && e.reason == "not_allowed" && e.key == key && e.caller == author
             @test occursin("may not write under prefix '$base'", sprint(showerror, e))
             # the root _attachments/<h> belongs to the root chain, which it does
@@ -76,7 +80,11 @@ random_hash() = bytes2hex(rand(UInt8, 32))
             # this run's chain: listed under <base>/*
             @test GWT.mint(store, GWT.attachment_key(chain, random_hash()), Int64(1)).code == "minted"
             # a slot key is not minted for
-            e = try GWT.mint(store, "$prefix/000000000000", Int64(1)); nothing catch e; e end
+            e = try
+                GWT.mint(store, "$prefix/000000000000", Int64(1)); nothing
+            catch e
+                e
+            end
             @test e isa TransportError && e.status == 400 && occursin("not_a_slot", sprint(showerror, e))
         end
 
@@ -92,28 +100,38 @@ random_hash() = bytes2hex(rand(UInt8, 32))
             @test (reply.seconds, reply.capped) == (900 + cld(length(body), 256 * 1024), false)
             @test occursin("X-Amz-Expires=$(reply.seconds)&", reply.url * "&")
             names = Set(first.(reply.headers))
-            @test names == Set(["content-type", "content-length", "if-none-match", "x-amz-checksum-sha256", "x-amz-tagging",
-                                "x-amz-server-side-encryption", "x-amz-server-side-encryption-aws-kms-key-id",
-                                "x-amz-server-side-encryption-bucket-key-enabled", "x-amz-object-lock-mode",
-                                "x-amz-object-lock-retain-until-date"])
+            @test names == Set(
+                [
+                    "content-type", "content-length", "if-none-match", "x-amz-checksum-sha256", "x-amz-tagging",
+                    "x-amz-server-side-encryption", "x-amz-server-side-encryption-aws-kms-key-id",
+                    "x-amz-server-side-encryption-bucket-key-enabled", "x-amz-object-lock-mode",
+                    "x-amz-object-lock-retain-until-date",
+                ]
+            )
             @test signed(reply.headers, "x-amz-checksum-sha256") == GWT.checksum_sha256(h)
             @test signed(reply.headers, "content-length") == string(length(body))
             # a body of the signed length that does not hash to the key: BadDigest, nothing stored
             wrong = copy(body); wrong[1] ⊻= 0x01
-            e = try GWT.upload_minted(store, key, IOBuffer(wrong), Int64(length(wrong)), reply); nothing catch e; e end
+            e = try
+                GWT.upload_minted(store, key, IOBuffer(wrong), Int64(length(wrong)), reply); nothing
+            catch e
+                e
+            end
             @test e isa AttachmentChangedError && e.key == key
             r = raw_put(reply.url, reply.headers, wrong)
             @test r.status == 400 && occursin("<Code>BadDigest</Code>", r.text)
             # a signed header omitted or altered: the signature fails
-            for name in ("if-none-match", "x-amz-checksum-sha256", "x-amz-tagging", "x-amz-object-lock-retain-until-date",
-                         "x-amz-server-side-encryption-aws-kms-key-id")
+            for name in (
+                    "if-none-match", "x-amz-checksum-sha256", "x-amz-tagging", "x-amz-object-lock-retain-until-date",
+                    "x-amz-server-side-encryption-aws-kms-key-id",
+                )
                 r = raw_put(reply.url, without(reply.headers, name), body)
                 @test (name, r.status, occursin("<Code>SignatureDoesNotMatch</Code>", r.text)) == (name, 403, true)
             end
             later = "2099-01-01T00:00:00Z"
             r = raw_put(reply.url, replacing(reply.headers, "x-amz-object-lock-retain-until-date", later), body)
             @test r.status == 403 && occursin("<Code>SignatureDoesNotMatch</Code>", r.text)
-            r = raw_put(reply.url, replacing(reply.headers, "content-length", string(length(body) - 1)), body[1:end-1])
+            r = raw_put(reply.url, replacing(reply.headers, "content-length", string(length(body) - 1)), body[1:(end - 1)])
             @test r.status == 403 && occursin("<Code>SignatureDoesNotMatch</Code>", r.text)
             # an x-amz-* header the URL does not sign
             r = raw_put(reply.url, [reply.headers; "x-amz-meta-note" => "unsigned"], body)
@@ -131,7 +149,7 @@ random_hash() = bytes2hex(rand(UInt8, 32))
             @test head["x-amz-checksum-sha256"] == GWT.checksum_sha256(h)
             tagging = GWT.s3_request(store.s3, "GET", key; query = ["tagging" => ""])
             @test tagging.status == 200 &&
-                  occursin(r"<Tag><Key>chaintables</Key><Value>attachment</Value></Tag>", String(tagging.body))
+                occursin(r"<Tag><Key>chaintables</Key><Value>attachment</Value></Tag>", String(tagging.body))
             @test signed(reply.headers, "x-amz-tagging") == "chaintables=attachment"
             # the same URL again: If-None-Match refuses it, and there is still one version
             @test GWT.upload_minted(store, key, IOBuffer(body), Int64(length(body)), reply) === false

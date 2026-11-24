@@ -43,26 +43,36 @@ are refused. With a supplied `store` — `Testing.InMemoryObjectStore` — the b
 """
 struct Bucket
     name::String
-    region::Union{Nothing,String}
-    gateway::Union{Nothing,String}
-    profile::Union{Nothing,String}
+    region::Union{Nothing, String}
+    gateway::Union{Nothing, String}
+    profile::Union{Nothing, String}
     function Bucket(name, region, gateway, profile)
         check_bucket_name(name)
         gateway === nothing || (gateway = first(gateway_base(gateway, region)))
-        profile === nothing || !isempty(profile) || throw(ArgumentError("Bucket: profile must not be empty; " *
-            "leave it out for the AWS_* environment"))
+        profile === nothing || !isempty(profile) || throw(
+            ArgumentError(
+                "Bucket: profile must not be empty; " *
+                    "leave it out for the AWS_* environment"
+            )
+        )
         return new(name, region, gateway, profile)
     end
 end
 Bucket(name; region = nothing, gateway = nothing, profile = nothing) = Bucket(name, region, gateway, profile)
 
-Base.show(io::IO, b::Bucket) = print(io, "Bucket(", repr(b.name), "; region = ", repr(b.region),
-    ", gateway = ", repr(b.gateway), ", profile = ", repr(b.profile), ")")
+Base.show(io::IO, b::Bucket) = print(
+    io, "Bucket(", repr(b.name), "; region = ", repr(b.region),
+    ", gateway = ", repr(b.gateway), ", profile = ", repr(b.profile), ")"
+)
 
 function Chain(bucket::Bucket, prefix; credentials = nothing, profile = bucket.profile, login = false, store = nothing, kw...)
     for name in (:region, :gateway)
-        haskey(kw, name) && throw(ArgumentError("Chain: $name was given together with a Bucket, which already says " *
-            "it ($(repr(getfield(bucket, name)))); build another Bucket rather than overriding one (ADR-0029)"))
+        haskey(kw, name) && throw(
+            ArgumentError(
+                "Chain: $name was given together with a Bucket, which already says " *
+                    "it ($(repr(getfield(bucket, name)))); build another Bucket rather than overriding one (ADR-0029)"
+            )
+        )
     end
     credentials === nothing && profile !== nothing && (credentials = sso_credentials(profile; login))
     gateway = store === nothing ? bucket.gateway : nothing
@@ -75,7 +85,11 @@ end
 [`sso_login`](@ref) for the bucket's profile; an `ArgumentError` when it has none.
 """
 function sso_login(bucket::Bucket; kw...)
-    bucket.profile === nothing && throw(ArgumentError("sso_login: $bucket has no profile to log in with; " *
-        "pass one to Bucket, or call sso_login(profile)"))
+    bucket.profile === nothing && throw(
+        ArgumentError(
+            "sso_login: $bucket has no profile to log in with; " *
+                "pass one to Bucket, or call sso_login(profile)"
+        )
+    )
     return sso_login(bucket.profile; kw...)
 end

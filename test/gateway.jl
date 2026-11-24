@@ -48,7 +48,7 @@ function loopback_serve(s::LoopbackServer, sock)
     line = readline(sock)
     isempty(line) && return nothing
     method, target, _ = split(line, ' ')
-    headers = Dict{String,String}()
+    headers = Dict{String, String}()
     while (h = readline(sock)) != ""
         k, v = split(h, ":"; limit = 2)
         headers[lowercase(k)] = strip(v)
@@ -57,8 +57,10 @@ function loopback_serve(s::LoopbackServer, sock)
     len = parse(Int, get(headers, "content-length", "0"))
     body = len > 0 ? read(sock, len) : UInt8[]
     rawpath, rawquery = occursin('?', target) ? split(target, '?'; limit = 2) : (target, "")
-    query = Pair{String,String}[s3test_percent_decode(first(kv)) => s3test_percent_decode(get(kv, 2, ""))
-                                 for kv in (split(p, '='; limit = 2) for p in split(rawquery, '&'; keepempty = false))]
+    query = Pair{String, String}[
+        s3test_percent_decode(first(kv)) => s3test_percent_decode(get(kv, 2, ""))
+            for kv in (split(p, '='; limit = 2) for p in split(rawquery, '&'; keepempty = false))
+    ]
     req = (; method = String(method), rawpath = String(rawpath), rawquery = String(rawquery), query, headers, body)
     push!(s.requests, req)
     status, rheaders, rbody = Base.invokelatest(s.handle, req)
@@ -104,11 +106,13 @@ mutable struct GatewayDouble
     const credentials::Credentials
     const region::String
     caller::String
-    policy::Vector{Pair{String,Vector{String}}}
+    policy::Vector{Pair{String, Vector{String}}}
     respond::Any                 # req -> (status, headers, body) to script a reply, or nothing
 end
-gwtest_json(status, code, message) = (status, ["content-type" => "application/json"],
-    Vector{UInt8}("{\"code\": \"$code\", \"message\": \"$(replace(message, "\\" => "\\\\", "\"" => "\\\"", "\n" => "\\n"))\"}"))
+gwtest_json(status, code, message) = (
+    status, ["content-type" => "application/json"],
+    Vector{UInt8}("{\"code\": \"$code\", \"message\": \"$(replace(message, "\\" => "\\\\", "\"" => "\\\"", "\n" => "\\n"))\"}"),
+)
 
 gwtest_allowed(g::GatewayDouble, key) = any(g.policy) do (prefix, names)
     g.caller in names && (prefix == "*" || GWT.startswith_bytes(key, prefix * "/") || key == prefix)
@@ -127,12 +131,18 @@ function (g::GatewayDouble)(req)
     key = req.query[i][2]
     gwtest_allowed(g, key) || return gwtest_json(403, "not_allowed", "$(g.caller) may not write under $(dirname(key))")
     occursin(r"^(?:[^/](?:.*[^/])?/)?[0-9]{12}$", key) || return gwtest_json(400, "not_a_slot", "$key is not a slot")
-    decoded = try GWT.CBOR.decode(req.body) catch e; e end
+    decoded = try
+        GWT.CBOR.decode(req.body)
+    catch e
+        e
+    end
     decoded isa Dict || return gwtest_json(400, "not_cbor_map", "the body is not a CBOR map")
     user = get(get(decoded, "client", Dict()), "user", nothing)
     (user isa String && !isempty(user)) || return gwtest_json(400, "no_author", "client.user is absent")
-    user == g.caller || return gwtest_json(403, "author_mismatch", "the record names '$user' as client.user but the caller is '$(g.caller)': " *
-                                                                 "a client bug, or the credentials changed between the identity call and the commit; report it")
+    user == g.caller || return gwtest_json(
+        403, "author_mismatch", "the record names '$user' as client.user but the caller is '$(g.caller)': " *
+            "a client bug, or the credentials changed between the identity call and the commit; report it"
+    )
     length(req.body) <= 4 * 1024 * 1024 || return gwtest_json(413, "too_large", "$(length(req.body)) bytes")
     haskey(g.s3.objects, key) && return gwtest_json(412, "slot_taken", "$key exists")
     g.s3.objects[key] = copy(req.body)
@@ -159,19 +169,25 @@ end
 
 # `seconds` is the URL's life at the S3 double, `lifetime` the one the reply gives (`nothing`: no
 # `seconds` or `capped` in it, as from a gateway older than 2026-11-10).
-function gwtest_minted(s3::S3TestServer, key, size; seconds = 900, lifetime = seconds, capped = false, url = nothing,
-                       edit = identity, query = true)
+function gwtest_minted(
+        s3::S3TestServer, key, size; seconds = 900, lifetime = seconds, capped = false, url = nothing,
+        edit = identity, query = true
+    )
     signature = bytes2hex(rand(UInt8, 32))
-    headers = edit(["content-length" => string(size), "content-type" => "application/octet-stream", "if-none-match" => "*",
-                    "x-amz-checksum-sha256" => GWT.Base64.base64encode(hex2bytes(key[end-63:end])),
-                    "x-amz-tagging" => "chaintables=attachment"])
+    headers = edit(
+        [
+            "content-length" => string(size), "content-type" => "application/octet-stream", "if-none-match" => "*",
+            "x-amz-checksum-sha256" => GWT.Base64.base64encode(hex2bytes(key[(end - 63):end])),
+            "x-amz-tagging" => "chaintables=attachment",
+        ]
+    )
     s3.presigned[signature] = (; key, headers = Dict(headers), expires = time() + seconds)
     url = something(url, s3test_endpoint(s3) * "/$(s3.bucket)/" * GWT.uri_encode(key; keep_slash = true)) *
-          (query ? "?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Expires=$seconds&X-Amz-SignedHeaders=host&X-Amz-Signature=$signature" : "")
+        (query ? "?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Expires=$seconds&X-Amz-SignedHeaders=host&X-Amz-Signature=$signature" : "")
     object = join(("\"$k\": \"$v\"" for (k, v) in headers), ", ")
     body = "{\"code\": \"minted\", \"message\": \"PUT the attachment's $size bytes\", \"url\": \"$url\", " *
-           "\"expires\": \"2026-11-06T12:00:00Z\", " *
-           (lifetime === nothing ? "" : "\"seconds\": $lifetime, \"capped\": $capped, ") * "\"headers\": {$object}}"
+        "\"expires\": \"2026-11-06T12:00:00Z\", " *
+        (lifetime === nothing ? "" : "\"seconds\": $lifetime, \"capped\": $capped, ") * "\"headers\": {$object}}"
     return (200, ["content-type" => "application/json"], Vector{UInt8}(body))
 end
 
@@ -183,8 +199,8 @@ function gwtest_sts(credentials::Credentials, region, arn)
         (req.method == "POST" && req.rawpath == "/" && occursin("Action=GetCallerIdentity", String(copy(req.body)))) ||
             return (400, [], Vector{UInt8}("<ErrorResponse><Error><Code>InvalidAction</Code></Error></ErrorResponse>"))
         body = "<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\"><GetCallerIdentityResult>" *
-               "<Arn>$arn</Arn><UserId>AROAEXAMPLE:$(last(split(arn, '/')))</UserId><Account>123456789012</Account>" *
-               "</GetCallerIdentityResult><ResponseMetadata><RequestId>x</RequestId></ResponseMetadata></GetCallerIdentityResponse>"
+            "<Arn>$arn</Arn><UserId>AROAEXAMPLE:$(last(split(arn, '/')))</UserId><Account>123456789012</Account>" *
+            "</GetCallerIdentityResult><ResponseMetadata><RequestId>x</RequestId></ResponseMetadata></GetCallerIdentityResponse>"
         return (200, ["content-type" => "text/xml"], Vector{UInt8}(body))
     end
 end
@@ -208,42 +224,58 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
         @test store.s3 isa S3ObjectStore && store.s3.bucket == "bkt" && store.s3.region == "eu-north-1"
         @test store.s3.credentials === creds && GWT.is_aws(store) && chain.record_user
         @test store.sts_endpoint == "https://sts.eu-north-1.amazonaws.com"
-        @test Chain("bkt", "p"; gateway = "https://abc.lambda-url.cn-north-1.on.aws", region = "cn-north-1",
-                    credentials = creds).store.sts_endpoint == "https://sts.cn-north-1.amazonaws.com.cn"   # the China partition
+        @test Chain(
+            "bkt", "p"; gateway = "https://abc.lambda-url.cn-north-1.on.aws", region = "cn-north-1",
+            credentials = creds
+        ).store.sts_endpoint == "https://sts.cn-north-1.amazonaws.com.cn"   # the China partition
         @test sprint(show, store) == "GatewayObjectStore(\"bkt\", \"$url\"; region = \"eu-north-1\")"
         @test !occursin("topsecret", sprint(show, store))
         # the function URL's region is checked against the chain's when the host carries one
-        @test_throws "region \"us-east-1\" disagrees with the region in the function URL" Chain("bkt", "p";
-            gateway = url, region = "us-east-1", credentials = creds)
+        @test_throws "region \"us-east-1\" disagrees with the region in the function URL" Chain(
+            "bkt", "p";
+            gateway = url, region = "us-east-1", credentials = creds
+        )
         @test Chain("bkt", "p"; gateway = url * "/", region = "eu-north-1", credentials = creds).store.function_url == url
         @test Chain("bkt", "p"; gateway = "http://127.0.0.1:9999", region = "us-east-1", credentials = creds).store.host == "127.0.0.1:9999"
         # two stores, or a record with no author, cannot be asked for
-        @test_throws "gateway and store were both given; a chain has one store" Chain("bkt", "p"; gateway = url,
-            store = GWT.Testing.InMemoryObjectStore(), region = "eu-north-1", credentials = creds)
-        @test_throws "record_user = false with a gateway: the gateway refuses a record with no author (ADR-0028)" Chain("bkt", "p";
-            gateway = url, region = "eu-north-1", credentials = creds, record_user = false)
+        @test_throws "gateway and store were both given; a chain has one store" Chain(
+            "bkt", "p"; gateway = url,
+            store = GWT.Testing.InMemoryObjectStore(), region = "eu-north-1", credentials = creds
+        )
+        @test_throws "record_user = false with a gateway: the gateway refuses a record with no author (ADR-0028)" Chain(
+            "bkt", "p";
+            gateway = url, region = "eu-north-1", credentials = creds, record_user = false
+        )
         # a minted URL is expected where the gateway presigns: the bucket's regional virtual host
         # whenever the store is AWS, whatever endpoint or addressing the reads use (ADR-0046)
         h = "ab"^32
         regional = "https://bkt.s3.eu-north-1.amazonaws.com/p/_attachments/$h"
-        for (endpoint, path_style) in ((nothing, false), (nothing, true), ("https://s3.eu-north-1.amazonaws.com", true),
-                                       ("https://s3.eu-north-1.amazonaws.com", false), ("https://s3-fips.eu-north-1.amazonaws.com", true),
-                                       ("https://s3.dualstack.eu-north-1.amazonaws.com", false))
+        for (endpoint, path_style) in (
+                (nothing, false), (nothing, true), ("https://s3.eu-north-1.amazonaws.com", true),
+                ("https://s3.eu-north-1.amazonaws.com", false), ("https://s3-fips.eu-north-1.amazonaws.com", true),
+                ("https://s3.dualstack.eu-north-1.amazonaws.com", false),
+            )
             aws = Chain("bkt", "p"; gateway = url, region = "eu-north-1", credentials = creds, endpoint, path_style).store
             @test GWT.expected_attachment_url(aws, "p/_attachments/$h") == regional
         end
         # a store that is not AWS (a test's loopback) is expected at its own object URL
-        local_store = Chain("bkt", "p"; gateway = url, region = "eu-north-1", credentials = creds,
-                            endpoint = "http://127.0.0.1:9000", path_style = true).store
+        local_store = Chain(
+            "bkt", "p"; gateway = url, region = "eu-north-1", credentials = creds,
+            endpoint = "http://127.0.0.1:9000", path_style = true
+        ).store
         @test GWT.expected_attachment_url(local_store, "p/_attachments/$h") == "http://127.0.0.1:9000/bkt/p/_attachments/$h"
         # the URL is scheme://host[:port] and nothing more
         for bad in ("abc123.lambda-url.eu-north-1.on.aws", url * "/put", url * "?x=1", "ftp://x")
-            @test_throws "gateway $(repr(bad)) is not of the form scheme://host[:port]" Chain("bkt", "p";
-                gateway = bad, region = "eu-north-1", credentials = creds)
+            @test_throws "gateway $(repr(bad)) is not of the form scheme://host[:port]" Chain(
+                "bkt", "p";
+                gateway = bad, region = "eu-north-1", credentials = creds
+            )
         end
         # region and credentials resolve as for the S3 client, and the S3 half honours endpoint and path_style
-        withenv("AWS_ACCESS_KEY_ID" => "AKIAX", "AWS_SECRET_ACCESS_KEY" => "s3cret", "AWS_SESSION_TOKEN" => nothing,
-                "AWS_REGION" => "eu-north-1") do
+        withenv(
+            "AWS_ACCESS_KEY_ID" => "AKIAX", "AWS_SECRET_ACCESS_KEY" => "s3cret", "AWS_SESSION_TOKEN" => nothing,
+            "AWS_REGION" => "eu-north-1"
+        ) do
             chain = Chain("bkt", "p"; gateway = url, endpoint = "http://127.0.0.1:9000", path_style = true, cache_dir = "/c")
             @test chain.store.s3.credentials == Credentials("AKIAX", "s3cret") && chain.region == "eu-north-1"
             @test chain.store.s3.base == "http://127.0.0.1:9000" && chain.store.s3.path_style && !GWT.is_aws(chain.store)
@@ -272,8 +304,10 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
         double = GatewayDouble(s3, GWTEST_CREDS, "eu-north-1", "alice@example.com", ["p" => ["alice@example.com"]], _ -> nothing)
         gw = LoopbackServer(double)
         try
-            store = GatewayObjectStore("bkt", loopback_url(gw); region = "eu-north-1", credentials = GWTEST_CREDS,
-                                       endpoint = s3test_endpoint(s3), path_style = true, timeout = 30)
+            store = GatewayObjectStore(
+                "bkt", loopback_url(gw); region = "eu-north-1", credentials = GWTEST_CREDS,
+                endpoint = s3test_endpoint(s3), path_style = true, timeout = 30
+            )
             key = "p/000000000001"
             record = gwtest_record("alice@example.com")
             @test fetch_object(store, key) === nothing && stat_object(store, key) === nothing && isempty(list_objects(store, "p/"))
@@ -296,7 +330,11 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             @test gw.requests[end].rawquery == "key=p%2Fa%20b%24c%2F000000000002"     # RFC 3986, '/' encoded, once
             # a refusal by policy, by author, and by AWS before the handler: WriteRefusedError, never retried
             double.caller = "bob@example.com"
-            e = try put_object_if_absent(store, "p/000000000003", gwtest_record("bob@example.com")); nothing catch e; e end
+            e = try
+                put_object_if_absent(store, "p/000000000003", gwtest_record("bob@example.com")); nothing
+            catch e
+                e
+            end
             @test e isa WriteRefusedError && e.reason == "not_allowed" && e.key == "p/000000000003" && e.caller === nothing
             @test !GWT.retryable(e)
             msg = sprint(showerror, e)
@@ -304,39 +342,67 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             @test occursin("not_allowed: bob@example.com may not write under p", msg)
             @test occursin("ask the bucket's operator to add the name to the gateway policy", msg)
             double.caller = "alice@example.com"
-            e = try put_object_if_absent(store, "p/000000000003", gwtest_record("mallory")); nothing catch e; e end
+            e = try
+                put_object_if_absent(store, "p/000000000003", gwtest_record("mallory")); nothing
+            catch e
+                e
+            end
             @test e isa WriteRefusedError && e.reason == "author_mismatch"
             @test occursin("author_mismatch: the record names 'mallory' as client.user but the caller is 'alice@example.com'", sprint(showerror, e))
             @test occursin("report it", sprint(showerror, e))
-            wrong = GatewayObjectStore("bkt", loopback_url(gw); region = "eu-north-1", credentials = Credentials("AKIATEST", "nope"; session_token = "session-token"),
-                                       endpoint = s3test_endpoint(s3), path_style = true)
-            e = try put_object_if_absent(wrong, "p/000000000003", record); nothing catch e; e end
+            wrong = GatewayObjectStore(
+                "bkt", loopback_url(gw); region = "eu-north-1", credentials = Credentials("AKIATEST", "nope"; session_token = "session-token"),
+                endpoint = s3test_endpoint(s3), path_style = true
+            )
+            e = try
+                put_object_if_absent(wrong, "p/000000000003", record); nothing
+            catch e
+                e
+            end
             @test e isa WriteRefusedError && e.reason == "forbidden"
             @test occursin("AWS refused the invocation", sprint(showerror, e)) && occursin("lambda:InvokeFunctionUrl and lambda:InvokeFunction", sprint(showerror, e))
             @test occursin("(HTTP 403 with no gateway code): Forbidden.", sprint(showerror, e))   # AWS's own `Message` is carried
             # an expired token is also AWS's bare 403: the message names that cause as well as the permission
             double.respond = req -> (403, [], Vector{UInt8}("{\"message\":\"The security token included in the request is expired\"}"))
-            e = try put_object_if_absent(store, "p/000000000003", record); nothing catch e; e end
+            e = try
+                put_object_if_absent(store, "p/000000000003", record); nothing
+            catch e
+                e
+            end
             @test e isa WriteRefusedError && e.reason == "forbidden" && !GWT.retryable(e)
             @test occursin("(HTTP 403 with no gateway code): The security token included in the request is expired.", sprint(showerror, e))
             @test occursin("expired or revoked credentials (refresh them, e.g. aws sso login)", sprint(showerror, e))
             # S3 refusing the gateway's own put is the deployment's fault: refused, never retried
             double.respond = req -> gwtest_json(502, "s3_refused", "S3 answered 403 AccessDenied")
-            e = try put_object_if_absent(store, "p/000000000003", record); nothing catch e; e end
+            e = try
+                put_object_if_absent(store, "p/000000000003", record); nothing
+            catch e
+                e
+            end
             @test e isa WriteRefusedError && e.reason == "s3_refused" && !GWT.retryable(e)
             @test occursin("s3_refused: S3 answered 403 AccessDenied. S3 refused the gateway's own put", sprint(showerror, e))
             @test occursin("report it to the bucket's operator", sprint(showerror, e))
             # a 403 code this client does not know: refused, never retried, and says so
             double.respond = req -> gwtest_json(403, "brand_new", "a newer gateway's reason")
-            e = try put_object_if_absent(store, "p/000000000003", record); nothing catch e; e end
+            e = try
+                put_object_if_absent(store, "p/000000000003", record); nothing
+            catch e
+                e
+            end
             @test e isa WriteRefusedError && e.reason == "brand_new" && !GWT.retryable(e)
             @test occursin("brand_new: a newer gateway's reason. This gateway answered with a reason this client does not know", sprint(showerror, e))
             double.respond = _ -> nothing
             @test !haskey(s3.objects, "p/000000000003")
             # a client bug is a TransportError carrying the gateway's code and message, not retried
-            for (k, bytes, code) in (("p/genesis", record, "not_a_slot"), ("p/000000000003", b"not cbor", "not_cbor_map"),
-                                     ("p/000000000003", gwtest_record(""), "no_author"))
-                e = try put_object_if_absent(store, k, bytes); nothing catch e; e end
+            for (k, bytes, code) in (
+                    ("p/genesis", record, "not_a_slot"), ("p/000000000003", b"not cbor", "not_cbor_map"),
+                    ("p/000000000003", gwtest_record(""), "no_author"),
+                )
+                e = try
+                    put_object_if_absent(store, k, bytes); nothing
+                catch e
+                    e
+                end
                 @test e isa TransportError && e.status == 400 && !GWT.retryable(e)
                 @test occursin("HTTP 400 $code: ", sprint(showerror, e))
             end
@@ -345,13 +411,23 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             @test_throws "4194305 bytes for p/000000000003 is over the gateway's 4 MiB record cap" put_object_if_absent(store, "p/000000000003", zeros(UInt8, 4 * 1024 * 1024 + 1))
             @test length(gw.requests) == n
             double.respond = req -> gwtest_json(413, "too_large", "4194305 bytes")
-            e = try put_object_if_absent(store, "p/000000000003", record); nothing catch e; e end
+            e = try
+                put_object_if_absent(store, "p/000000000003", record); nothing
+            catch e
+                e
+            end
             @test e isa TransportError && e.status == 413 && !GWT.retryable(e) && occursin("HTTP 413 too_large: 4194305 bytes", sprint(showerror, e))
             # 409, 429, 5xx and Lambda's own errors are retried by the commit layer; JSON escapes are read back
-            for (status, body) in ((409, gwtest_json(409, "conflict", "S3 409")[3]), (429, Vector{UInt8}("{\"Message\":\"Rate Exceeded.\"}")),
-                                   (502, gwtest_json(502, "s3_error", "S3 said \"InternalError\"\n")[3]), (503, UInt8[]), (504, Vector{UInt8}("{}")))
+            for (status, body) in (
+                    (409, gwtest_json(409, "conflict", "S3 409")[3]), (429, Vector{UInt8}("{\"Message\":\"Rate Exceeded.\"}")),
+                    (502, gwtest_json(502, "s3_error", "S3 said \"InternalError\"\n")[3]), (503, UInt8[]), (504, Vector{UInt8}("{}")),
+                )
                 double.respond = req -> (status, [], body)
-                e = try put_object_if_absent(store, "p/000000000003", record); nothing catch e; e end
+                e = try
+                    put_object_if_absent(store, "p/000000000003", record); nothing
+                catch e
+                    e
+                end
                 @test e isa TransportError && e.status == status && GWT.retryable(e)
                 status == 502 && @test occursin("HTTP 502 s3_error: S3 said \"InternalError\"\n", sprint(showerror, e))
                 status == 503 && @test endswith(sprint(showerror, e), "HTTP 503 (HTTP 503)")
@@ -362,9 +438,15 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             port = closed.port
             close(closed)
             sleep(0.1)
-            dead = GatewayObjectStore("bkt", "http://127.0.0.1:$port"; region = "eu-north-1", credentials = GWTEST_CREDS,
-                                      endpoint = s3test_endpoint(s3), path_style = true, timeout = 5)
-            e = try put_object_if_absent(dead, key, record); nothing catch e; e end
+            dead = GatewayObjectStore(
+                "bkt", "http://127.0.0.1:$port"; region = "eu-north-1", credentials = GWTEST_CREDS,
+                endpoint = s3test_endpoint(s3), path_style = true, timeout = 5
+            )
+            e = try
+                put_object_if_absent(dead, key, record); nothing
+            catch e
+                e
+            end
             @test e isa TransportError && e.status === nothing && GWT.retryable(e)
             @test startswith(sprint(showerror, e), "TransportError: PUT http://127.0.0.1:$port/?key=p%2F000000000001: no response")
         finally
@@ -382,8 +464,10 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
         gw = LoopbackServer(double)
         dir = mktempdir()
         try
-            store = GatewayObjectStore("bkt", loopback_url(gw); region = "eu-north-1", credentials = GWTEST_CREDS,
-                                       endpoint = s3test_endpoint(s3), path_style = true, timeout = 30)
+            store = GatewayObjectStore(
+                "bkt", loopback_url(gw); region = "eu-north-1", credentials = GWTEST_CREDS,
+                endpoint = s3test_endpoint(s3), path_style = true, timeout = 30
+            )
             bytes = rand(UInt8, 2 * 1024 * 1024 + 3)
             h = bytes2hex(sha256(bytes))
             key = "p/_attachments/" * h
@@ -407,7 +491,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             # present: the mint says so, nothing is uploaded, the key is still confirmed
             n = length(s3.requests)
             @test !put()
-            @test [r.method for r in s3.requests[n+1:end]] == ["HEAD"]
+            @test [r.method for r in s3.requests[(n + 1):end]] == ["HEAD"]
             # a race lost to another writer: the upload is 412, and a second mint finds it present
             other = rand(UInt8, 100); ho = bytes2hex(sha256(other)); ko = "p/_attachments/" * ho
             s3.objects[ko] = other; s3.modified[ko] = floor(Int64, time())
@@ -419,7 +503,11 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             # S3 refuses the upload as present (412), and the gateway's second mint still finds it absent:
             # its HEADs go to another bucket than the one its URLs point at — a gateway mismatch
             double.respond = req -> req.rawpath == "/mint" ? gwtest_minted(s3, ko, 100) : nothing
-            e = try GWT.put_attachment(store, ko, IOBuffer(other)); nothing catch e; e end
+            e = try
+                GWT.put_attachment(store, ko, IOBuffer(other)); nothing
+            catch e
+                e
+            end
             @test e isa GWT.GatewayMismatchError && e.key == ko && e.bucket == "bkt" && e.gateway == loopback_url(gw)
             @test sprint(showerror, e) == "GatewayMismatchError: gateway mismatch: S3 refused the upload of $ko to bucket " *
                 "bkt as already present (412), and the gateway at $(loopback_url(gw)) then found it absent and minted " *
@@ -428,7 +516,11 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             double.respond = _ -> nothing
             # bytes that do not hash to the key: S3's BadDigest, nothing stored
             bad = "p/_attachments/" * "0"^64
-            e = try put(bad); nothing catch e; e end
+            e = try
+                put(bad); nothing
+            catch e
+                e
+            end
             @test e isa GWT.AttachmentChangedError && e.key == bad && !haskey(s3.objects, bad)
             @test startswith(sprint(showerror, e), "AttachmentChangedError: attachment changed: the upload of $bad to $(s3test_endpoint(s3))/bkt/$bad was refused as BadDigest")
             # an expired URL, two ways (ADR-0046: S3 refuses an upload still running when its URL expires).
@@ -438,7 +530,11 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             reply = GWT.mint(store, kf, Int64(10))
             sleep(1.2)
             n = length(s3.requests)
-            e = try GWT.upload_minted(store, kf, IOBuffer(fresh), Int64(10), reply); nothing catch e; e end
+            e = try
+                GWT.upload_minted(store, kf, IOBuffer(fresh), Int64(10), reply); nothing
+            catch e
+                e
+            end
             @test e isa GWT.AttachmentURLExpiredError && e.key == kf && e.expires == "2026-11-06T12:00:00Z" && !GWT.retryable(e)
             @test length(s3.requests) == n
             @test sprint(showerror, e) == "AttachmentURLExpiredError: attachment URL expired: the URL the gateway at " *
@@ -447,10 +543,20 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             # The upload outlasted the URL: still sending at its end, the client stops there rather than
             # send the rest for S3 to refuse, and does not retry; a capped URL says so.
             s3.respond = req -> req.method == "PUT" ? (sleep(4); nothing) : nothing
-            for (capped, coda) in ((false, ""), (true, " The gateway's AWS session shortened this URL (capped): another put " *
-                                   "may reach a younger gateway environment, which mints a longer one."))
+            for (capped, coda) in (
+                    (false, ""), (
+                        true, " The gateway's AWS session shortened this URL (capped): another put " *
+                            "may reach a younger gateway environment, which mints a longer one.",
+                    ),
+                )
                 double.respond = req -> req.rawpath == "/mint" ? gwtest_minted(s3, kf, 10; seconds = 1, capped) : nothing
-                t = @elapsed (e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end)
+                t = @elapsed (
+                    e = try
+                        GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing
+                    catch e
+                        e
+                    end
+                )
                 @test e isa GWT.AttachmentURLExpiredError && e.key == kf && !GWT.retryable(e) && t < 3.5
                 @test !haskey(s3.objects, kf)
                 head, tail = "AttachmentURLExpiredError: attachment URL expired: the upload of $kf ran ",
@@ -464,7 +570,11 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             # S3 says expired well before the URL's life is out: said as such, not blamed on the link
             s3.respond = req -> req.method == "PUT" ? (403, [], s3test_error("AccessDenied", "Request has expired")) : nothing
             double.respond = req -> req.rawpath == "/mint" ? gwtest_minted(s3, kf, 10) : nothing
-            e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
+            e = try
+                GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing
+            catch e
+                e
+            end
             @test e isa GWT.AttachmentURLExpiredError && !haskey(s3.objects, kf)
             @test sprint(showerror, e) == "AttachmentURLExpiredError: attachment URL expired: S3 refused the upload of " *
                 "$kf as expired after 0 s, though the gateway gave its URL 900 s (until 2026-11-06T12:00:00Z): the gateway's " *
@@ -474,7 +584,11 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             # a gateway older than the lifetime in its reply: refused before a byte is sent
             double.respond = req -> req.rawpath == "/mint" ? gwtest_minted(s3, kf, 10; lifetime = nothing) : nothing
             n = length(s3.requests)
-            e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
+            e = try
+                GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing
+            catch e
+                e
+            end
             @test e isa GWT.GatewayMismatchError && e.key == kf && length(s3.requests) == n
             @test sprint(showerror, e) == "GatewayMismatchError: gateway mismatch: the gateway at $(loopback_url(gw)) " *
                 "minted a URL for $kf without its lifetime (\"seconds\", \"capped\"), which it gives since S3 was found " *
@@ -484,7 +598,11 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             n = length(s3.requests)
             for url in ("$(s3test_endpoint(s3))/other/$kf", "$(s3test_endpoint(s3))/bkt/p/_attachments/" * "1"^64, "https://evil.example/bkt/$kf")
                 double.respond = req -> req.rawpath == "/mint" ? gwtest_minted(s3, kf, 10; url) : nothing
-                e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
+                e = try
+                    GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing
+                catch e
+                    e
+                end
                 @test e isa GWT.GatewayMismatchError && e.key == kf && e.bucket == "bkt"
                 @test occursin("minted a URL for $kf at $url, not at $(s3test_endpoint(s3))/bkt/$kf", sprint(showerror, e))
                 @test occursin("Nothing was sent.", sprint(showerror, e))
@@ -493,7 +611,11 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             # a URL with no query, or an empty one, carries no signature: refused before a byte is sent
             for (url, query) in ((nothing, false), ("$(s3test_endpoint(s3))/bkt/$kf?", false))
                 double.respond = req -> req.rawpath == "/mint" ? gwtest_minted(s3, kf, 10; url, query) : nothing
-                e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
+                e = try
+                    GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing
+                catch e
+                    e
+                end
                 @test e isa GWT.GatewayMismatchError && e.key == kf && e.bucket == "bkt" && e.gateway == loopback_url(gw)
                 @test sprint(showerror, e) == "GatewayMismatchError: gateway mismatch: the gateway at $(loopback_url(gw)) " *
                     "minted a URL for $kf with no query, so no signature. Nothing was sent. This gateway's mint is broken: " *
@@ -507,23 +629,38 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             setting(name, value) = hs -> [first(kv) == name ? name => value : kv for kv in hs]
             for (edit, problem) in (
                     (without("x-amz-checksum-sha256"), "no x-amz-checksum-sha256 header, where $(repr(checksum))"),
-                    (setting("x-amz-checksum-sha256", GWT.Base64.base64encode(zeros(UInt8, 32))),
-                     "x-amz-checksum-sha256 $(repr(GWT.Base64.base64encode(zeros(UInt8, 32)))), where $(repr(checksum))"),
+                    (
+                        setting("x-amz-checksum-sha256", GWT.Base64.base64encode(zeros(UInt8, 32))),
+                        "x-amz-checksum-sha256 $(repr(GWT.Base64.base64encode(zeros(UInt8, 32)))), where $(repr(checksum))",
+                    ),
                     (without("if-none-match"), "no if-none-match header, where \"*\""),
                     (setting("if-none-match", "abc"), "if-none-match \"abc\", where \"*\""),
                     (without("content-length"), "no content-length header, where \"10\""),
-                    (setting("content-length", "11"), "content-length \"11\", where \"10\""))
+                    (setting("content-length", "11"), "content-length \"11\", where \"10\""),
+                )
                 double.respond = req -> req.rawpath == "/mint" ? gwtest_minted(s3, kf, 10; edit) : nothing
-                e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
+                e = try
+                    GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing
+                catch e
+                    e
+                end
                 @test e isa GWT.GatewayMismatchError && e.key == kf && e.bucket == "bkt"
-                @test occursin("gateway mismatch: the gateway at $(loopback_url(gw)) minted the upload of $kf with $problem. " *
-                               "Nothing was sent.", sprint(showerror, e))
+                @test occursin(
+                    "gateway mismatch: the gateway at $(loopback_url(gw)) minted the upload of $kf with $problem. " *
+                        "Nothing was sent.", sprint(showerror, e)
+                )
             end
             # each exactly once: a duplicate is refused even when it agrees
-            for (twice, values) in ((hs -> [hs; "content-length" => "11"], "(\"10\", \"11\")"),
-                                    (hs -> [hs; "content-length" => "10"], "(\"10\", \"10\")"))
+            for (twice, values) in (
+                    (hs -> [hs; "content-length" => "11"], "(\"10\", \"11\")"),
+                    (hs -> [hs; "content-length" => "10"], "(\"10\", \"10\")"),
+                )
                 double.respond = req -> req.rawpath == "/mint" ? gwtest_minted(s3, kf, 10; edit = twice) : nothing
-                e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
+                e = try
+                    GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing
+                catch e
+                    e
+                end
                 @test e isa GWT.GatewayMismatchError && e.key == kf && e.bucket == "bkt" && e.gateway == loopback_url(gw)
                 @test sprint(showerror, e) == "GatewayMismatchError: gateway mismatch: the gateway at $(loopback_url(gw)) " *
                     "minted the upload of $kf with content-length twice $values, where once, \"10\". Nothing was sent. A " *
@@ -534,52 +671,84 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             @test length(s3.requests) == n
             # a gateway that stored it elsewhere: our bucket lacks the key after the gateway's word
             double.respond = req -> req.rawpath == "/mint" ? gwtest_json(200, "present", "already stored") : nothing
-            e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
+            e = try
+                GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing
+            catch e
+                e
+            end
             @test e isa GWT.GatewayMismatchError && occursin("has stored the attachment $kf, and bucket bkt does not hold it", sprint(showerror, e))
             # any other upload failure is S3's, with the URL's signature left out
             double.respond = req -> req.rawpath == "/mint" ? gwtest_minted(s3, kf, 10) : nothing
             s3.respond = req -> req.method == "PUT" ? (500, [], s3test_error("InternalError", "Please try again.")) : nothing
-            e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
+            e = try
+                GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing
+            catch e
+                e
+            end
             @test e isa TransportError && e.status == 500 && GWT.retryable(e)
             @test occursin("PUT $(s3test_endpoint(s3))/bkt/$kf: HTTP 500 InternalError", sprint(showerror, e)) && !occursin("Signature", sprint(showerror, e))
             s3.respond = _ -> nothing
             # a reply this client cannot read is refused, never guessed at
-            for (body, what) in (("{\"code\": \"minted\", \"url\": \"x\", \"expires\": \"y\"}", "no \"headers\" object"),
-                                 ("{\"code\": \"minted\", \"expires\": \"y\", \"headers\": {\"a\": \"b\"}}", "no \"url\""),
-                                 ("{\"code\": \"minted\", \"url\": \"x\", \"expires\": \"y\", \"headers\": {\"a\": \"b\" \"c\": \"d\"}}", "not a flat map"),
-                                 ("{\"code\": \"minted\", \"url\": \"x\", \"expires\": \"y\", \"headers\": {\"A\": \"b\"}}", "not a flat map"),
-                                 ("{\"code\": \"minted\", \"url\": \"x\", \"expires\": \"y\", \"headers\": {}}", "an empty \"headers\" object"),
-                                 ("{\"code\": \"minted\", \"url\": \"x\", \"expires\": \"y\", \"seconds\": \"9\", \"capped\": false, \"headers\": {\"a\": \"b\"}}", "a \"seconds\" that is not a whole number"),
-                                 ("{\"code\": \"minted\", \"url\": \"x\", \"expires\": \"y\", \"seconds\": 9, \"headers\": {\"a\": \"b\"}}", "\"seconds\" without \"capped\""),
-                                 ("{\"code\": \"minted\", \"url\": \"x\", \"expires\": \"y\", \"seconds\": 9, \"capped\": 1, \"headers\": {\"a\": \"b\"}}", "a \"capped\" that is not true or false"),
-                                 ("{\"code\": \"minted\", \"url\": \"x\", \"expires\": \"y\", \"capped\": 1, \"headers\": {\"a\": \"b\"}}", "\"capped\" without \"seconds\""),
-                                 ("{\"code\": \"stored\"}", "with code \"stored\", neither present nor minted"))
+            for (body, what) in (
+                    ("{\"code\": \"minted\", \"url\": \"x\", \"expires\": \"y\"}", "no \"headers\" object"),
+                    ("{\"code\": \"minted\", \"expires\": \"y\", \"headers\": {\"a\": \"b\"}}", "no \"url\""),
+                    ("{\"code\": \"minted\", \"url\": \"x\", \"expires\": \"y\", \"headers\": {\"a\": \"b\" \"c\": \"d\"}}", "not a flat map"),
+                    ("{\"code\": \"minted\", \"url\": \"x\", \"expires\": \"y\", \"headers\": {\"A\": \"b\"}}", "not a flat map"),
+                    ("{\"code\": \"minted\", \"url\": \"x\", \"expires\": \"y\", \"headers\": {}}", "an empty \"headers\" object"),
+                    ("{\"code\": \"minted\", \"url\": \"x\", \"expires\": \"y\", \"seconds\": \"9\", \"capped\": false, \"headers\": {\"a\": \"b\"}}", "a \"seconds\" that is not a whole number"),
+                    ("{\"code\": \"minted\", \"url\": \"x\", \"expires\": \"y\", \"seconds\": 9, \"headers\": {\"a\": \"b\"}}", "\"seconds\" without \"capped\""),
+                    ("{\"code\": \"minted\", \"url\": \"x\", \"expires\": \"y\", \"seconds\": 9, \"capped\": 1, \"headers\": {\"a\": \"b\"}}", "a \"capped\" that is not true or false"),
+                    ("{\"code\": \"minted\", \"url\": \"x\", \"expires\": \"y\", \"capped\": 1, \"headers\": {\"a\": \"b\"}}", "\"capped\" without \"seconds\""),
+                    ("{\"code\": \"stored\"}", "with code \"stored\", neither present nor minted"),
+                )
                 double.respond = req -> (200, [], Vector{UInt8}(body))
-                e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
+                e = try
+                    GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing
+                catch e
+                    e
+                end
                 @test e isa TransportError && e.status == 200 && !GWT.retryable(e) && occursin(what, sprint(showerror, e))
             end
             # the mint's refusals: as for a slot, plus a gateway that predates the route
             double.respond = _ -> nothing
             double.caller = "bob@example.com"
-            e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
+            e = try
+                GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing
+            catch e
+                e
+            end
             @test e isa WriteRefusedError && e.reason == "not_allowed" && e.key == kf
             @test occursin("refused to mint the upload of $kf for caller <unresolved> — not_allowed: bob@example.com may not write under p", sprint(showerror, e))
             double.caller = "alice@example.com"
             double.respond = req -> gwtest_json(400, "bad_request", "POST /mint is not the gateway's one route, PUT /?key=<slot key>")
-            e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
+            e = try
+                GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing
+            catch e
+                e
+            end
             @test e isa WriteRefusedError && e.reason == "no_mint_route" && !GWT.retryable(e)
             @test occursin("the gateway at $(loopback_url(gw)) has no mint route", sprint(showerror, e))
             @test occursin("ask the bucket's operator to redeploy it (gateway/deploy.sh)", sprint(showerror, e))
             double.respond = req -> gwtest_json(502, "s3_refused", "S3 answered 403 AccessDenied to the HEAD")
-            e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
+            e = try
+                GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing
+            catch e
+                e
+            end
             @test e.reason == "s3_refused"
-            @test occursin("the gateway at $(loopback_url(gw)) refused to mint the upload of $kf — s3_refused: S3 answered " *
-                           "403 AccessDenied to the HEAD. S3 refused one of the gateway's own calls for the attachment — " *
-                           "its HEAD, GetObjectRetention or PutObjectRetention — so the gateway's deployment is wrong and " *
-                           "a retry cannot help: report it to the bucket's operator (ADR-0046).", sprint(showerror, e))
+            @test occursin(
+                "the gateway at $(loopback_url(gw)) refused to mint the upload of $kf — s3_refused: S3 answered " *
+                    "403 AccessDenied to the HEAD. S3 refused one of the gateway's own calls for the attachment — " *
+                    "its HEAD, GetObjectRetention or PutObjectRetention — so the gateway's deployment is wrong and " *
+                    "a retry cannot help: report it to the bucket's operator (ADR-0046).", sprint(showerror, e)
+            )
             for (status, code, retry) in ((502, "s3_error", true), (413, "too_large", false), (400, "not_a_slot", false))
                 double.respond = req -> gwtest_json(status, code, "the gateway's word")
-                e = try GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing catch e; e end
+                e = try
+                    GWT.put_attachment(store, kf, IOBuffer(fresh)); nothing
+                catch e
+                    e
+                end
                 @test e isa TransportError && e.status == status && GWT.retryable(e) == retry
                 @test occursin("HTTP $status $code: the gateway's word", sprint(showerror, e))
             end
@@ -589,7 +758,11 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             nested = "p/_attachments/" * bytes2hex(sha256(b"n"))
             @test GWT.put_attachment(store, nested, IOBuffer(b"n"))
             double.policy = ["p/_attachments" => ["alice@example.com"]]
-            e = try GWT.put_attachment(store, "p/_attachments/" * bytes2hex(sha256(b"m")), IOBuffer(b"m")); nothing catch e; e end
+            e = try
+                GWT.put_attachment(store, "p/_attachments/" * bytes2hex(sha256(b"m")), IOBuffer(b"m")); nothing
+            catch e
+                e
+            end
             @test e isa WriteRefusedError && e.reason == "not_allowed"
             double.policy = ["p" => ["alice@example.com"]]
             # reads go to the bucket
@@ -619,8 +792,10 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
         sts = LoopbackServer(gwtest_sts(GWTEST_CREDS, "eu-north-1", GWTEST_ARN))
         try
             s3 = S3ObjectStore("bkt"; region = "eu-north-1", credentials = GWTEST_CREDS)   # never called here
-            store = GatewayObjectStore("bkt", "https://abc.lambda-url.eu-north-1.on.aws"; region = "eu-north-1",
-                                       credentials = GWTEST_CREDS, sts_endpoint = loopback_url(sts))
+            store = GatewayObjectStore(
+                "bkt", "https://abc.lambda-url.eu-north-1.on.aws"; region = "eu-north-1",
+                credentials = GWTEST_CREDS, sts_endpoint = loopback_url(sts)
+            )
             @test store.author === nothing && isempty(sts.requests)                   # nothing at construction (ADR-0019)
             withenv("USER" => "carol") do
                 @test GWT.record_author(store) == "alice@example.com"                 # ENV is ignored on a gateway store
@@ -635,13 +810,23 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             @test GWT.record_author(store) == "alice@example.com" && length(sts.requests) == 1
             calls = Ref(0)
             rotating = () -> (calls[] += 1; Credentials(calls[] <= 1 ? "AKIATEST" : "AKIAOTHER", "topsecret"; session_token = "session-token"))
-            other = LoopbackServer(gwtest_sts(Credentials("AKIAOTHER", "topsecret"; session_token = "session-token"), "eu-north-1",
-                                              "arn:aws:iam::123456789012:user/engineering/erin"))
+            other = LoopbackServer(
+                gwtest_sts(
+                    Credentials("AKIAOTHER", "topsecret"; session_token = "session-token"), "eu-north-1",
+                    "arn:aws:iam::123456789012:user/engineering/erin"
+                )
+            )
             try
-                store2 = GatewayObjectStore("bkt", "https://abc.lambda-url.eu-north-1.on.aws"; region = "eu-north-1",
-                                            credentials = rotating, sts_endpoint = loopback_url(other))
+                store2 = GatewayObjectStore(
+                    "bkt", "https://abc.lambda-url.eu-north-1.on.aws"; region = "eu-north-1",
+                    credentials = rotating, sts_endpoint = loopback_url(other)
+                )
                 # the first credentials are AKIATEST, whose signature `other` refuses: an STS failure is a TransportError
-                e = try GWT.record_author(store2); nothing catch e; e end
+                e = try
+                    GWT.record_author(store2); nothing
+                catch e
+                    e
+                end
                 @test e isa TransportError && e.status == 403 && store2.author === nothing
                 @test startswith(sprint(showerror, e), "TransportError: POST http://127.0.0.1:$(other.port)/: HTTP 403")
                 @test GWT.record_author(store2) == "erin"                             # an IAM user with a path: the name
@@ -653,16 +838,26 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             # the account root is neither a user nor an assumed role: refused here, as the gateway would
             root = LoopbackServer(gwtest_sts(GWTEST_CREDS, "eu-north-1", "arn:aws:iam::123456789012:root"))
             try
-                store3 = GatewayObjectStore("bkt", "https://abc.lambda-url.eu-north-1.on.aws"; region = "eu-north-1",
-                                            credentials = GWTEST_CREDS, sts_endpoint = loopback_url(root))
-                e = try GWT.record_author(store3); nothing catch e; e end
+                store3 = GatewayObjectStore(
+                    "bkt", "https://abc.lambda-url.eu-north-1.on.aws"; region = "eu-north-1",
+                    credentials = GWTEST_CREDS, sts_endpoint = loopback_url(root)
+                )
+                e = try
+                    GWT.record_author(store3); nothing
+                catch e
+                    e
+                end
                 @test e isa WriteRefusedError && e.reason == "not_allowed" && e.caller === nothing
                 @test occursin("arn:aws:iam::123456789012:root is neither an IAM user nor an assumed role", sprint(showerror, e))
                 @test store3.author === nothing
                 # through create_chain, the refusal is told for the chain and slot 0, before anything is written
                 mktempdir() do dir
                     chain3 = Chain("bkt", "exp/run-1"; store = store3, cache_dir = dir, assume_first_writer_wins = true)
-                    e = try GWT.create_chain(chain3); nothing catch e; e end
+                    e = try
+                        GWT.create_chain(chain3); nothing
+                    catch e
+                        e
+                    end
                     @test e isa WriteRefusedError && e.reason == "not_allowed" && e.slot == 0 && e.key == "exp/run-1/000000000000"
                     @test e.chain_id isa String
                     @test startswith(sprint(showerror, e), "WriteRefusedError: write refused for slot 0 of chain $(e.chain_id) at bkt/exp/run-1: ")
@@ -698,8 +893,10 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
         mktempdir() do dir
             try
                 cache_dir = joinpath(dir, "cache")
-                store = GatewayObjectStore("bkt", loopback_url(gw); region = "eu-north-1", credentials = GWTEST_CREDS,
-                                           endpoint = s3test_endpoint(s3), path_style = true, sts_endpoint = loopback_url(sts))
+                store = GatewayObjectStore(
+                    "bkt", loopback_url(gw); region = "eu-north-1", credentials = GWTEST_CREDS,
+                    endpoint = s3test_endpoint(s3), path_style = true, sts_endpoint = loopback_url(sts)
+                )
                 # a supplied gateway store is held to the same rule as the keyword
                 @test_throws "record_user = false with a gateway" Chain("bkt", "exp/run-1"; store, cache_dir, record_user = false)
                 chain = Chain("bkt", "exp/run-1"; store, cache_dir, assume_first_writer_wins = true)
@@ -737,12 +934,18 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                     w = GWT.write_builder(copy)
                     GWT.insert_rows!(w, :samples, [(id = 2, note = "refused")])
                     n = puts()
-                    e = try GWT.commit!(w); nothing catch e; e end
+                    e = try
+                        GWT.commit!(w); nothing
+                    catch e
+                        e
+                    end
                     @test e isa WriteRefusedError && e.reason == "not_allowed"
                     @test (e.chain_id, e.slot, e.key, e.caller) == (created.chain_id, 2, "exp/run-1/000000000002", "alice@example.com")
                     msg = sprint(showerror, e)
-                    @test startswith(msg, "WriteRefusedError: write refused for slot 2 of chain $(created.chain_id) at bkt/exp/run-1: " *
-                                          "the gateway at http://127.0.0.1:$(gw.port) refused to fill exp/run-1/000000000002 for caller alice@example.com — not_allowed: ")
+                    @test startswith(
+                        msg, "WriteRefusedError: write refused for slot 2 of chain $(created.chain_id) at bkt/exp/run-1: " *
+                            "the gateway at http://127.0.0.1:$(gw.port) refused to fill exp/run-1/000000000002 for caller alice@example.com — not_allowed: "
+                    )
                     @test occursin("ask the bucket's operator to add the name to the gateway policy", msg)
                     @test puts() == n + 1 && !haskey(s3.objects, "exp/run-1/000000000002")   # one attempt, never retried
                     @test GWT.head(copy).slot == 1 && length(GWT.table(copy, :samples)) == 1  # the copy stands at its head
@@ -752,7 +955,11 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                     double.policy = ["exp" => ["mallory"]]
                     w = GWT.write_builder(copy)
                     GWT.insert_rows!(w, :samples, [(id = 2, note = "mismatch")])
-                    e = try GWT.commit!(w); nothing catch e; e end
+                    e = try
+                        GWT.commit!(w); nothing
+                    catch e
+                        e
+                    end
                     @test e isa WriteRefusedError && e.reason == "author_mismatch" && e.slot == 2 && e.caller == "alice@example.com"
                     @test occursin("author_mismatch: the record names 'alice@example.com' as client.user but the caller is 'mallory'", sprint(showerror, e))
                     double.caller = "alice@example.com"
@@ -761,7 +968,11 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                     double.respond = _ -> (403, [], Vector{UInt8}("{\"Message\":\"User: arn:aws:sts::123456789012:assumed-role/x/alice is not authorized\"}"))
                     w = GWT.write_builder(copy)
                     GWT.insert_rows!(w, :samples, [(id = 2, note = "forbidden")])
-                    e = try GWT.commit!(w); nothing catch e; e end
+                    e = try
+                        GWT.commit!(w); nothing
+                    catch e
+                        e
+                    end
                     @test e isa WriteRefusedError && e.reason == "forbidden" && e.slot == 2
                     @test occursin("(HTTP 403 with no gateway code): User: arn:aws:sts::123456789012:assumed-role/x/alice is not authorized", sprint(showerror, e))
                     @test occursin("ask the bucket's operator for the writer permission set", sprint(showerror, e))
@@ -787,13 +998,21 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                     w = GWT.write_builder(copy)
                     GWT.insert_rows!(w, :samples, [(id = 4, note = "x"^(4 * 1024 * 1024 + 100))])
                     n = puts()
-                    e = try GWT.commit!(w); nothing catch e; e end
+                    e = try
+                        GWT.commit!(w); nothing
+                    catch e
+                        e
+                    end
                     @test e isa WriteBuilderError
                     @test occursin(r"^WriteBuilderError: commit!\(w\): record is 4194\d{3} bytes; the cap on a GatewayObjectStore is 4194304 bytes \(4 MiB\): split the write into more than one commit$", sprint(showerror, e))
                     @test puts() == n && GWT.head(copy).slot == 3 && length(GWT.table(copy, :samples)) == 3
                     close(copy)
                     # create_chain under a prefix the policy does not allow: refused at slot 0 with the minted id
-                    e = try GWT.create_chain(Chain("bkt", "other/run-1"; store, cache_dir, assume_first_writer_wins = true)); nothing catch e; e end
+                    e = try
+                        GWT.create_chain(Chain("bkt", "other/run-1"; store, cache_dir, assume_first_writer_wins = true)); nothing
+                    catch e
+                        e
+                    end
                     @test e isa WriteRefusedError && e.reason == "not_allowed" && e.slot == 0 && e.key == "other/run-1/000000000000"
                     @test e.chain_id isa String && length(e.chain_id) == 26
                     @test startswith(sprint(showerror, e), "WriteRefusedError: write refused for slot 0 of chain $(e.chain_id) at bkt/other/run-1: ")
@@ -824,13 +1043,19 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
         sts = LoopbackServer(gwtest_sts(GWTEST_CREDS, "eu-north-1", GWTEST_ARN))
         mktempdir() do dir
             try
-                store = GatewayObjectStore("bkt", loopback_url(gw); region = "eu-north-1", credentials = GWTEST_CREDS,
-                                           endpoint = s3test_endpoint(ours), path_style = true, sts_endpoint = loopback_url(sts))
+                store = GatewayObjectStore(
+                    "bkt", loopback_url(gw); region = "eu-north-1", credentials = GWTEST_CREDS,
+                    endpoint = s3test_endpoint(ours), path_style = true, sts_endpoint = loopback_url(sts)
+                )
                 key = "exp/run-1/000000000000"
                 @test_throws GWT.GatewayMismatchError put_object_if_absent(store, key, gwtest_record("alice@example.com"))
                 @test haskey(theirs.objects, key) && !haskey(ours.objects, key)
                 chain = Chain("bkt", "exp/run-2"; store, cache_dir = joinpath(dir, "cache"), assume_first_writer_wins = true)
-                e = try GWT.create_chain(chain); nothing catch e; e end
+                e = try
+                    GWT.create_chain(chain); nothing
+                catch e
+                    e
+                end
                 @test e isa GWT.GatewayMismatchError && !GWT.retryable(e)
                 @test (e.slot, e.key, e.bucket, e.gateway) == (0, "exp/run-2/000000000000", "bkt", loopback_url(gw))
                 @test e.chain_id isa String
@@ -842,8 +1067,10 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                 # our bucket holding another record at the key is a mismatch too, not a success
                 key = "exp/run-3/000000000000"
                 ours.objects[key], ours.modified[key] = b"someone else's record", floor(Int64, time())
-                @test_throws "and bucket bkt holds another record there (21 bytes" put_object_if_absent(store, key,
-                                                                                                   gwtest_record("alice@example.com"))
+                @test_throws "and bucket bkt holds another record there (21 bytes" put_object_if_absent(
+                    store, key,
+                    gwtest_record("alice@example.com")
+                )
             finally
                 close(gw); close(sts); close(ours); close(theirs)
             end

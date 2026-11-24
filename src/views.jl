@@ -40,7 +40,7 @@ Fields: `name`, the table; `chain_id`, `slot` and `transaction_hash` (a
 `columns`, the `NamedTuple` of read-only column vectors; `shape`, the model's
 [`Shape`](@ref) — [`shape`](@ref)`(v)` is its public form.
 """
-struct TableView{C<:NamedTuple}
+struct TableView{C <: NamedTuple}
     name::String
     chain_id::String
     slot::Int64
@@ -48,21 +48,25 @@ struct TableView{C<:NamedTuple}
     shape::Shape
     columns::C                    # ReadOnlyColumn per column, in declaration order
     slots::Vector{Int64}          # row slot of each row, in the view's order (ADR-0032)
-    index::Dict{Any,Int}          # key tuple => row, in the view's order
+    index::Dict{Any, Int}          # key tuple => row, in the view's order
     nrows::Int
 end
 
 # A column of a view (ADR-0043): reads go to the view's own vector, writes raise. A bytes
 # cell is copied on read, because the cell is itself a mutable vector.
-struct ReadOnlyColumn{T,V<:AbstractVector{T}} <: AbstractVector{T}
+struct ReadOnlyColumn{T, V <: AbstractVector{T}} <: AbstractVector{T}
     data::V
 end
 Base.size(c::ReadOnlyColumn) = size(c.data)
 Base.IndexStyle(::Type{<:ReadOnlyColumn}) = IndexLinear()
 Base.@propagate_inbounds Base.getindex(c::ReadOnlyColumn, i::Int) = own_cell(c.data[i])
 Base.setindex!(::ReadOnlyColumn, _, ::Int) =
-    throw(ArgumentError("a table view's columns are read-only: every table(copy, :t) at one head returns the same view " *
-                        "(ADR-0043); copy(column) is a vector of your own"))
+    throw(
+    ArgumentError(
+        "a table view's columns are read-only: every table(copy, :t) at one head returns the same view " *
+            "(ADR-0043); copy(column) is a vector of your own"
+    )
+)
 own_cell(x::AbstractVector{UInt8}) = copy(x)
 own_cell(x) = x
 
@@ -77,12 +81,14 @@ function TableView(name::AbstractString, h::Head, t::Model.Table)
         ReadOnlyColumn(out)
     end
     columns = NamedTuple{names}(Tuple(vectors))
-    index = Dict{Any,Int}()
+    index = Dict{Any, Int}()
     for (i, p) in enumerate(perm)
         index[Model.key_at(t, p)] = i
     end
-    return TableView(String(name), h.chain_id, h.slot, TransactionHash(h.transaction_hash), t.shape, columns, t.slots[perm],
-                     index, length(perm))
+    return TableView(
+        String(name), h.chain_id, h.slot, TransactionHash(h.transaction_hash), t.shape, columns, t.slots[perm],
+        index, length(perm)
+    )
 end
 
 """
@@ -102,7 +108,7 @@ starts with `_`, so `_slot` never collides (ADR-0025).
 """
 table_with_slots(v::TableView) = (; v.columns..., _slot = ReadOnlyColumn(v.slots))
 
-Base.eltype(::Type{TableView{C}}) where {C} = NamedTuple{fieldnames(C),Tuple{map(eltype, fieldtypes(C))...}}
+Base.eltype(::Type{TableView{C}}) where {C} = NamedTuple{fieldnames(C), Tuple{map(eltype, fieldtypes(C))...}}
 Base.length(v::TableView) = v.nrows
 Base.iterate(v::TableView, i::Int = 1) = i > v.nrows ? nothing : (row(v, i), i + 1)
 row(v::TableView, i::Int) = eltype(typeof(v))(map(c -> c[i], v.columns))
@@ -122,18 +128,30 @@ function lookup_key(v::TableView, k)
     nk = length(v.shape.keyidx)
     if k isa NamedTuple
         for c in v.shape.key
-            haskey(k, Symbol(c)) || throw(ArgumentError("table $(repr(v.name)): the row $(repr(k)) names no key column " *
-                "$(repr(c)); a row looks up its key, so it names every key column ($(join(v.shape.key, ", ")))"))
+            haskey(k, Symbol(c)) || throw(
+                ArgumentError(
+                    "table $(repr(v.name)): the row $(repr(k)) names no key column " *
+                        "$(repr(c)); a row looks up its key, so it names every key column ($(join(v.shape.key, ", ")))"
+                )
+            )
         end
         return Tuple(k[Symbol(c)] for c in v.shape.key)
     end
     if k isa Tuple
-        length(k) == nk || throw(ArgumentError("table $(repr(v.name)) has a $(nk == 1 ? "one-column" : "composite") key " *
-            "($(join(v.shape.key, ", "))); a key of $(length(k)) cells does not address it"))
+        length(k) == nk || throw(
+            ArgumentError(
+                "table $(repr(v.name)) has a $(nk == 1 ? "one-column" : "composite") key " *
+                    "($(join(v.shape.key, ", "))); a key of $(length(k)) cells does not address it"
+            )
+        )
         return k
     end
-    nk == 1 || throw(ArgumentError("table $(repr(v.name)) has a composite key ($(join(v.shape.key, ", "))); look it up as " *
-        "a tuple in key declaration order, got $(repr(k))"))
+    nk == 1 || throw(
+        ArgumentError(
+            "table $(repr(v.name)) has a composite key ($(join(v.shape.key, ", "))); look it up as " *
+                "a tuple in key declaration order, got $(repr(k))"
+        )
+    )
     return (k,)
 end
 
@@ -154,8 +172,10 @@ function Base.keys(v::TableView)
     return [Tuple(v.columns[j][i] for j in idx) for i in 1:v.nrows]
 end
 
-Base.show(io::IO, v::TableView) = print(io, "TableView(:", v.name, " at slot ", v.slot, " of chain ", v.chain_id, "; ",
-                                        v.nrows, " rows, columns ", join(keys(v.columns), ", "), ")")
+Base.show(io::IO, v::TableView) = print(
+    io, "TableView(:", v.name, " at slot ", v.slot, " of chain ", v.chain_id, "; ",
+    v.nrows, " rows, columns ", join(keys(v.columns), ", "), ")"
+)
 
 """
     table(copy, :t) -> TableView
@@ -179,7 +199,7 @@ function table(copy::LocalCopy, name)
 end
 
 function view_name(call, name)
-    name isa Union{Symbol,AbstractString} || throw(ArgumentError("$call(copy, $(repr(name))): table name $(repr(name)) is not a Symbol"))
+    name isa Union{Symbol, AbstractString} || throw(ArgumentError("$call(copy, $(repr(name))): table name $(repr(name)) is not a Symbol"))
     return String(name)
 end
 function view_table(copy::LocalCopy, call, name, n)
@@ -209,5 +229,7 @@ function shape(copy::LocalCopy, name)
 end
 shape(v::TableView) = public_shape(v.shape)
 
-public_shape(s::Shape) = (; columns = [(; name = Symbol(c.name), type = Model.julia_type(c.type), nullable = c.nullable) for c in s.columns],
-                          key = Symbol[Symbol(k) for k in s.key])
+public_shape(s::Shape) = (;
+    columns = [(; name = Symbol(c.name), type = Model.julia_type(c.type), nullable = c.nullable) for c in s.columns],
+    key = Symbol[Symbol(k) for k in s.key],
+)

@@ -11,15 +11,21 @@ const TRACKED_SKIPPED = r"^(docs/research/|test/tracked_values\.jl$)|(^|/)(Manif
 
 # (what, pattern, is this match a placeholder?)
 const TRACKED_CHECKS = (
-    ("a 12-digit number shaped like an AWS account id", r"(?<![0-9A-Za-z])[0-9]{12}(?![0-9A-Za-z])",
-     (path, line, m) -> m.match in TRACKED_FAKE_ACCOUNTS || m.match in TRACKED_NOT_ACCOUNTS ||
-                        startswith(m.match, "0000")),                                   # a slot key
-    ("a function URL with a real-looking host id", r"([A-Za-z0-9<>-]+)\.lambda-url\.",
-     (path, line, m) -> m.captures[1] == "<id>" || startswith(m.captures[1], "abc")),
+    (
+        "a 12-digit number shaped like an AWS account id", r"(?<![0-9A-Za-z])[0-9]{12}(?![0-9A-Za-z])",
+        (path, line, m) -> m.match in TRACKED_FAKE_ACCOUNTS || m.match in TRACKED_NOT_ACCOUNTS ||
+            startswith(m.match, "0000"),
+    ),                                   # a slot key
+    (
+        "a function URL with a real-looking host id", r"([A-Za-z0-9<>-]+)\.lambda-url\.",
+        (path, line, m) -> m.captures[1] == "<id>" || startswith(m.captures[1], "abc"),
+    ),
     ("an Identity Center start URL", r"awsapps\.com/start", (path, line, m) -> false),
-    ("an e-mail address not at example.com", r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}",
-     (path, line, m) -> endswith(m.match, "@example.com") ||
-                        (path == "Project.toml" && startswith(line, "authors"))),     # the package's public author line
+    (
+        "an e-mail address not at example.com", r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}",
+        (path, line, m) -> endswith(m.match, "@example.com") ||
+            (path == "Project.toml" && startswith(line, "authors")),
+    ),     # the package's public author line
 )
 
 function tracked_files(root)
@@ -48,9 +54,9 @@ end
 @testset "tracked values: no deployment value in the tracked tree (ADR-0030)" begin
     # the checks themselves, on made-up lines
     hit(line) = any(((what, pattern, placeholder),) -> any(m -> !placeholder("x.md", line, m), eachmatch(pattern, line)), TRACKED_CHECKS)
-    @test hit("arn:aws:iam::" * "4" ^ 12 * ":role/x") && hit("bucket-" * "9" ^ 12)
+    @test hit("arn:aws:iam::" * "4"^12 * ":role/x") && hit("bucket-" * "9"^12)
     @test !hit("arn:aws:iam::123456789012:role/x") && !hit("chain/000000000042") && !hit("0123456789abcdef0123")
-    @test hit("https://" * "q7" ^ 16 * ".lambda-url.eu-north-1.on.aws")
+    @test hit("https://" * "q7"^16 * ".lambda-url.eu-north-1.on.aws")
     @test !hit("https://<id>.lambda-url.<region>.on.aws") && !hit("https://abc123.lambda-url.eu-north-1.on.aws") && !hit("*.lambda-url.<region>.on.aws")
     @test hit("https://d-0000000000." * "awsapps.com/start")
     @test hit("bob@" * "corp.example.org") && !hit("alice@example.com") && !hit("SQLite@1.8.2")

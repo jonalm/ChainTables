@@ -4,15 +4,15 @@
 # gateway.jl); the one step 9 raises — UnsupportedStoreError — is checked by construction here.
 @testset "errors" begin
     for T in (
-        ChainTables.StaleHeadError, ChainTables.LostRaceError, ChainTables.WriteBuilderError,
-        ChainTables.PinnedCopyError, ChainTables.FingerprintMismatchError, ChainTables.DivergenceError,
-        ChainTables.UnsupportedStoreError, ChainTables.RewrittenChainError, ChainTables.ChainNotFoundError,
-        ChainTables.NotALocalCopyError, ChainTables.LayoutVersionError, ChainTables.WrongChainError,
-        ChainTables.LocalCopyInconsistentError, ChainTables.MalformedRecordError, ChainTables.WriteRefusedError,
-        ChainTables.GatewayMismatchError, ChainTables.RecordCacheError, ChainTables.CommitOutcomeUnknownError,
-        ChainTables.AttachmentChangedError, ChainTables.AttachmentURLExpiredError, ChainTables.AttachmentAbsentError,
-        ChainTables.AttachmentDigestError, ChainTables.AttachmentCacheError, ChainTables.GatewaySessionEndingError,
-    )
+            ChainTables.StaleHeadError, ChainTables.LostRaceError, ChainTables.WriteBuilderError,
+            ChainTables.PinnedCopyError, ChainTables.FingerprintMismatchError, ChainTables.DivergenceError,
+            ChainTables.UnsupportedStoreError, ChainTables.RewrittenChainError, ChainTables.ChainNotFoundError,
+            ChainTables.NotALocalCopyError, ChainTables.LayoutVersionError, ChainTables.WrongChainError,
+            ChainTables.LocalCopyInconsistentError, ChainTables.MalformedRecordError, ChainTables.WriteRefusedError,
+            ChainTables.GatewayMismatchError, ChainTables.RecordCacheError, ChainTables.CommitOutcomeUnknownError,
+            ChainTables.AttachmentChangedError, ChainTables.AttachmentURLExpiredError, ChainTables.AttachmentAbsentError,
+            ChainTables.AttachmentDigestError, ChainTables.AttachmentCacheError, ChainTables.GatewaySessionEndingError,
+        )
         @test T <: ChainTables.ChainTablesError
         @test ChainTables.ChainTablesError <: Exception
         @test fieldnames(T)[1] === :msg
@@ -21,8 +21,10 @@
         @test all(getfield(e, f) === nothing for f in fieldnames(T)[2:end])
         @test sprint(showerror, e) == "$(nameof(T)): what happened"
     end
-    e = ChainTables.DivergenceError("divergence: this machine cannot reproduce the chain"; chain_id = "A"^26, slot = 3,
-                                    expected = zeros(UInt8, 32), computed = ones(UInt8, 32))
+    e = ChainTables.DivergenceError(
+        "divergence: this machine cannot reproduce the chain"; chain_id = "A"^26, slot = 3,
+        expected = zeros(UInt8, 32), computed = ones(UInt8, 32)
+    )
     @test (e.chain_id, e.slot, e.expected, e.computed) == ("A"^26, 3, zeros(UInt8, 32), ones(UInt8, 32))
     # a hash given as raw bytes is carried as its type (ADR-0019): fingerprints and transaction hashes apart
     @test e.expected isa ChainTables.StateFingerprint && e.computed isa ChainTables.StateFingerprint
@@ -36,8 +38,10 @@
     @test e.endpoint == "https://minio.local"
     @test fieldnames(ChainTables.WriteBuilderError) == (:msg,)   # the call to fix is the whole evidence
     # the gateway's refusal (ADR-0028): one type, the reason a field, never retried
-    e = ChainTables.WriteRefusedError("write refused"; chain_id = "A"^26, slot = 4, key = "p/000000000004",
-                                      caller = "alice@example.com", reason = "not_allowed")
+    e = ChainTables.WriteRefusedError(
+        "write refused"; chain_id = "A"^26, slot = 4, key = "p/000000000004",
+        caller = "alice@example.com", reason = "not_allowed"
+    )
     @test (e.chain_id, e.slot, e.key, e.caller, e.reason) == ("A"^26, 4, "p/000000000004", "alice@example.com", "not_allowed")
     @test fieldnames(ChainTables.WriteRefusedError) == (:msg, :chain_id, :slot, :key, :caller, :reason)
     @test !ChainTables.retryable(e)
@@ -45,8 +49,10 @@
     e = ChainTables.GatewayMismatchError("gateway mismatch"; key = "p/000000000004", bucket = "bkt", gateway = "https://gw")
     @test (e.key, e.bucket, e.gateway) == ("p/000000000004", "bkt", "https://gw") && !ChainTables.retryable(e)
     # a damaged record cache (ADR-0040): the file and both hashes as evidence
-    e = ChainTables.RecordCacheError("record cache"; slot = 2, path = "/c/bkt/p/000000000002",
-                                     expected = zeros(UInt8, 32), found = ones(UInt8, 32))
+    e = ChainTables.RecordCacheError(
+        "record cache"; slot = 2, path = "/c/bkt/p/000000000002",
+        expected = zeros(UInt8, 32), found = ones(UInt8, 32)
+    )
     @test (e.slot, e.path) == (2, "/c/bkt/p/000000000002")
     @test e.expected isa ChainTables.TransactionHash && e.found isa ChainTables.TransactionHash
     # an attachment's upload refused (ADR-0046): the key, and for an expired URL the time the gateway gave

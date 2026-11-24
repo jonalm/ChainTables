@@ -24,38 +24,50 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
         date = "20130524T000000Z"
         host = "host" => "examplebucket.s3.amazonaws.com"
         # GET object with a Range header
-        got = S3T.sign_request(S3TEST_CREDS, "us-east-1", "GET", "/test.txt", [],
-                               [host, "range" => "bytes=0-9", "x-amz-content-sha256" => S3TEST_EMPTY, "x-amz-date" => date],
-                               S3TEST_EMPTY, date)
+        got = S3T.sign_request(
+            S3TEST_CREDS, "us-east-1", "GET", "/test.txt", [],
+            [host, "range" => "bytes=0-9", "x-amz-content-sha256" => S3TEST_EMPTY, "x-amz-date" => date],
+            S3TEST_EMPTY, date
+        )
         @test got.canonical_request == "GET\n/test.txt\n\nhost:examplebucket.s3.amazonaws.com\nrange:bytes=0-9\n" *
-              "x-amz-content-sha256:$S3TEST_EMPTY\nx-amz-date:$date\n\nhost;range;x-amz-content-sha256;x-amz-date\n$S3TEST_EMPTY"
+            "x-amz-content-sha256:$S3TEST_EMPTY\nx-amz-date:$date\n\nhost;range;x-amz-content-sha256;x-amz-date\n$S3TEST_EMPTY"
         @test got.string_to_sign == "AWS4-HMAC-SHA256\n$date\n20130524/us-east-1/s3/aws4_request\n" *
-              "7344ae5b7ee6c3e7e6b0fe0640412a37625d1fbfff95c48bbb2dc43964946972"
+            "7344ae5b7ee6c3e7e6b0fe0640412a37625d1fbfff95c48bbb2dc43964946972"
         @test got.signature == "f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41"
         @test got.authorization == "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request, " *
-              "SignedHeaders=host;range;x-amz-content-sha256;x-amz-date, Signature=$(got.signature)"
+            "SignedHeaders=host;range;x-amz-content-sha256;x-amz-date, Signature=$(got.signature)"
         # PUT object: a `$` in the key, encoded once; a Date header among the signed
         body_hash = bytes2hex(sha256("Welcome to Amazon S3."))
         @test body_hash == "44ce7dd67c959e0d3524ffac1771dfbba87d2b6b4b4e99e42034a8b803f8b072"
         @test S3T.uri_encode("test\$file.text"; keep_slash = true) == "test%24file.text"
-        got = S3T.sign_request(S3TEST_CREDS, "us-east-1", "PUT", "/test%24file.text", [],
-                               ["date" => "Fri, 24 May 2013 00:00:00 GMT", host, "x-amz-content-sha256" => body_hash,
-                                "x-amz-date" => date, "x-amz-storage-class" => "REDUCED_REDUNDANCY"], body_hash, date)
+        got = S3T.sign_request(
+            S3TEST_CREDS, "us-east-1", "PUT", "/test%24file.text", [],
+            [
+                "date" => "Fri, 24 May 2013 00:00:00 GMT", host, "x-amz-content-sha256" => body_hash,
+                "x-amz-date" => date, "x-amz-storage-class" => "REDUCED_REDUNDANCY",
+            ], body_hash, date
+        )
         @test got.signature == "98ad721746da40c64f1a55b78f14c238d841ea1380cd77a1b5971af0ece108bd"
         # GET bucket lifecycle: a query parameter with no value
-        got = S3T.sign_request(S3TEST_CREDS, "us-east-1", "GET", "/", ["lifecycle" => ""],
-                               [host, "x-amz-content-sha256" => S3TEST_EMPTY, "x-amz-date" => date], S3TEST_EMPTY, date)
+        got = S3T.sign_request(
+            S3TEST_CREDS, "us-east-1", "GET", "/", ["lifecycle" => ""],
+            [host, "x-amz-content-sha256" => S3TEST_EMPTY, "x-amz-date" => date], S3TEST_EMPTY, date
+        )
         @test occursin("\nlifecycle=\n", got.canonical_request)
         @test got.signature == "fea454ca298b7da1c68078a5d1bdbfbbe0d65c699e0f91ac7a200a0136783543"
         # GET bucket (list objects): two query parameters, sorted
-        got = S3T.sign_request(S3TEST_CREDS, "us-east-1", "GET", "/", ["prefix" => "J", "max-keys" => "2"],
-                               [host, "x-amz-content-sha256" => S3TEST_EMPTY, "x-amz-date" => date], S3TEST_EMPTY, date)
+        got = S3T.sign_request(
+            S3TEST_CREDS, "us-east-1", "GET", "/", ["prefix" => "J", "max-keys" => "2"],
+            [host, "x-amz-content-sha256" => S3TEST_EMPTY, "x-amz-date" => date], S3TEST_EMPTY, date
+        )
         @test occursin("\nmax-keys=2&prefix=J\n", got.canonical_request)
         @test got.signature == "34b48302e7b5fa45bde8084f4b7868a86f0a534bc59db6670ed5711ef69dc6f7"
         # header names are lowercased and values trimmed before signing; the order is by name
-        mixed = S3T.sign_request(S3TEST_CREDS, "us-east-1", "GET", "/test.txt", [],
-                                 ["X-Amz-Date" => date, "Range" => "  bytes=0-9 ", "x-amz-content-sha256" => S3TEST_EMPTY, "Host" => host[2]],
-                                 S3TEST_EMPTY, date)
+        mixed = S3T.sign_request(
+            S3TEST_CREDS, "us-east-1", "GET", "/test.txt", [],
+            ["X-Amz-Date" => date, "Range" => "  bytes=0-9 ", "x-amz-content-sha256" => S3TEST_EMPTY, "Host" => host[2]],
+            S3TEST_EMPTY, date
+        )
         @test mixed.signature == "f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41"
     end
 
@@ -108,7 +120,7 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
         @test S3T.resolve_credentials(c) === c
         @test S3T.resolve_credentials((; access_key_id = "id", secret_access_key = "secret")) == Credentials("id", "secret")
         @test S3T.resolve_credentials((; access_key_id = "id", secret_access_key = "secret", session_token = "t")) ==
-              Credentials("id", "secret"; session_token = "t")
+            Credentials("id", "secret"; session_token = "t")
         calls = Ref(0)
         supplier = () -> (calls[] += 1; Credentials("id$(calls[])", "secret"))
         @test S3T.resolve_credentials(supplier) === supplier                  # a callable stays a callable …
@@ -144,8 +156,10 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
         # the callable: the fake exporter is run once, then again only within the margin of expiry
         runs = String[]
         clock = Ref(0.0)
-        fake(exp) = profile -> (push!(runs, profile); exp === nothing ?
-            "AWS_ACCESS_KEY_ID=AKIA$(length(runs))\nAWS_SECRET_ACCESS_KEY=s3cret\n" : env("AKIA$(length(runs))", exp))
+        fake(exp) = profile -> (
+            push!(runs, profile); exp === nothing ?
+                "AWS_ACCESS_KEY_ID=AKIA$(length(runs))\nAWS_SECRET_ACCESS_KEY=s3cret\n" : env("AKIA$(length(runs))", exp)
+        )
         far = S3T.parse_export_credentials(env("x", "2009-10-12T17:50:00Z"))[2]
         clock[] = far - 3600                                                  # an hour before expiry
         get_credentials = S3T.sso_credentials("team"; exporter = fake("2009-10-12T17:50:00Z"), now = () -> clock[])
@@ -173,7 +187,15 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
         noaccess = S3T.sso_credentials("team"; exporter = _ -> error(forbidden), setting = (p, k) -> settings[k])
         @test_throws "not assigned role writer on account 123456789012" noaccess()
         @test_throws "No access" noaccess()
-        @test !occursin("aws sso login", sprint(showerror, try noaccess() catch e e end))
+        @test !occursin(
+            "aws sso login", sprint(
+                showerror, try
+                    noaccess()
+                catch e
+                    e
+                end
+            )
+        )
         @test_throws "aws configure export-credentials --profile team printed no" S3T.sso_credentials("team"; exporter = _ -> "")()
         @test_throws ArgumentError S3T.sso_credentials("")
         @test_throws "profile must not be empty" S3T.sso_credentials("")
@@ -189,37 +211,51 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
         ran = Cmd[]
         @test S3T.sso_login("team"; runner = cmd -> push!(ran, cmd)) === nothing
         @test S3T.sso_login("team"; device_code = true, runner = cmd -> push!(ran, cmd)) === nothing
-        @test [c.exec for c in ran] == [["aws", "sso", "login", "--profile", "team"],
-                                        ["aws", "sso", "login", "--profile", "team", "--use-device-code"]]
-        @test_throws "aws sso login --profile team failed: the AWS CLI (aws) is not on PATH" S3T.sso_login("team";
-            runner = _ -> error("the AWS CLI (aws) is not on PATH"))
-        @test_throws "aws sso login --profile team --use-device-code failed:" S3T.sso_login("team"; device_code = true,
-            runner = cmd -> run(`false`))
+        @test [c.exec for c in ran] == [
+            ["aws", "sso", "login", "--profile", "team"],
+            ["aws", "sso", "login", "--profile", "team", "--use-device-code"],
+        ]
+        @test_throws "aws sso login --profile team failed: the AWS CLI (aws) is not on PATH" S3T.sso_login(
+            "team";
+            runner = _ -> error("the AWS CLI (aws) is not on PATH")
+        )
+        @test_throws "aws sso login --profile team --use-device-code failed:" S3T.sso_login(
+            "team"; device_code = true,
+            runner = cmd -> run(`false`)
+        )
         @test_throws "sso_login: profile must not be empty" S3T.sso_login("")
         # login = true, interactive: an export failure logs in once and exports again
         good = "AWS_ACCESS_KEY_ID=AKIA1\nAWS_SECRET_ACCESS_KEY=s3cret\n"
         exports, logins = Ref(0), String[]
         expired_once = _ -> (exports[] += 1) == 1 ? error("The SSO session has expired") : good
-        get_credentials = S3T.sso_credentials("team"; login = true, exporter = expired_once,
-                                              login_with = p -> push!(logins, p), interactive = () -> true)
+        get_credentials = S3T.sso_credentials(
+            "team"; login = true, exporter = expired_once,
+            login_with = p -> push!(logins, p), interactive = () -> true
+        )
         @test get_credentials().access_key_id == "AKIA1" && exports[] == 2 && logins == ["team"]
         @test get_credentials().access_key_id == "AKIA1" && exports[] == 2 && logins == ["team"]      # cached; no second login
         # a second failure raises as without login, after exactly one login
         empty!(logins)
-        still = S3T.sso_credentials("team"; login = true, exporter = _ -> error("The SSO session has expired"),
-                                    login_with = p -> push!(logins, p), interactive = () -> true)
+        still = S3T.sso_credentials(
+            "team"; login = true, exporter = _ -> error("The SSO session has expired"),
+            login_with = p -> push!(logins, p), interactive = () -> true
+        )
         @test_throws "aws sso login --profile team" still()
         @test logins == ["team"]
         # a failed login is reported, and the export is not run again
         exports[] = 0
-        nologin = S3T.sso_credentials("team"; login = true, exporter = _ -> (exports[] += 1; error("expired")),
-                                      login_with = _ -> error("aws sso login --profile team failed: cancelled"), interactive = () -> true)
+        nologin = S3T.sso_credentials(
+            "team"; login = true, exporter = _ -> (exports[] += 1; error("expired")),
+            login_with = _ -> error("aws sso login --profile team failed: cancelled"), interactive = () -> true
+        )
         @test_throws "aws sso login --profile team failed: cancelled" nologin()
         @test exports[] == 1
         # not interactive: login = true changes nothing — it raises rather than block the run
         empty!(logins)
-        batch = S3T.sso_credentials("team"; login = true, exporter = _ -> error("The SSO session has expired"),
-                                    login_with = p -> push!(logins, p), interactive = () -> false)
+        batch = S3T.sso_credentials(
+            "team"; login = true, exporter = _ -> error("The SSO session has expired"),
+            login_with = p -> push!(logins, p), interactive = () -> false
+        )
         @test_throws "The SSO session has expired" batch()
         @test isempty(logins)
         # login = false, the default: never, interactive or not
@@ -256,8 +292,10 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
         @test S3T.object_path(s, "p/000000000001") == "/bkt/p/000000000001"
         @test S3T.is_aws(s)
         # a spelled-out AWS endpoint is AWS: FIPS, dual-stack, GovCloud, China
-        for endpoint in ("https://s3-fips.us-gov-west-1.amazonaws.com", "https://s3.dualstack.eu-north-1.amazonaws.com",
-                         "https://s3.cn-north-1.amazonaws.com.cn", "HTTPS://S3.EU-NORTH-1.AMAZONAWS.COM:443/")
+        for endpoint in (
+                "https://s3-fips.us-gov-west-1.amazonaws.com", "https://s3.dualstack.eu-north-1.amazonaws.com",
+                "https://s3.cn-north-1.amazonaws.com.cn", "HTTPS://S3.EU-NORTH-1.AMAZONAWS.COM:443/",
+            )
             s = S3ObjectStore("bkt"; region = "eu-north-1", credentials = creds, endpoint)
             @test S3T.is_aws(s)
             @test s.endpoint == endpoint
@@ -265,8 +303,10 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
         s = S3ObjectStore("bkt"; region = "eu-north-1", credentials = creds, endpoint = "HTTPS://S3.EU-NORTH-1.AMAZONAWS.COM:443/")
         @test (s.host, s.base) == ("bkt.s3.eu-north-1.amazonaws.com", "https://bkt.s3.eu-north-1.amazonaws.com")   # default port dropped
         # anything else is not, including look-alikes
-        for endpoint in ("https://minio.local:9000", "http://127.0.0.1:9000", "https://r2.cloudflarestorage.com",
-                         "https://amazonaws.com", "https://evil-amazonaws.com", "https://amazonaws.com.example.org")
+        for endpoint in (
+                "https://minio.local:9000", "http://127.0.0.1:9000", "https://r2.cloudflarestorage.com",
+                "https://amazonaws.com", "https://evil-amazonaws.com", "https://amazonaws.com.example.org",
+            )
             s = S3ObjectStore("bkt"; region = "eu-north-1", credentials = creds, endpoint)
             @test !S3T.is_aws(s)
         end
@@ -285,8 +325,10 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
     end
 
     @testset "Chain: store = nothing is the S3 client, resolved now, no I/O (ADR-0019)" begin
-        withenv("AWS_ACCESS_KEY_ID" => "AKIAX", "AWS_SECRET_ACCESS_KEY" => "s3cret", "AWS_SESSION_TOKEN" => nothing,
-                "AWS_REGION" => nothing, "AWS_DEFAULT_REGION" => nothing) do
+        withenv(
+            "AWS_ACCESS_KEY_ID" => "AKIAX", "AWS_SECRET_ACCESS_KEY" => "s3cret", "AWS_SESSION_TOKEN" => nothing,
+            "AWS_REGION" => nothing, "AWS_DEFAULT_REGION" => nothing
+        ) do
             chain = Chain("bkt", "p"; region = "eu-north-1", cache_dir = "/c")
             @test chain isa Chain{S3ObjectStore}
             @test chain.credentials == Credentials("AKIAX", "s3cret") && chain.region == "eu-north-1"
@@ -295,8 +337,10 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
             @test sprint(show, chain) == "Chain(\"bkt\", \"p\"; store = S3ObjectStore)"
             @test_throws "region is required by the S3 client" Chain("bkt", "p")
             @test_throws "bucket name \"my.bucket\" contains a dot, which breaks certificate matching" Chain("my.bucket", "p"; region = "eu-north-1")
-            chain = Chain("bkt", "p"; region = "eu-north-1", endpoint = "https://minio.local:9000", path_style = true,
-                          credentials = Credentials("id", "secret"))
+            chain = Chain(
+                "bkt", "p"; region = "eu-north-1", endpoint = "https://minio.local:9000", path_style = true,
+                credentials = Credentials("id", "secret")
+            )
             @test chain.credentials == Credentials("id", "secret") && chain.endpoint == "https://minio.local:9000"
             @test chain.store.path_style && !S3T.is_aws(chain.store)
         end
@@ -315,8 +359,10 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
         creds = Credentials("AKIATEST", "topsecret"; session_token = "session-token")
         server = S3TestServer(; bucket = "bkt", credentials = creds)
         try
-            store = S3ObjectStore("bkt"; region = "eu-north-1", credentials = creds, endpoint = s3test_endpoint(server),
-                                  path_style = true, timeout = 30)
+            store = S3ObjectStore(
+                "bkt"; region = "eu-north-1", credentials = creds, endpoint = s3test_endpoint(server),
+                path_style = true, timeout = 30
+            )
             key = "p/000000000001"
             @test fetch_object(store, key) === nothing
             @test stat_object(store, key) === nothing
@@ -361,22 +407,34 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
             @test server.requests[end].query == ["continuation-token" => "3", "list-type" => "2", "prefix" => "p/"]   # canonical order
             server.page_size = 1000
             # a client signing with the wrong secret is refused by the server, and that raises
-            wrong = S3ObjectStore("bkt"; region = "eu-north-1", credentials = Credentials("AKIATEST", "nope"; session_token = "session-token"),
-                                  endpoint = s3test_endpoint(server), path_style = true)
-            e = try fetch_object(wrong, key); nothing catch e; e end
+            wrong = S3ObjectStore(
+                "bkt"; region = "eu-north-1", credentials = Credentials("AKIATEST", "nope"; session_token = "session-token"),
+                endpoint = s3test_endpoint(server), path_style = true
+            )
+            e = try
+                fetch_object(wrong, key); nothing
+            catch e
+                e
+            end
             @test e isa TransportError && e.status == 403 && !S3T.retryable(e)
             @test occursin("HTTP 403 SignatureDoesNotMatch: expected", sprint(showerror, e))
             @test startswith(sprint(showerror, e), "TransportError: GET http://127.0.0.1:$(server.port)/bkt/p/000000000001: HTTP 403")
             # the bucket in the URL is the store's; a wrong region changes the signature
             other = S3ObjectStore("bkt"; region = "us-east-1", credentials = creds, endpoint = s3test_endpoint(server), path_style = true)
-            e = try fetch_object(other, key); nothing catch e; e end
+            e = try
+                fetch_object(other, key); nothing
+            catch e
+                e
+            end
             @test e isa TransportError && e.status == 400 && !S3T.retryable(e)
             @test occursin("HTTP 400 AuthorizationHeaderMalformed: the region 'us-east-1' is wrong", sprint(showerror, e))
             # without a session token, none is sent or signed
             plain = S3TestServer(; bucket = "bkt", credentials = Credentials("AKIATEST", "topsecret"))
             try
-                s2 = S3ObjectStore("bkt"; region = "eu-north-1", credentials = Credentials("AKIATEST", "topsecret"),
-                                   endpoint = s3test_endpoint(plain), path_style = true)
+                s2 = S3ObjectStore(
+                    "bkt"; region = "eu-north-1", credentials = Credentials("AKIATEST", "topsecret"),
+                    endpoint = s3test_endpoint(plain), path_style = true
+                )
                 @test put_object_if_absent(s2, "k", b"v").created && fetch_object(s2, "k") == b"v"
                 @test all(r -> !haskey(r.headers, "x-amz-security-token"), plain.requests)
                 @test all(r -> !occursin("security-token", r.headers["authorization"]), plain.requests)
@@ -395,23 +453,47 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
             store = S3ObjectStore("bkt"; region = "eu-north-1", credentials = creds, endpoint = s3test_endpoint(server), path_style = true)
             server.respond = req -> req.method == "PUT" ?
                 (500, [], s3test_error("InternalError", "We encountered an internal error. Please try again.")) : nothing
-            e = try put_object_if_absent(store, "k", b"v"); nothing catch e; e end
+            e = try
+                put_object_if_absent(store, "k", b"v"); nothing
+            catch e
+                e
+            end
             @test e isa TransportError && e.status == 500 && S3T.retryable(e)
             @test occursin("PUT http://127.0.0.1:$(server.port)/bkt/k: HTTP 500 InternalError: We encountered an internal error", sprint(showerror, e))
             @test !haskey(server.objects, "k")
             server.respond = req -> req.method == "PUT" ? (409, [], s3test_error("ConditionalRequestConflict", "Conditional request cannot succeed due to a conflicting operation against this resource.")) : nothing
-            e = try put_object_if_absent(store, "k", b"v"); nothing catch e; e end
+            e = try
+                put_object_if_absent(store, "k", b"v"); nothing
+            catch e
+                e
+            end
             @test e isa TransportError && e.status == 409 && S3T.retryable(e)     # never a PutOutcome: the commit layer retries it
             server.respond = req -> (403, [], s3test_error("AccessDenied", "Access Denied"))
-            for call in (() -> fetch_object(store, "k"), () -> stat_object(store, "k"), () -> list_objects(store, ""),
-                         () -> put_object_if_absent(store, "k", b"v"))
-                e = try call(); nothing catch e; e end
+            for call in (
+                    () -> fetch_object(store, "k"), () -> stat_object(store, "k"), () -> list_objects(store, ""),
+                    () -> put_object_if_absent(store, "k", b"v"),
+                )
+                e = try
+                    call(); nothing
+                catch e
+                    e
+                end
                 @test e isa TransportError && e.status == 403 && !S3T.retryable(e)
             end
-            @test sprint(showerror, try stat_object(store, "k") catch e; e end) ==      # a HEAD carries no error document
-                  "TransportError: HEAD http://127.0.0.1:$(server.port)/bkt/k: HTTP 403 (HTTP 403)"
+            @test sprint(
+                showerror, try
+                    stat_object(store, "k")
+                catch e
+                    e
+                end
+            ) ==      # a HEAD carries no error document
+                "TransportError: HEAD http://127.0.0.1:$(server.port)/bkt/k: HTTP 403 (HTTP 403)"
             server.respond = req -> (503, [], UInt8[])                            # no error document: the status alone
-            e = try fetch_object(store, "k"); nothing catch e; e end
+            e = try
+                fetch_object(store, "k"); nothing
+            catch e
+                e
+            end
             @test e isa TransportError && e.status == 503 && sprint(showerror, e) == "TransportError: GET http://127.0.0.1:$(server.port)/bkt/k: HTTP 503 (HTTP 503)"
             server.respond = req -> req.method == "HEAD" ? (200, [], b"no last-modified") : nothing
             @test_throws "the response lacks Content-Length or Last-Modified" stat_object(store, "k")
@@ -426,7 +508,11 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
         close(closed)
         sleep(0.1)
         store = S3ObjectStore("bkt"; region = "eu-north-1", credentials = creds, endpoint = "http://127.0.0.1:$port", path_style = true, timeout = 5)
-        e = try fetch_object(store, "k"); nothing catch e; e end
+        e = try
+            fetch_object(store, "k"); nothing
+        catch e
+            e
+        end
         @test e isa TransportError && e.status === nothing && S3T.retryable(e)
         @test startswith(sprint(showerror, e), "TransportError: GET http://127.0.0.1:$port/bkt/k: no response")
     end
@@ -440,16 +526,20 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
         server = S3TestServer(; bucket = "bkt", credentials = creds)
         dir = mktempdir()
         try
-            store = S3ObjectStore("bkt"; region = "eu-north-1", credentials = creds, endpoint = s3test_endpoint(server),
-                                  path_style = true, timeout = 30)
+            store = S3ObjectStore(
+                "bkt"; region = "eu-north-1", credentials = creds, endpoint = s3test_endpoint(server),
+                path_style = true, timeout = 30
+            )
             bytes = rand(UInt8, 3 * 1024 * 1024 + 7)          # over libcurl's 1 MiB threshold for Expect: 100-continue
             h = bytes2hex(sha256(bytes))
             key = "p/_attachments/" * h
             src = joinpath(dir, "src")
             write(src, bytes)
             # a signed PUT streamed from a file: the payload hash and length are given, not computed from a body
-            req = S3T.request_headers(store, "PUT", key; payload_hash = h, content_length = length(bytes),
-                                      headers = ["if-none-match" => "*"])
+            req = S3T.request_headers(
+                store, "PUT", key; payload_hash = h, content_length = length(bytes),
+                headers = ["if-none-match" => "*"]
+            )
             response = open(io -> S3T.http_stream(req.url, "PUT", req.headers; input = io, stall = store.timeout), src)
             @test response.status == 200
             @test server.objects[key] == bytes
@@ -465,16 +555,26 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
             @test !ispath(gone)
             # a refusal: a TransportError carrying S3's code, and no file left holding the error document
             server.respond = req -> (403, [], s3test_error("AccessDenied", "Access Denied"))
-            e = try S3T.fetch_object_to(store, key, gone); nothing catch e; e end
+            e = try
+                S3T.fetch_object_to(store, key, gone); nothing
+            catch e
+                e
+            end
             @test e isa TransportError && e.status == 403 && !S3T.retryable(e)
             @test occursin("GET http://127.0.0.1:$(server.port)/bkt/$key: HTTP 403 AccessDenied: Access Denied", sprint(showerror, e))
             @test !ispath(gone)
             # a redirect is a TransportError with its status, never followed — on the GET and on the PUT
             n = length(server.requests)
             server.respond = req -> req.rawpath == "/elsewhere" ? (200, [], b"followed") :
-                (307, ["location" => "http://127.0.0.1:$(server.port)/elsewhere"],
-                 s3test_error("TemporaryRedirect", "Please re-send this request to the specified temporary endpoint."))
-            e = try S3T.fetch_object_to(store, key, gone); nothing catch e; e end
+                (
+                    307, ["location" => "http://127.0.0.1:$(server.port)/elsewhere"],
+                    s3test_error("TemporaryRedirect", "Please re-send this request to the specified temporary endpoint."),
+                )
+            e = try
+                S3T.fetch_object_to(store, key, gone); nothing
+            catch e
+                e
+            end
             @test e isa TransportError && e.status == 307
             @test occursin("HTTP 307 TemporaryRedirect: Please re-send", sprint(showerror, e))
             @test length(server.requests) == n + 1 && !ispath(gone)
@@ -483,8 +583,8 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
             @test response.status == 307 && length(server.requests) == n + 2
             server.respond = _ -> nothing
             # a PUT states its length, or libcurl sends a chunked body, which S3 refuses
-            @test_throws "a streamed PUT needs a content-length header" open(io -> S3T.http_stream(url, "PUT", Pair{String,String}[]; input = io, stall = 30), src)
-            @test_throws "stall is 0 seconds; it must be positive" S3T.http_stream(url, "GET", Pair{String,String}[]; output = IOBuffer(), stall = 0)
+            @test_throws "a streamed PUT needs a content-length header" open(io -> S3T.http_stream(url, "PUT", Pair{String, String}[]; input = io, stall = 30), src)
+            @test_throws "stall is 0 seconds; it must be positive" S3T.http_stream(url, "GET", Pair{String, String}[]; output = IOBuffer(), stall = 0)
         finally
             close(server)
             rm(dir; recursive = true)
@@ -501,7 +601,7 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
         end
         try
             t = @elapsed e = try
-                S3T.http_stream("http://127.0.0.1:$port/bkt/k", "GET", Pair{String,String}[]; output = IOBuffer(), stall = 1); nothing
+                S3T.http_stream("http://127.0.0.1:$port/bkt/k", "GET", Pair{String, String}[]; output = IOBuffer(), stall = 1); nothing
             catch e
                 e
             end
@@ -536,17 +636,27 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
             @test length(server.requests) == 2
             # bytes that do not hash to the key: S3 refuses the signed payload hash, and nothing is stored
             other = "p/_attachments/" * "0"^64
-            e = try open(io -> S3T.put_attachment(store, other, io), path); nothing catch e; e end
+            e = try
+                open(io -> S3T.put_attachment(store, other, io), path); nothing
+            catch e
+                e
+            end
             @test e isa S3T.AttachmentChangedError && e.key == other
-            @test startswith(sprint(showerror, e), "AttachmentChangedError: attachment changed: the upload of $other to " *
-                             "http://127.0.0.1:$(server.port)/bkt/$other was refused as BadDigest")
+            @test startswith(
+                sprint(showerror, e), "AttachmentChangedError: attachment changed: the upload of $other to " *
+                    "http://127.0.0.1:$(server.port)/bkt/$other was refused as BadDigest"
+            )
             @test occursin("Stop whatever writes the file, then put the attachment again", sprint(showerror, e))
             @test !haskey(server.objects, other)
             server.respond = req -> (400, [], s3test_error("BadDigest", "The SHA256 you specified did not match the calculated checksum."))
             @test_throws S3T.AttachmentChangedError open(io -> S3T.put_attachment(store, key, io), path)
             # any other refusal is S3's own, as for the four verbs
             server.respond = req -> (403, [], s3test_error("AccessDenied", "Access Denied"))
-            e = try open(io -> S3T.put_attachment(store, key, io), path); nothing catch e; e end
+            e = try
+                open(io -> S3T.put_attachment(store, key, io), path); nothing
+            catch e
+                e
+            end
             @test e isa TransportError && e.status == 403 && occursin("PUT http://127.0.0.1:$(server.port)/bkt/$key: HTTP 403 AccessDenied", sprint(showerror, e))
             server.respond = _ -> nothing
             # a caller's bugs, before any request
@@ -573,11 +683,17 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
                 cache_dir = joinpath(dir, "cache")
                 endpoint = s3test_endpoint(server)
                 unsure = Chain("bkt", "exp/run-1"; region = "eu-north-1", credentials = creds, endpoint, path_style = true, cache_dir)
-                promised = Chain("bkt", "exp/run-1"; region = "eu-north-1", credentials = creds, endpoint, path_style = true, cache_dir,
-                                 assume_first_writer_wins = true)
+                promised = Chain(
+                    "bkt", "exp/run-1"; region = "eu-north-1", credentials = creds, endpoint, path_style = true, cache_dir,
+                    assume_first_writer_wins = true
+                )
                 @test !S3T.is_aws(unsure.store) && !S3T.is_aws(promised.store)
                 # create_chain refuses: nothing written
-                e = try S3T.create_chain(unsure); nothing catch e; e end
+                e = try
+                    S3T.create_chain(unsure); nothing
+                catch e
+                    e
+                end
                 @test e isa UnsupportedStoreError && e.endpoint == endpoint
                 msg = sprint(showerror, e)
                 @test startswith(msg, "UnsupportedStoreError: unsupported object store: create_chain(chain) refuses to commit to $endpoint, which is not AWS S3")
@@ -598,7 +714,11 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
                 end
                 S3T.insert_rows!(w, :samples, [(id = 1, mass = 1.5)])
                 n = length(server.requests)
-                e = try S3T.commit!(w); nothing catch e; e end
+                e = try
+                    S3T.commit!(w); nothing
+                catch e
+                    e
+                end
                 @test e isa UnsupportedStoreError && e.endpoint == endpoint
                 @test startswith(sprint(showerror, e), "UnsupportedStoreError: unsupported object store: commit!(w) refuses to commit to $endpoint")
                 @test length(server.requests) == n                       # before anything: no request, no file

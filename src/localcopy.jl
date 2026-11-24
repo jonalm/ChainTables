@@ -29,8 +29,10 @@ before the head's CBOR map, naming the layout before anything is decoded.
 """
 const HEAD_SEPARATOR = "chaintables/v1/head"
 
-const HEAD_FIELDS = ("layout_version", "chain_id", "format_version", "slot", "transaction_hash",
-                     "state_fingerprint", "tables", "written_at_ms", "written_by")
+const HEAD_FIELDS = (
+    "layout_version", "chain_id", "format_version", "slot", "transaction_hash",
+    "state_fingerprint", "tables", "written_at_ms", "written_by",
+)
 const WRITTEN_BY_FIELDS = ("lib", "julia")
 
 # ---------------------------------------------------------------------------
@@ -58,12 +60,12 @@ function chain_id_string(bytes::AbstractVector{UInt8})
         nbits += 8
         while nbits >= 5
             nbits -= 5
-            write(out, BASE32_ALPHABET[Int((acc >> nbits) & 0x1f)+1])
+            write(out, BASE32_ALPHABET[Int((acc >> nbits) & 0x1f) + 1])
             acc &= (UInt64(1) << nbits) - 1
         end
     end
     # 128 = 25 × 5 + 3: the last three bits are left-aligned in a 26th character
-    write(out, BASE32_ALPHABET[Int((acc << (5 - nbits)) & 0x1f)+1])
+    write(out, BASE32_ALPHABET[Int((acc << (5 - nbits)) & 0x1f) + 1])
     return String(take!(out))
 end
 
@@ -122,9 +124,9 @@ struct Head
     slot::Int64
     transaction_hash::Vector{UInt8}
     state_fingerprint::Vector{UInt8}
-    tables::Vector{Pair{String,Vector{UInt8}}}
+    tables::Vector{Pair{String, Vector{UInt8}}}
     written_at_ms::Int64
-    written_by::NamedTuple{(:lib, :julia),Tuple{String,String}}
+    written_by::NamedTuple{(:lib, :julia), Tuple{String, String}}
 end
 
 Base.:(==)(a::Head, b::Head) = all(getfield(a, f) == getfield(b, f) for f in fieldnames(Head))
@@ -162,8 +164,11 @@ function check_head(h::Head)
         e isa ModelError || rethrow()
         throw(ArgumentError(e.msg))
     end
-    fp == h.state_fingerprint || throw(ArgumentError(
-        "its state_fingerprint is $(bytes2hex(h.state_fingerprint)), the fingerprint of its tables list is $(bytes2hex(fp))"))
+    fp == h.state_fingerprint || throw(
+        ArgumentError(
+            "its state_fingerprint is $(bytes2hex(h.state_fingerprint)), the fingerprint of its tables list is $(bytes2hex(fp))"
+        )
+    )
     return nothing
 end
 
@@ -174,12 +179,12 @@ The head file's bytes: [`HEAD_SEPARATOR`](@ref), then one CBOR map through the
 frozen encoder, keys in the encoder's bytewise order (ADR-0023).
 """
 function encode_head(h::Head)
-    w = Dict{String,Any}(
+    w = Dict{String, Any}(
         "layout_version" => LAYOUT_VERSION, "chain_id" => h.chain_id, "format_version" => h.format_version,
         "slot" => h.slot, "transaction_hash" => h.transaction_hash, "state_fingerprint" => h.state_fingerprint,
         "tables" => Any[Any[name, hash] for (name, hash) in h.tables],
         "written_at_ms" => h.written_at_ms,
-        "written_by" => Dict{String,Any}("lib" => h.written_by.lib, "julia" => h.written_by.julia),
+        "written_by" => Dict{String, Any}("lib" => h.written_by.lib, "julia" => h.written_by.julia),
     )
     return vcat(codeunits(HEAD_SEPARATOR), CBOR.encode(w))
 end
@@ -246,7 +251,7 @@ function decode_head(bytes::AbstractVector{UInt8})
         reject_head(:layout, "begins $(repr(magic)), not $(repr(HEAD_SEPARATOR))")
     end
     w = try
-        CBOR.decode(bytes[length(sep)+1:end])
+        CBOR.decode(bytes[(length(sep) + 1):end])
     catch e
         e isa CBOR.DecodeError || rethrow()
         reject_head(:damaged, "cannot be decoded: $(e.msg) at byte $(length(sep) + e.offset)")
@@ -272,7 +277,7 @@ function decode_head(bytes::AbstractVector{UInt8})
     fp = head_bytes(w, "state_fingerprint")
     tl = head_field(w, "tables")
     tl isa AbstractVector || reject_head(:damaged, "tables is not an array")
-    tables = Pair{String,Vector{UInt8}}[]
+    tables = Pair{String, Vector{UInt8}}[]
     for e in tl
         e isa AbstractVector && length(e) == 2 && e[1] isa String && e[2] isa Vector{UInt8} ||
             reject_head(:damaged, "tables entry $(repr(e)) is not [name, hash]")
@@ -326,11 +331,11 @@ and implements no locking (ADR-0019).
 mutable struct LocalCopy{C}
     chain::C
     path::String
-    head::Union{Nothing,Head}
-    tables::Dict{String,Vector{UInt8}}
+    head::Union{Nothing, Head}
+    tables::Dict{String, Vector{UInt8}}
     content::Content
     loaded::Set{String}
-    views::Dict{String,Any}        # name => TableView at the current head (views.jl follows this file)
+    views::Dict{String, Any}        # name => TableView at the current head (views.jl follows this file)
     temporary::Bool
     closed::Bool
 end
@@ -385,13 +390,19 @@ function open(chain, path::AbstractString)
         mkpath(heads)
         mkpath(tables)
     elseif !(isdir(heads) && isdir(tables))
-        throw(NotALocalCopyError("not a local copy: $path is a non-empty directory without heads/ and tables/. " *
-            "Open a different path, or empty this one if it is disposable."; path))
+        throw(
+            NotALocalCopyError(
+                "not a local copy: $path is a non-empty directory without heads/ and tables/. " *
+                    "Open a different path, or empty this one if it is disposable."; path
+            )
+        )
     end
-    copy = LocalCopy{typeof(chain)}(chain, path, nothing, Dict{String,Vector{UInt8}}(), Content(), Set{String}(),
-                                    Dict{String,Any}(), false, false)
+    copy = LocalCopy{typeof(chain)}(
+        chain, path, nothing, Dict{String, Vector{UInt8}}(), Content(), Set{String}(),
+        Dict{String, Any}(), false, false
+    )
     copy.head = choose_head(copy, expected_chain_id(chain))
-    copy.tables = copy.head === nothing ? Dict{String,Vector{UInt8}}() : Dict(copy.head.tables)
+    copy.tables = copy.head === nothing ? Dict{String, Vector{UInt8}}() : Dict(copy.head.tables)
     sweep!(copy)
     warn_unsupported_store(chain)           # ADR-0016: open warns, commit! refuses (s3.jl)
     return copy
@@ -409,8 +420,12 @@ function choose_head(copy::LocalCopy, expected)
             decode_head(read(joinpath(heads_dir(copy), name)))
         catch e
             e isa HeadRejected || rethrow()
-            e.kind === :not_ours && throw(NotALocalCopyError("not a local copy: head $file of $(copy.path) $(e.msg). " *
-                "Open a different path."; path = copy.path))
+            e.kind === :not_ours && throw(
+                NotALocalCopyError(
+                    "not a local copy: head $file of $(copy.path) $(e.msg). " *
+                        "Open a different path."; path = copy.path
+                )
+            )
             e.kind === :layout && throw(LayoutVersionError(layout_message(copy, file, e.msg); path = copy.path, file))
             push!(reasons, "head $file $(e.msg)")
             continue
@@ -421,9 +436,13 @@ function choose_head(copy::LocalCopy, expected)
             continue
         end
         if expected !== nothing && h.chain_id != expected
-            throw(WrongChainError("wrong chain: the local copy at $(copy.path) is bound to chain $(h.chain_id) (head slot $(h.slot)), " *
-                "the chain being opened is $expected: open a different path for this chain.";
-                path = copy.path, bound = h.chain_id, opened = String(expected)))
+            throw(
+                WrongChainError(
+                    "wrong chain: the local copy at $(copy.path) is bound to chain $(h.chain_id) (head slot $(h.slot)), " *
+                        "the chain being opened is $expected: open a different path for this chain.";
+                    path = copy.path, bound = h.chain_id, opened = String(expected)
+                )
+            )
         end
         missing_file = findfirst(p -> !isfile(table_path(copy, last(p))), h.tables)
         if missing_file !== nothing
@@ -435,21 +454,25 @@ function choose_head(copy::LocalCopy, expected)
         return h
     end
     isempty(names) && return nothing
-    throw(LocalCopyInconsistentError("damaged copy: no head of the local copy at $(copy.path) can be opened — " *
-        join(reasons, "; ") * ". No readable head cannot be repaired: delete the directory and sync!(copy) again.";
-        path = copy.path, file = "heads/$(names[1])"))
+    throw(
+        LocalCopyInconsistentError(
+            "damaged copy: no head of the local copy at $(copy.path) can be opened — " *
+                join(reasons, "; ") * ". No readable head cannot be repaired: delete the directory and sync!(copy) again.";
+            path = copy.path, file = "heads/$(names[1])"
+        )
+    )
 end
 
 function layout_message(copy::LocalCopy, file, what)
     if startswith(what, "layout version")
         return "$what head $file is not this client's, $LAYOUT_VERSION: a newer client wrote the local copy at $(copy.path). " *
-               "Delete the directory and sync!(copy) again, or upgrade ChainTables."
+            "Delete the directory and sync!(copy) again, or upgrade ChainTables."
     elseif startswith(what, "format_version")
         return "$what head $file is above this client's maximum, $(Ops.FORMAT_VERSION): a newer client wrote the local copy " *
-               "at $(copy.path). Delete the directory and sync!(copy) again, or upgrade ChainTables."
+            "at $(copy.path). Delete the directory and sync!(copy) again, or upgrade ChainTables."
     else
         return "head $file $what: another layout version wrote the local copy at $(copy.path). " *
-               "Delete the directory and sync!(copy) again, or upgrade ChainTables."
+            "Delete the directory and sync!(copy) again, or upgrade ChainTables."
     end
 end
 
@@ -525,8 +548,10 @@ function head(copy::LocalCopy)
     check_open(copy)
     h = copy.head
     h === nothing && throw(ArgumentError("the local copy at $(copy.path) has no head yet; sync!(copy) binds it"))
-    return (; slot = h.slot, transaction_hash = TransactionHash(h.transaction_hash),
-            state_fingerprint = StateFingerprint(h.state_fingerprint))
+    return (;
+        slot = h.slot, transaction_hash = TransactionHash(h.transaction_hash),
+        state_fingerprint = StateFingerprint(h.state_fingerprint),
+    )
 end
 
 """
@@ -562,9 +587,11 @@ end
 
 function damaged(copy::LocalCopy, name, hash, what)
     h = copy.head
-    return LocalCopyInconsistentError("damaged copy: table file tables/$(bytes2hex(hash)) (table $(repr(name)) at slot $(h.slot), " *
-        "chain $(h.chain_id)) $what. repair!(copy) rewrites it from the record cache.";
-        path = copy.path, slot = h.slot, file = "tables/$(bytes2hex(hash))")
+    return LocalCopyInconsistentError(
+        "damaged copy: table file tables/$(bytes2hex(hash)) (table $(repr(name)) at slot $(h.slot), " *
+            "chain $(h.chain_id)) $what. repair!(copy) rewrites it from the record cache.";
+        path = copy.path, slot = h.slot, file = "tables/$(bytes2hex(hash))"
+    )
 end
 
 """
@@ -652,7 +679,7 @@ fingerprint, free (ADR-0009, ADR-0023). Nothing else changes: until
 """
 function stage!(copy::LocalCopy)
     check_open(copy)
-    entries = Pair{String,Vector{UInt8}}[]
+    entries = Pair{String, Vector{UInt8}}[]
     for (name, hash) in copy.tables
         name in copy.loaded || haskey(copy.content, name) || push!(entries, name => hash)
     end
@@ -686,8 +713,10 @@ function write_head!(copy::LocalCopy, chain_id::AbstractVector{UInt8}, slot::Int
     check_open(copy)
     cid = chain_id_string(chain_id)
     check_advance(copy, cid, slot)
-    h = Head(cid, Ops.FORMAT_VERSION, slot, Vector{UInt8}(transaction_hash), staged.state_fingerprint,
-             staged.tables, round(Int64, time() * 1000), written_by_here())
+    h = Head(
+        cid, Ops.FORMAT_VERSION, slot, Vector{UInt8}(transaction_hash), staged.state_fingerprint,
+        staged.tables, round(Int64, time() * 1000), written_by_here()
+    )
     check_head(h)
     target = head_path(copy, slot)
     tmp = target * ".tmp"
@@ -728,8 +757,10 @@ and `FingerprintMismatchError` names the slot, both fingerprints, the record's
 `client.lib` and `client.julia` when `client` is given against this machine's,
 and `repair!(copy)` as the confirming step (ADR-0020, ADR-0023).
 """
-function checkpoint!(copy::LocalCopy, chain_id::AbstractVector{UInt8}, slot::Integer, transaction_hash::AbstractVector{UInt8},
-                     state_fingerprint::AbstractVector{UInt8}; client = nothing)
+function checkpoint!(
+        copy::LocalCopy, chain_id::AbstractVector{UInt8}, slot::Integer, transaction_hash::AbstractVector{UInt8},
+        state_fingerprint::AbstractVector{UInt8}; client = nothing
+    )
     check_open(copy)
     check_advance(copy, chain_id_string(chain_id), slot)
     staged = stage!(copy)
@@ -738,15 +769,19 @@ function checkpoint!(copy::LocalCopy, chain_id::AbstractVector{UInt8}, slot::Int
         here = written_by_here()
         by = client === nothing ? "" : "The record was written by $(client.lib) on Julia $(client.julia); "
         discard!(copy)
-        throw(FingerprintMismatchError("state fingerprint mismatch at slot $slot (chain $(chain_id_string(chain_id))): " *
-            "the record's state_fingerprint is $(bytes2hex(state_fingerprint)), this client computed " *
-            "$(bytes2hex(staged.state_fingerprint)) after applying it. " *
-            "$(by)this client is $(here.lib) on Julia $(here.julia). The local copy stays $at. " *
-            "This machine's replay diverges from the chain, or apply has a bug: repair!(copy) confirms it — " *
-            "a fresh replay that also mismatches proves this machine cannot reproduce the chain.";
-            chain_id = chain_id_string(chain_id), slot = Int64(slot), expected = Vector{UInt8}(state_fingerprint),
-            computed = staged.state_fingerprint,
-            record_client = client === nothing ? nothing : (; lib = client.lib, julia = client.julia), this_client = here))
+        throw(
+            FingerprintMismatchError(
+                "state fingerprint mismatch at slot $slot (chain $(chain_id_string(chain_id))): " *
+                    "the record's state_fingerprint is $(bytes2hex(state_fingerprint)), this client computed " *
+                    "$(bytes2hex(staged.state_fingerprint)) after applying it. " *
+                    "$(by)this client is $(here.lib) on Julia $(here.julia). The local copy stays $at. " *
+                    "This machine's replay diverges from the chain, or apply has a bug: repair!(copy) confirms it — " *
+                    "a fresh replay that also mismatches proves this machine cannot reproduce the chain.";
+                chain_id = chain_id_string(chain_id), slot = Int64(slot), expected = Vector{UInt8}(state_fingerprint),
+                computed = staged.state_fingerprint,
+                record_client = client === nothing ? nothing : (; lib = client.lib, julia = client.julia), this_client = here
+            )
+        )
     end
     write_head!(copy, chain_id, slot, transaction_hash, staged)
     return nothing

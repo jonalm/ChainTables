@@ -6,7 +6,7 @@
 
 # The calls `GWT.f(args...; kws...)` in `ex`, as (name, positional count or nothing when a call
 # splats, keyword names, line).
-function live_gwt_calls(ex, line = 0, found = Tuple{Symbol,Union{Int,Nothing},Vector{Symbol},Int}[]; extra = 0)
+function live_gwt_calls(ex, line = 0, found = Tuple{Symbol, Union{Int, Nothing}, Vector{Symbol}, Int}[]; extra = 0)
     ex isa LineNumberNode && return found
     ex isa Expr || return found
     if ex.head === :do  # `GWT.f(x) do t … end` is GWT.f(function, x)
@@ -41,7 +41,7 @@ function live_gwt_calls(ex, line = 0, found = Tuple{Symbol,Union{Int,Nothing},Ve
 end
 
 function accepts(f, n, keywords)
-    any(methods(f)) do m
+    return any(methods(f)) do m
         nargs = m.nargs - 1
         fits = n === nothing || (m.isva ? n >= nargs - 1 : n == nargs)
         declared = Base.kwarg_decl(m)
@@ -73,7 +73,11 @@ end
     live = Module(:LiveConfig)
     Base.include(live, joinpath(@__DIR__, "live", "config.jl"))
     ids = String[]
-    @testset "a suite" begin push!(ids, live.live_run_id()) end
-    @testset "the next suite" begin push!(ids, live.live_run_id()) end
+    @testset "a suite" begin
+        push!(ids, live.live_run_id())
+    end
+    @testset "the next suite" begin
+        push!(ids, live.live_run_id())
+    end
     @test allunique(ids) && all(contains(r"^[0-9a-f]{16}$"), ids)
 end

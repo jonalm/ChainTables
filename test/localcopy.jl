@@ -50,7 +50,7 @@ ChainTables.expected_chain_id(c::LocalCopyTestBoundChain) = c.chain_id
     # a head file's bytes with fields overridden: for manufacturing damage
     function head_bytes(bytes; kw...)
         sep = codeunits(CT.HEAD_SEPARATOR)
-        w = CBOR.decode(bytes[length(sep)+1:end])
+        w = CBOR.decode(bytes[(length(sep) + 1):end])
         for (k, v) in kw
             v === nothing ? delete!(w, string(k)) : (w[string(k)] = v)
         end
@@ -171,7 +171,7 @@ ChainTables.expected_chain_id(c::LocalCopyTestBoundChain) = c.chain_id
             bytes = read(headfile(path, 1))
             sep = codeunits(CT.HEAD_SEPARATOR)
             @test bytes[1:length(sep)] == sep
-            w = CBOR.decode(bytes[length(sep)+1:end])
+            w = CBOR.decode(bytes[(length(sep) + 1):end])
             @test sort(collect(keys(w))) == sort(collect(CT.HEAD_FIELDS))
             @test w["layout_version"] == 1 && w["chain_id"] == cid && w["slot"] == 1
             @test w["tables"] == Any[Any[n, hh] for (n, hh) in h.tables]
@@ -215,8 +215,10 @@ ChainTables.expected_chain_id(c::LocalCopyTestBoundChain) = c.chain_id
             # sees the real state (create_table on a name the head already has fails)
             close(again)
             again = CT.open(LocalCopyTestChain(), path)
-            rec = Record(chain_id, 2, txn(1), txn(9), Client(nothing, nothing, "L", "J", 1), nothing,
-                         [CreateTable("t", shape)])
+            rec = Record(
+                chain_id, 2, txn(1), txn(9), Client(nothing, nothing, "L", "J", 1), nothing,
+                [CreateTable("t", shape)]
+            )
             CT.load_tables!(again, rec)
             @test haskey(again.content, "t")
             @test_throws "table \"t\" already exists" Ops.apply!(again.content, rec)
@@ -285,8 +287,12 @@ ChainTables.expected_chain_id(c::LocalCopyTestBoundChain) = c.chain_id
             junk = Vector{UInt8}("not a table")
             f = hex(sha256(junk))
             write(joinpath(path, "tables", f), junk)
-            write(headfile(path, 1), head_bytes(read(headfile(path, 1)); tables = [Any["t", sha256(junk)]],
-                                                state_fingerprint = Model.state_fingerprint(["t" => sha256(junk)])))
+            write(
+                headfile(path, 1), head_bytes(
+                    read(headfile(path, 1)); tables = [Any["t", sha256(junk)]],
+                    state_fingerprint = Model.state_fingerprint(["t" => sha256(junk)])
+                )
+            )
             again = CT.open(LocalCopyTestChain(), path)
             @test_throws LocalCopyInconsistentError CT.load_table!(again, "t")
             @test_throws "damaged copy: table file tables/$f (table \"t\" at slot 1, chain $cid) hashes to its name but is not a canonical table file (" CT.load_table!(again, "t")
@@ -302,8 +308,10 @@ ChainTables.expected_chain_id(c::LocalCopyTestBoundChain) = c.chain_id
     @testset "sweep" begin
         mktempdir() do path
             orphan = "0"^64
-            litter(path) = (touch(joinpath(path, "tables", orphan)); touch(joinpath(path, "tables", "abc.tmp"));
-                            touch(joinpath(path, "heads", "000000000099.tmp")))
+            litter(path) = (
+                touch(joinpath(path, "tables", orphan)); touch(joinpath(path, "tables", "abc.tmp"));
+                touch(joinpath(path, "heads", "000000000099.tmp"))
+            )
             mkdir(joinpath(path, "heads"))
             mkdir(joinpath(path, "tables"))
             litter(path)
@@ -351,7 +359,9 @@ ChainTables.expected_chain_id(c::LocalCopyTestBoundChain) = c.chain_id
             close(copy)
             # both heads present, all files present: the higher wins, the lower is swept
             write(headfile(path, 1), head1)
-            for (f, b) in files1; write(joinpath(path, "tables", f), b); end
+            for (f, b) in files1
+                write(joinpath(path, "tables", f), b)
+            end
             c = CT.open(LocalCopyTestChain(), path)
             @test CT.head(c).slot == 2 && heads(path) == ["000000000002"]
             close(c)
@@ -361,9 +371,11 @@ ChainTables.expected_chain_id(c::LocalCopyTestBoundChain) = c.chain_id
             wfile = hex(last(c.head.tables[3]))
             rm(joinpath(path, "tables", wfile))
             write(headfile(path, 1), head1)
-            for (f, b) in files1; write(joinpath(path, "tables", f), b); end
+            for (f, b) in files1
+                write(joinpath(path, "tables", f), b)
+            end
             warning = "head heads/000000000002 names table file tables/$(wfile) (table \"w\"), which is missing; " *
-                      "opening the local copy at $path at slot 1 and sweeping heads/000000000002"
+                "opening the local copy at $path at slot 1 and sweeping heads/000000000002"
             c = @test_logs (:warn, warning) CT.open(LocalCopyTestChain(), path)
             @test CT.head(c).slot == 1 && heads(path) == ["000000000001"]
             @test collect(Model.rows_in_key_order(CT.load_table!(c, "w"))) == [Any[7, "z"]]
@@ -400,7 +412,7 @@ ChainTables.expected_chain_id(c::LocalCopyTestBoundChain) = c.chain_id
             @test_throws LocalCopyInconsistentError reopen()
             @test_throws "head heads/000000000001 is not self-consistent: its state_fingerprint is $(hex(txn(0xee))), the fingerprint of its tables list is" reopen()
             # tables out of name order, a wrong slot, an unknown field, a bad hash length, truncated bytes
-            w = CBOR.decode(good[length(CT.HEAD_SEPARATOR)+1:end])
+            w = CBOR.decode(good[(length(CT.HEAD_SEPARATOR) + 1):end])
             write(headfile(path, 1), head_bytes(good; tables = reverse(w["tables"])))
             @test_throws "tables are not sorted by name" reopen()
             write(headfile(path, 1), head_bytes(good; slot = 3))
@@ -417,7 +429,7 @@ ChainTables.expected_chain_id(c::LocalCopyTestBoundChain) = c.chain_id
             @test_throws "chain_id \"ABC\" is not a chain id" reopen()
             write(headfile(path, 1), head_bytes(good; written_by = nothing))
             @test_throws "heads/000000000001 has no \"written_by\"" reopen()
-            write(headfile(path, 1), good[1:end-3])
+            write(headfile(path, 1), good[1:(end - 3)])
             @test_throws LocalCopyInconsistentError reopen()
             @test_throws "cannot be decoded" reopen()
             # a foreign chain id, checked when the chain knows its id; unchecked otherwise
@@ -432,7 +444,7 @@ ChainTables.expected_chain_id(c::LocalCopyTestBoundChain) = c.chain_id
             write(headfile(path, 1), head_bytes(good; layout_version = 2))
             @test_throws LayoutVersionError reopen()
             @test_throws "layout version 2 of head heads/000000000001 is not this client's, 1: a newer client wrote the local copy at $path. Delete the directory and sync!(copy) again, or upgrade ChainTables" reopen()
-            write(headfile(path, 1), vcat(codeunits("chaintables/v2/head"), good[length(CT.HEAD_SEPARATOR)+1:end]))
+            write(headfile(path, 1), vcat(codeunits("chaintables/v2/head"), good[(length(CT.HEAD_SEPARATOR) + 1):end]))
             @test_throws LayoutVersionError reopen()
             @test_throws "head heads/000000000001 begins \"chaintables/v2/head\", not \"chaintables/v1/head\"" reopen()
             # a record format version above this client's: also a newer client

@@ -27,7 +27,11 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
 @testset "chain" begin
     CT = ChainTables
     hex = bytes2hex
-    caught(f) = try; f(); nothing; catch e; e; end
+    caught(f) = try
+        f(); nothing
+    catch e
+        e
+    end
     # every test builds its own store, cache and copies under one temp dir
     function fixture(dir; prefix = "p", kw...)
         store = InMemoryObjectStore()
@@ -95,8 +99,10 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             seg = only(filter(in((".", "..")), split(bad, '/')))
             @test_throws segment_error(bad, seg, "names a directory relative to its parent") Chain("bkt", bad; store)
         end
-        for (bad, c) in (("a\\b", '\\'), ("c:", ':'), ("a/c:x", ':'), ("Exp", 'E'), ("a b", ' '), ("a*", '*'),
-                         ("a?", '?'), ("a|b", '|'), ("a<b>", '<'), ("a\"b", '"'), ("é", 'é'), ("a\0", '\0'))
+        for (bad, c) in (
+                ("a\\b", '\\'), ("c:", ':'), ("a/c:x", ':'), ("Exp", 'E'), ("a b", ' '), ("a*", '*'),
+                ("a?", '?'), ("a|b", '|'), ("a<b>", '<'), ("a\"b", '"'), ("é", 'é'), ("a\0", '\0'),
+            )
             seg = only(filter(s -> c in s, split(bad, '/')))
             @test_throws segment_error(bad, seg, "contains $(repr(c)); only a-z, 0-9, '.', '_' and '-' are portable to every filesystem") Chain("bkt", bad; store)
         end
@@ -120,8 +126,10 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
         root = abspath("/")
         fits = 259 - length(root) - length("/$(CT.cache_namespace(store))/bkt") - 1 - 20   # the longest cache_dir name for prefix ""
         @test Chain("bkt", ""; store, cache_dir = root * "c"^fits).cache.dir == root * "c"^fits
-        @test_throws "is 260 characters long with its temporary file, over the 259 Windows allows" Chain("bkt", "";
-            store, cache_dir = root * "c"^(fits + 1))
+        @test_throws "is 260 characters long with its temporary file, over the 259 Windows allows" Chain(
+            "bkt", "";
+            store, cache_dir = root * "c"^(fits + 1)
+        )
         @test_throws "is 260 characters long" Chain("bkt", ""; store, cache_dir = root * "c"^(fits - 1) * "😀")  # UTF-16: 2
         @test_throws "is 261 characters long" Chain("bkt", "p"; store, cache_dir = root * "c"^fits)
         @test_throws "read_ahead is 0" Chain("bkt", "p"; store, read_ahead = 0)
@@ -160,13 +168,15 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             @test heads(copy) == ["000000000000"] && tabs(copy) == String[]
             # galloping probed slots 0 and 1 and stopped; the genesis create_chain wrote is in the
             # record cache already, but slot 0 anchors a fresh copy's read, so it comes from the store (ADR-0040)
-            @test store.calls[2:end] == [(:stat_object, "p/000000000000"), (:stat_object, "p/000000000001"),
-                                         (:fetch_object, "p/000000000000")]
+            @test store.calls[2:end] == [
+                (:stat_object, "p/000000000000"), (:stat_object, "p/000000000001"),
+                (:fetch_object, "p/000000000000"),
+            ]
             @test isfile(record_path(chain.cache, chain.store, "bkt", "p/000000000000"))
             # nothing new: applied = 0, the head's own slot asked of the store past the cache (ADR-0041), one probe
             n = length(store.calls)
             @test CT.sync!(copy) == (; applied = 0, slot = 0, transaction_hash = created.transaction_hash)
-            @test store.calls[n+1:end] == [(:fetch_object, "p/000000000000"), (:stat_object, "p/000000000001")]
+            @test store.calls[(n + 1):end] == [(:fetch_object, "p/000000000000"), (:stat_object, "p/000000000001")]
             # the chain knows its id from the cached genesis, so open checks a bound copy against it
             @test CT.expected_chain_id(chain) == created.chain_id
             @test CT.expected_chain_id(Chain("bkt", "p"; store, cache_dir = joinpath(dir, "cold"))) === nothing
@@ -182,8 +192,10 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
                 "once and is never retried: open(chain, path) and sync!(copy) to use the existing chain, or create under another prefix."
             @test (err.chain_id, err.slot, err.transaction_hash) == (created.chain_id, 0, created.transaction_hash)
             @test puts(store, "p/000000000000") == 2
-            @test store.calls[n+1:end] == [(:put_object_if_absent, "p/000000000000"),     # the read-back asks the store,
-                                           (:fetch_object, "p/000000000000")]           # never the cache (ADR-0040)
+            @test store.calls[(n + 1):end] == [
+                (:put_object_if_absent, "p/000000000000"),     # the read-back asks the store,
+                (:fetch_object, "p/000000000000"),
+            ]           # never the cache (ADR-0040)
             @test Ops.transaction_hash(store.objects["p/000000000000"]) == created.transaction_hash
 
             # a damaged cached genesis tells open nothing: the check is left to sync!, which reports it
@@ -195,8 +207,10 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             put_object_if_absent(store, "q/000000000000", b"not a record")
             err = caught(() -> CT.create_chain(Chain("bkt", "q"; store, cache_dir = joinpath(dir, "cache"), record_user = false)))
             @test err isa LostRaceError && err.chain_id === nothing && err.slot == 0
-            @test occursin("a chain already exists there (chain unknown: its genesis record is malformed, transaction hash ",
-                           sprint(showerror, err))
+            @test occursin(
+                "a chain already exists there (chain unknown: its genesis record is malformed, transaction hash ",
+                sprint(showerror, err)
+            )
         end
     end
 
@@ -211,11 +225,13 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             # a chain already there: nothing, one put, the genesis untouched
             n = length(store.calls)
             @test CT.try_create_chain(chain) === nothing
-            @test store.calls[n+1:end] == [(:put_object_if_absent, "p/000000000000"), (:fetch_object, "p/000000000000")]
+            @test store.calls[(n + 1):end] == [(:put_object_if_absent, "p/000000000000"), (:fetch_object, "p/000000000000")]
             @test Ops.transaction_hash(store.objects["p/000000000000"]) == created.transaction_hash
             # any other failure propagates unchanged
-            broken = Chain("bkt", "p"; store = ChainTestBadOutcome(), cache_dir = joinpath(dir, "cache2"),
-                record_host = false, record_user = false)
+            broken = Chain(
+                "bkt", "p"; store = ChainTestBadOutcome(), cache_dir = joinpath(dir, "cache2"),
+                record_host = false, record_user = false
+            )
             @test_throws "returned created = false with status 200; the port promises false only for a 412" CT.try_create_chain(broken)
         end
     end
@@ -461,7 +477,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             # above it vouches for, so it is asked of the store once more (ADR-0040)
             n = length(store.calls)
             @test CT.sync!(b) == (; applied = 1, slot = 2, transaction_hash = ra.transaction_hash)
-            @test count(==((:fetch_object, "p/000000000002")), store.calls[n+1:end]) == 1
+            @test count(==((:fetch_object, "p/000000000002")), store.calls[(n + 1):end]) == 1
             @test isequal(rows_of(b, "samples"), [Any[1, "a", 1.5], Any[2, "b", missing], Any[3, "from a", missing]])
             close(a); close(b)
         end
@@ -617,7 +633,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
     @testset "galloping" begin
         store = InMemoryObjectStore()
         keyof(s) = slotkey(s)
-        probes(f) = (n = length(store.calls); r = f(); (r, store.calls[n+1:end]))
+        probes(f) = (n = length(store.calls); r = f(); (r, store.calls[(n + 1):end]))
         # an empty prefix: one probe, nothing found
         @test probes(() -> CT.gallop(store, keyof, -1)) == (-1, [(:stat_object, slotkey(0))])
         for s in 0:999
@@ -682,9 +698,13 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             cached = record_path(chain.cache, chain.store, "bkt", key1)
             # symptom one: the head's slot fetches bytes of another hash, though the cache holds the
             # head's own (ADR-0041)
-            other = Ops.encode_record(Record(CT.chain_id_bytes(cid), 1, Ops.transaction_hash(store.objects["p/000000000000"]),
-                                             copy.head.state_fingerprint, Client(nothing, nothing, "L", "J", 1), "rewritten",
-                                             Ops.decode_record(good; slot = 1).ops))
+            other = Ops.encode_record(
+                Record(
+                    CT.chain_id_bytes(cid), 1, Ops.transaction_hash(store.objects["p/000000000000"]),
+                    copy.head.state_fingerprint, Client(nothing, nothing, "L", "J", 1), "rewritten",
+                    Ops.decode_record(good; slot = 1).ops
+                )
+            )
             plant!(store, key1, other)
             err = caught(() -> CT.sync!(copy))
             @test err isa RewrittenChainError
@@ -836,7 +856,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             cached(s) = record_path(chain.cache, chain.store, "bkt", slotkey(s))
             good(s) = store.objects[slotkey(s)]
             warned(s) = (:warn, Regex("record cache: the cached copy of $(slotkey(s)) in bucket bkt is not what the store holds"))
-            fetches(n) = [k for (v, k) in store.calls[n+1:end] if v === :fetch_object]
+            fetches(n) = [k for (v, k) in store.calls[(n + 1):end] if v === :fetch_object]
 
             # a warm cache serves every record but the anchors: slot 0 and the top come from the store
             fresh = CT.open(chain, joinpath(dir, "warm"))
@@ -891,16 +911,28 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
 
             # the scans hold every record against its parent: a damaged cached record no longer skews them
             r2 = Ops.decode_record(good(2); slot = 2)
-            write(cached(2), Ops.encode_record(Record(r2.chain_id, 2, r2.prev_hash, r2.state_fingerprint,
-                                                      Client(nothing, nothing, "L", "J", 0), nothing, r2.ops)))
+            write(
+                cached(2), Ops.encode_record(
+                    Record(
+                        r2.chain_id, 2, r2.prev_hash, r2.state_fingerprint,
+                        Client(nothing, nothing, "L", "J", 0), nothing, r2.ops
+                    )
+                )
+            )
             target = CT.TransactionHash(Ops.transaction_hash(good(2)))
             @test (@test_logs warned(2) CT.target_slot(chain, target)) == 2
             @test read(cached(2)) == good(2)
             write(cached(2), b"")
             @test (@test_logs warned(2) CT.slot_at(chain, typemax(Int64))) == 4
             # a scan over a chain that is broken in the store raises, rather than answering
-            plant!(store, slotkey(5), Ops.encode_record(Record(CT.chain_id_bytes(copy.head.chain_id), 5, fill(0xaa, 32),
-                copy.head.state_fingerprint, Client(nothing, nothing, "L", "J", 0), nothing, [Insert("samples", [Any[6, "6", 6.0]])])))
+            plant!(
+                store, slotkey(5), Ops.encode_record(
+                    Record(
+                        CT.chain_id_bytes(copy.head.chain_id), 5, fill(0xaa, 32),
+                        copy.head.state_fingerprint, Client(nothing, nothing, "L", "J", 0), nothing, [Insert("samples", [Any[6, "6", 6.0]])]
+                    )
+                )
+            )
             err = caught(() -> CT.slot_at(chain, typemax(Int64)))
             @test err isa RewrittenChainError
             @test sprint(showerror, err) == "RewrittenChainError: rewritten chain: slot 5 of chain $(copy.head.chain_id) at bkt/p " *
@@ -949,8 +981,12 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             CT.commit!(w)
             b = InMemoryObjectStore()
             foreach(((k, v),) -> plant!(b, k, copy(v)), a.objects)
-            wb = CT.open(Chain("bkt", "p"; store = b, cache_dir = joinpath(dir, "cache_b"), record_host = false,
-                               record_user = false), joinpath(dir, "wb"))
+            wb = CT.open(
+                Chain(
+                    "bkt", "p"; store = b, cache_dir = joinpath(dir, "cache_b"), record_host = false,
+                    record_user = false
+                ), joinpath(dir, "wb")
+            )
             CT.sync!(wb)
             for i in 2:5, (cp, tag) in ((wa, 100), (wb, 200))
                 w = CT.write_builder(cp)
@@ -964,8 +1000,10 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
                 # refilled with A's: B's slots 2 to 4 are a cached run that names itself all the way down
                 s = InMemoryObjectStore()
                 foreach(((k, v),) -> plant!(s, k, copy(v)), b.objects)
-                chain = Chain("bkt", "p"; store = s, cache_dir = joinpath(dir, "shared$read_ahead"), read_ahead,
-                              record_host = false, record_user = false)
+                chain = Chain(
+                    "bkt", "p"; store = s, cache_dir = joinpath(dir, "shared$read_ahead"), read_ahead,
+                    record_host = false, record_user = false
+                )
                 rb = CT.open(chain, joinpath(dir, "rb$read_ahead"))
                 CT.sync!(rb)
                 empty!(s.objects); empty!(s.modified)
@@ -979,13 +1017,15 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
                 got = @test_logs warned(2) warned(3) warned(4) warned(5) CT.replay!(ra, 0, 5; clock)
                 @test got == (; applied = 6, checkpoints = collect(0:5))
                 # slot 0 and the top from the store, then the run below the top, down to slot 1, where the store agrees
-                @test sort([k for (v, k) in s.calls[n+1:end] if v === :fetch_object]) == slotkey.(0:5)
+                @test sort([k for (v, k) in s.calls[(n + 1):end] if v === :fetch_object]) == slotkey.(0:5)
                 @test CT.head(ra) == CT.head(wa)
                 @test rows_of(ra, "samples") == rows_of(wa, "samples")
                 # every checkpoint on disk is A's: none of B's records was ever applied
-                @test all(CT.Ops.transaction_hash(a.objects[slotkey(h)]) ==
-                          CT.decode_head(read(joinpath(ra.path, "heads", CT.head_filename(h)))).transaction_hash
-                          for h in parse.(Int, heads(ra)))
+                @test all(
+                    CT.Ops.transaction_hash(a.objects[slotkey(h)]) ==
+                        CT.decode_head(read(joinpath(ra.path, "heads", CT.head_filename(h)))).transaction_hash
+                        for h in parse.(Int, heads(ra))
+                )
                 @test all(read(record_path(chain.cache, s, "bkt", slotkey(k))) == a.objects[slotkey(k)] for k in 0:5)
                 # the copy built on B's chain is bound to a slot the bucket no longer holds: a rewritten chain
                 @test caught(() -> CT.sync!(rb)) isa RewrittenChainError
@@ -1022,12 +1062,12 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             # past keep_bytes a cached run waiting to be vouched for is read again when it is: the same records,
             # and a file changed meanwhile (another process, the disk) is read from the store and replaced
             one = Chain("bkt", "p"; store, cache_dir = chain.cache.dir, read_ahead = 1, record_host = false, record_user = false)
-            seen(; kw...) = (got = Tuple{Int64,Vector{UInt8}}[]; CT.read_forward((s, r, th) -> (push!(got, (s, th)); false), one, 0, 3; kw...); got)
+            seen(; kw...) = (got = Tuple{Int64, Vector{UInt8}}[]; CT.read_forward((s, r, th) -> (push!(got, (s, th)); false), one, 0, 3; kw...); got)
             @test seen(; keep_bytes = 0) == seen() == [(k, Ops.transaction_hash(good(k))) for k in 0:3]
             store.fault = (verb, key, phase) -> verb === :fetch_object && key == slotkey(3) && phase === :before &&
                 write(cached(2), b"changed")
             @test (@test_logs (:warn, r"cached copy of p/000000000002") seen(; keep_bytes = 0)) ==
-                  [(k, Ops.transaction_hash(good(k))) for k in 0:3]
+                [(k, Ops.transaction_hash(good(k))) for k in 0:3]
             @test read(cached(2)) == good(2)
             # … unless the store no longer holds what the chain names there: the store's word raises
             store.fault = (verb, key, phase) -> verb === :fetch_object && key == slotkey(3) && phase === :before &&
@@ -1046,8 +1086,10 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             msg = "prev, holder and chain_id are given together, exactly when the read starts above slot 0"
             @test_throws msg CT.read_forward((s, r, th) -> false, one, 1, 3)
             @test_throws msg CT.read_forward((s, r, th) -> false, one, 0, 3; prev = Ops.transaction_hash(good(0)))
-            @test_throws msg CT.read_forward((s, r, th) -> false, one, 1, 3; prev = Ops.transaction_hash(good(0)),
-                                             holder = "the local copy at x")
+            @test_throws msg CT.read_forward(
+                (s, r, th) -> false, one, 1, 3; prev = Ops.transaction_hash(good(0)),
+                holder = "the local copy at x"
+            )
             close(copy)
         end
     end
@@ -1055,8 +1097,10 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
     @testset "a cached fork, asked of the store: down to the anchor, a slot gone, an early stop (ADR-0040)" begin
         mktempdir() do dir
             warned(s) = (:warn, Regex("record cache: the cached copy of $(slotkey(s)) in bucket bkt is not what the store holds"))
-            mk(st, name; kw...) = Chain("bkt", "p"; store = st, cache_dir = joinpath(dir, name), record_host = false,
-                                        record_user = false, kw...)
+            mk(st, name; kw...) = Chain(
+                "bkt", "p"; store = st, cache_dir = joinpath(dir, name), record_host = false,
+                record_user = false, kw...
+            )
             function add!(cp, i, tag)
                 w = CT.write_builder(cp)
                 i == 1 && declare!(w)
@@ -1069,7 +1113,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
                 CT.create_chain(mk(a, "ca$at"))
                 wa = CT.open(mk(a, "ca$at"), joinpath(dir, "wa$at"))
                 CT.sync!(wa)
-                foreach(i -> add!(wa, i, 100), 1:at-1)
+                foreach(i -> add!(wa, i, 100), 1:(at - 1))
                 b = InMemoryObjectStore()
                 foreach(((k, v),) -> plant!(b, k, copy(v)), a.objects)
                 wb = CT.open(mk(b, "cb$at"), joinpath(dir, "wb$at"))
@@ -1091,7 +1135,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
                 foreach(((k, v),) -> plant!(s, k, copy(v)), a.objects)
                 return s, chain
             end
-            fetched(s, n) = sort([k for (v, k) in s.calls[n+1:end] if v === :fetch_object])
+            fetched(s, n) = sort([k for (v, k) in s.calls[(n + 1):end] if v === :fetch_object])
             cached_is(chain, s, k, st) = read(record_path(chain.cache, s, "bkt", slotkey(k))) == st.objects[slotkey(k)]
 
             # forked at slot 1: the store agrees with none of the cached run, so slot 0 vouches for the store's bytes
@@ -1109,17 +1153,21 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             # keep_bytes = 0: the store's bytes are not kept on the way down, but fetched again on the way up
             s, chain = refilled(a, b, "kept")
             n = length(s.calls)
-            got = Tuple{Int64,Vector{UInt8}}[]
-            @test_logs warned(2) warned(3) warned(4) warned(5) CT.read_forward((k, r, th) -> (push!(got, (k, th)); false), chain, 0, 5;
-                                                                    keep_bytes = 0)
+            got = Tuple{Int64, Vector{UInt8}}[]
+            @test_logs warned(2) warned(3) warned(4) warned(5) CT.read_forward(
+                (k, r, th) -> (push!(got, (k, th)); false), chain, 0, 5;
+                keep_bytes = 0
+            )
             @test got == [(k, Ops.transaction_hash(a.objects[slotkey(k)])) for k in 0:5]
             @test fetched(s, n) == slotkey.([0, 1, 2, 2, 3, 3, 4, 4, 5])
 
             # a slot gone mid-settle: the store's word raises, after the part of the run it vouched for is applied
             s, chain = refilled(a, b, "gone")
             ra = CT.open(chain, joinpath(dir, "ra_gone"))
-            s.fault = (verb, key, phase) -> (verb === :fetch_object && key == slotkey(5) && phase === :after &&
-                (delete!(s.objects, slotkey(3)); delete!(s.modified, slotkey(3))); nothing)
+            s.fault = (verb, key, phase) -> (
+                verb === :fetch_object && key == slotkey(5) && phase === :after &&
+                    (delete!(s.objects, slotkey(3)); delete!(s.modified, slotkey(3))); nothing
+            )
             t = Ref(0); step = Ref(0)
             clock() = (step[] += 1; t[] += (10, 0, 1, 0)[mod1(step[] - 1, 4)])     # a checkpoint after every record
             err = @test_logs warned(2) caught(() -> CT.replay!(ra, 0, 5; clock))   # slot 5 is never healed: the read fails below it
@@ -1254,14 +1302,18 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             c1 = CT.open(one, joinpath(dir, "one_ahead"))
             n = length(store.calls)
             @test CT.sync!(c1).slot == 11
-            fetched = [k for (v, k) in store.calls[n+1:end] if v === :fetch_object]
+            fetched = [k for (v, k) in store.calls[(n + 1):end] if v === :fetch_object]
             @test fetched == [slotkey(s) for s in 0:11]
             @test CT.head(c1) == CT.head(copy)
             close(c1)
             # a malformed record mid-replay: the copy stays at its last checkpoint, the chain is dead beyond it
-            bad = Ops.encode_record(Record(CT.chain_id_bytes(copy.head.chain_id), 12, copy.head.transaction_hash,
-                                           copy.head.state_fingerprint, Client(nothing, nothing, "L", "J", 1), nothing,
-                                           [Insert("samples", [Any[13.0, "x", 1.0]])]))
+            bad = Ops.encode_record(
+                Record(
+                    CT.chain_id_bytes(copy.head.chain_id), 12, copy.head.transaction_hash,
+                    copy.head.state_fingerprint, Client(nothing, nothing, "L", "J", 1), nothing,
+                    [Insert("samples", [Any[13.0, "x", 1.0]])]
+                )
+            )
             put_object_if_absent(store, slotkey(12), bad)
             err = caught(() -> CT.sync!(copy))
             @test err isa MalformedRecordError
@@ -1281,12 +1333,18 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             # with its record, and commit's pre-check refuses to build on it
             h = copy.head
             rec = Ops.decode_record(store.objects["p/000000000001"]; slot = 1)
-            lie = Ops.encode_record(Record(rec.chain_id, 1, rec.prev_hash, fill(0xee, 32),
-                                           Client(nothing, nothing, "L", "J", rec.client.time_ms), rec.comment, rec.ops))
+            lie = Ops.encode_record(
+                Record(
+                    rec.chain_id, 1, rec.prev_hash, fill(0xee, 32),
+                    Client(nothing, nothing, "L", "J", rec.client.time_ms), rec.comment, rec.ops
+                )
+            )
             plant!(store, "p/000000000001", lie)
             write(record_path(chain.cache, chain.store, "bkt", "p/000000000001"), lie)
-            copy.head = CT.Head(h.chain_id, h.format_version, h.slot, Ops.transaction_hash(lie), h.state_fingerprint, h.tables,
-                                h.written_at_ms, h.written_by)
+            copy.head = CT.Head(
+                h.chain_id, h.format_version, h.slot, Ops.transaction_hash(lie), h.state_fingerprint, h.tables,
+                h.written_at_ms, h.written_by
+            )
             w = CT.write_builder(copy)
             CT.delete_rows!(w, :samples, [(id = 1,)])
             err = caught(() -> CT.commit!(w))

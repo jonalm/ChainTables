@@ -101,10 +101,12 @@ ChainTables.fetch_object(s::StoreTestInterrupted, key) =
         @test cache_namespace(s3(; endpoint = "http://localhost:9001")) != minio
         @test cache_namespace(s3(; endpoint = "https://localhost:9000")) != minio
         @test cache_namespace(s3(; endpoint = "https://s3.eu-north-1.amazonaws.com:443")) ==
-              cache_namespace(s3(; endpoint = "https://s3.eu-north-1.amazonaws.com"))
+            cache_namespace(s3(; endpoint = "https://s3.eu-north-1.amazonaws.com"))
         # a gateway reads from S3 directly, so it shares S3's namespace for the same endpoint
-        gw(; kw...) = GatewayObjectStore("bkt", "https://abc.lambda-url.eu-north-1.on.aws"; region = "eu-north-1",
-                                         credentials = creds, kw...)
+        gw(; kw...) = GatewayObjectStore(
+            "bkt", "https://abc.lambda-url.eu-north-1.on.aws"; region = "eu-north-1",
+            credentials = creds, kw...
+        )
         @test cache_namespace(gw()) == "aws"
         @test cache_namespace(gw(; endpoint = "http://localhost:9000")) == minio
         # every in-memory store is its own; any other store must name its own, and a chain over one that does not is refused
@@ -116,9 +118,13 @@ ChainTables.fetch_object(s::StoreTestInterrupted, key) =
             "returns (ADR-0040)"
         @test_throws msg cache_namespace(StoreTestBare())
         @test_throws msg ChainTables.Chain("bkt", "p"; store = StoreTestBare(), cache_dir = "/c")
-        @test all(length(cache_namespace(s)) <= MAX_NAMESPACE_LENGTH
-                  for s in (a, s3(), s3(; endpoint = "http://localhost:9000"),
-                            S3ObjectStore("bkt"; region = "us-gov-west-1", credentials = creds)))
+        @test all(
+            length(cache_namespace(s)) <= MAX_NAMESPACE_LENGTH
+                for s in (
+                    a, s3(), s3(; endpoint = "http://localhost:9000"),
+                    S3ObjectStore("bkt"; region = "us-gov-west-1", credentials = creds),
+                )
+        )
         # so the same bucket and key through two stores are two files
         mktempdir() do dir
             cache = RecordCache(; dir)
@@ -209,8 +215,12 @@ ChainTables.fetch_object(s::StoreTestInterrupted, key) =
             @test mtime(path) == mtime0
             # other bytes on disk: replaced, with a warning naming the file
             write(path, b"damaged")
-            @test (@test_logs (:warn, "record cache: the cached copy of $key in bucket bkt is not what the store holds; " *
-                "replaced with the store's bytes (ADR-0040)") heal_record!(cache, store, "bkt", key, b"record one")) === nothing
+            @test (
+                @test_logs (
+                    :warn, "record cache: the cached copy of $key in bucket bkt is not what the store holds; " *
+                        "replaced with the store's bytes (ADR-0040)",
+                ) heal_record!(cache, store, "bkt", key, b"record one")
+            ) === nothing
             @test read(path) == b"record one" && readdir(dirname(path)) == ["000000000001"]
             @test isempty(store.calls)
         end

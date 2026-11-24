@@ -29,10 +29,10 @@ is refused.
 """
 abstract type AbstractObjectStore end
 
-const MaybeTxn = Union{Nothing,TransactionHash}
-const MaybeFp = Union{Nothing,StateFingerprint}
-const MaybeString = Union{Nothing,String}
-const MaybeInt = Union{Nothing,Int64}
+const MaybeTxn = Union{Nothing, TransactionHash}
+const MaybeFp = Union{Nothing, StateFingerprint}
+const MaybeString = Union{Nothing, String}
+const MaybeInt = Union{Nothing, Int64}
 
 """
     StaleHeadError(msg; chain_id, slot, chain_slot)
@@ -80,7 +80,7 @@ struct CommitOutcomeUnknownError <: ChainTablesError
     chain_id::MaybeString
     slot::MaybeInt
     transaction_hash::MaybeTxn
-    landed::Union{Nothing,Bool}
+    landed::Union{Nothing, Bool}
     cause::Any
 end
 CommitOutcomeUnknownError(msg; chain_id = nothing, slot = nothing, transaction_hash = nothing, landed = nothing, cause = nothing) =
@@ -140,10 +140,14 @@ struct FingerprintMismatchError <: ChainTablesError
     record_client::Any
     this_client::Any
 end
-FingerprintMismatchError(msg; chain_id = nothing, slot = nothing, expected = nothing, computed = nothing,
-                         record_client = nothing, this_client = nothing) =
-    FingerprintMismatchError(msg, chain_id, slot, maybe_hash(StateFingerprint, expected), maybe_hash(StateFingerprint, computed),
-                             record_client, this_client)
+FingerprintMismatchError(
+    msg; chain_id = nothing, slot = nothing, expected = nothing, computed = nothing,
+    record_client = nothing, this_client = nothing
+) =
+    FingerprintMismatchError(
+    msg, chain_id, slot, maybe_hash(StateFingerprint, expected), maybe_hash(StateFingerprint, computed),
+    record_client, this_client
+)
 
 """
     DivergenceError(msg; chain_id, slot, expected, computed)

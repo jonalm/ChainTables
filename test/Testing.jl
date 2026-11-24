@@ -121,8 +121,10 @@ using ChainTables.Testing: InMemoryObjectStore
         fetch_object(store, "a")
         stat_object(store, "b")
         list_objects(store, "")
-        @test store.calls == [(:put_object_if_absent, "a"), (:fetch_object, "a"),
-                              (:stat_object, "b"), (:list_objects, "")]
+        @test store.calls == [
+            (:put_object_if_absent, "a"), (:fetch_object, "a"),
+            (:stat_object, "b"), (:list_objects, ""),
+        ]
     end
 
     @testset "attachments: stored once, checked against the key, fetched to a file (ADR-0046)" begin

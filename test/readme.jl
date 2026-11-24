@@ -10,7 +10,11 @@ using ChainTables.Testing: InMemoryObjectStore
 
 @testset "readme" begin
     CT = ChainTables
-    caught(f) = try; f(); nothing; catch e; e; end
+    caught(f) = try
+        f(); nothing
+    catch e
+        e
+    end
 
     @testset "the worked example" begin
         mktempdir() do dir
@@ -39,10 +43,12 @@ using ChainTables.Testing: InMemoryObjectStore
                 CT.column!(t, :mass, Float64; nullable = true)
                 CT.primary_key!(t, :id)
             end
-            CT.insert_rows!(w, :samples, [
-                (id = 1, label = "a", mass = 1.5),
-                (id = 2, label = "b", mass = missing),   # missing is null (ADR-0025)
-            ])
+            CT.insert_rows!(
+                w, :samples, [
+                    (id = 1, label = "a", mass = 1.5),
+                    (id = 2, label = "b", mass = missing),   # missing is null (ADR-0025)
+                ]
+            )
             r1 = CT.commit!(w; comment = "first samples")
             # (; slot = 1, transaction_hash, state_fingerprint)
             @test keys(r1) == (:slot, :transaction_hash, :state_fingerprint)

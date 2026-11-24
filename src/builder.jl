@@ -33,7 +33,7 @@ names resident anyway (ADR-0023).
 Fields: `ops`, the canonical ops in call order; `spent`, set by [`spend!`](@ref)
 once `commit!` has consumed the builder.
 """
-mutable struct WriteBuilder{C,H}
+mutable struct WriteBuilder{C, H}
     scratch::Model.Content     # every table named so far as an empty Table carrying its shape, evolved by this builder's shape ops
     pending::Set{String}       # the copy's tables not yet in scratch; a name here exists and is loaded on first mention
     ops::Vector{Ops.Op}
@@ -44,7 +44,7 @@ end
 
 function WriteBuilder(content::Model.Content; copy = nothing, head = nothing, pending = Set{String}())
     scratch = Model.Content(name => Model.Table(t.shape) for (name, t) in content)
-    return WriteBuilder{typeof(copy),typeof(head)}(scratch, Set{String}(pending), Ops.Op[], false, copy, head)
+    return WriteBuilder{typeof(copy), typeof(head)}(scratch, Set{String}(pending), Ops.Op[], false, copy, head)
 end
 
 # The scratch table for `name`, loading its shape from the copy on first mention
@@ -83,8 +83,11 @@ on the same builder — the forbidden retry written by hand (ADR-0019) — is a
 `WriteBuilderError`, as is every op function on a spent builder.
 """
 function spend!(w::WriteBuilder)
-    w.spent && throw(WriteBuilderError(
-        "commit!(w): this builder is spent; a builder is used once, take a new one with write_builder(copy)"))
+    w.spent && throw(
+        WriteBuilderError(
+            "commit!(w): this builder is spent; a builder is used once, take a new one with write_builder(copy)"
+        )
+    )
     w.spent = true
     return nothing
 end
@@ -109,9 +112,9 @@ end
 # Names and type tags (ADR-0019, ADR-0025)
 # ---------------------------------------------------------------------------
 
-tablename(x::Union{Symbol,AbstractString}) = String(x)
+tablename(x::Union{Symbol, AbstractString}) = String(x)
 tablename(x) = fail("table name $(repr(x)) is not a Symbol")
-colname(x::Union{Symbol,AbstractString}) = String(x)
+colname(x::Union{Symbol, AbstractString}) = String(x)
 colname(x) = fail("column name $(repr(x)) is not a Symbol")
 
 """
@@ -129,9 +132,9 @@ function tag_value_type(T, column)
         T === tag && return vt
     end
     hint = T === AbstractString ? "; a text column's tag is String" :
-           T === Int32 ? "; Int32 values widen at insert, the tag is Int64" :
-           T === Float32 ? "; Float32 values widen at insert, the tag is Float64" : ""
-    fail("type tag $(repr(T)) for column $(repr(column)) is not one of Int64, Float64, String, Vector{UInt8}$hint")
+        T === Int32 ? "; Int32 values widen at insert, the tag is Int64" :
+        T === Float32 ? "; Float32 values widen at insert, the tag is Float64" : ""
+    return fail("type tag $(repr(T)) for column $(repr(column)) is not one of Int64, Float64, String, Vector{UInt8}$hint")
 end
 
 # ---------------------------------------------------------------------------
@@ -144,8 +147,8 @@ cell(::Model.Column, x::Float64) = isnan(x) ? NaN : x          # every NaN is f9
 cell(c::Model.Column, x::String) = Ops.check_text("column $(repr(c.name))", x)
 cell(::Model.Column, x::Vector{UInt8}) = x                       # copied by the model when it takes the row
 cell(::Model.Column, ::Missing) = missing
-cell(c::Model.Column, x::Union{Int8,Int16,Int32}) = cell(c, Int64(x))
-cell(c::Model.Column, x::Union{Float16,Float32}) = cell(c, Float64(x))
+cell(c::Model.Column, x::Union{Int8, Int16, Int32}) = cell(c, Int64(x))
+cell(c::Model.Column, x::Union{Float16, Float32}) = cell(c, Float64(x))
 cell(c::Model.Column, x::AbstractString) = cell(c, String(x))
 cell(c::Model.Column, x::AbstractVector{UInt8}) = cell(c, Vector{UInt8}(x))
 cell(c::Model.Column, ::Nothing) = fail("column $(repr(c.name)): nothing is not a value; null is spelt missing")
@@ -160,8 +163,10 @@ cells(cols, row) = Any[cell(c, getproperty(row, Symbol(c.name))) for c in cols]
 # through Tables.rows by the caller.
 # ---------------------------------------------------------------------------
 
-is_row(r) = !(r isa Number || r isa AbstractString || r isa AbstractVector || r isa Tuple ||
-              r isa AbstractChar || r isa Symbol || r === nothing || r === missing)
+is_row(r) = !(
+    r isa Number || r isa AbstractString || r isa AbstractVector || r isa Tuple ||
+        r isa AbstractChar || r isa Symbol || r === nothing || r === missing
+)
 
 # The rows as a vector, and the columns they all name, checked uniform.
 function rowset(rows)
@@ -192,7 +197,7 @@ The `t` of `create_table!(w, :t) do t … end`: the columns declared so far by
 """
 mutable struct TableDeclaration
     columns::Vector{Model.Column}
-    key::Union{Nothing,Vector{String}}
+    key::Union{Nothing, Vector{String}}
 end
 
 """
@@ -210,7 +215,7 @@ starts with a letter, `[a-z][a-z0-9_]*`, so it never collides with the `_slot` o
 [`table_with_slots`](@ref) (ADR-0032). Refuses a name already in use.
 """
 function create_table!(f, w::WriteBuilder, table)
-    guarded("create_table!(w, $(repr(table)))") do
+    return guarded("create_table!(w, $(repr(table)))") do
         live(w)
         name = tablename(table)
         d = TableDeclaration(Model.Column[], nothing)
@@ -231,7 +236,7 @@ tags — `Int64`, `Float64`, `String`, `Vector{UInt8}` — by identity (ADR-0019
 `primary_key!` names them.
 """
 function column!(d::TableDeclaration, column, T; nullable = false)
-    guarded("column!(t, $(repr(column)), $(repr(T)))") do
+    return guarded("column!(t, $(repr(column)), $(repr(T)))") do
         name = colname(column)
         Model.check_column_name(name)
         any(c -> c.name == name, d.columns) && fail("duplicate column name $(repr(name))")
@@ -247,7 +252,7 @@ non-nullable columns, in key declaration order — the order a composite key
 sorts and is written in (ADR-0025).
 """
 function primary_key!(d::TableDeclaration, columns...)
-    guarded("primary_key!(t$(join(", " .* repr.(columns))))") do
+    return guarded("primary_key!(t$(join(", " .* repr.(columns))))") do
         d.key === nothing || fail("primary_key! was already called; a table has one primary key")
         key = String[colname(c) for c in columns]
         Model.Shape(d.columns, key)                                 # every rule of a key, the model's own
@@ -274,7 +279,7 @@ required — null (`missing`) only if the column is nullable (ADR-0025). `T` is
 a type tag as in [`column!`](@ref); `fill` widens like a cell.
 """
 function add_column!(w::WriteBuilder, table, column, T; nullable = false, fill)
-    guarded("add_column!(w, $(repr(table)), $(repr(column)), $(repr(T)))") do
+    return guarded("add_column!(w, $(repr(table)), $(repr(column)), $(repr(T)))") do
         live(w)
         name = tablename(table)
         cname = colname(column)
@@ -293,7 +298,7 @@ Remove a non-key column from the shape and from every row. Refuses a key column
 and nothing else (ADR-0025).
 """
 function drop_column!(w::WriteBuilder, table, column)
-    guarded("drop_column!(w, $(repr(table)), $(repr(column)))") do
+    return guarded("drop_column!(w, $(repr(table)), $(repr(column)))") do
         live(w)
         name = tablename(table)
         cname = colname(column)
@@ -310,7 +315,7 @@ Drop a table. A table is re-shaped by `add_column!`/`drop_column!`, or by
 `drop_table!` + `create_table!` + `insert_rows!` inside one record (ADR-0003).
 """
 function drop_table!(w::WriteBuilder, table)
-    guarded("drop_table!(w, $(repr(table)))") do
+    return guarded("drop_table!(w, $(repr(table)))") do
         live(w)
         name = tablename(table)
         if name in w.pending                 # dropped unread: nothing of it is needed until commit!
@@ -335,7 +340,7 @@ within the op. The op carries the rows in typed key order with cells in
 declaration order. Insert on a present key is the state gate, at `commit!`.
 """
 function insert_rows!(w::WriteBuilder, table, rows)
-    guarded("insert_rows!(w, $(repr(table)))") do
+    return guarded("insert_rows!(w, $(repr(table)))") do
         live(w)
         name = tablename(table)
         s = scratch_table(w, name).shape
@@ -359,7 +364,7 @@ delete then insert. `missing` read from a view and handed back is null,
 unchanged. Update on an absent key is the state gate, at `commit!`.
 """
 function update_rows!(w::WriteBuilder, table, rows)
-    guarded("update_rows!(w, $(repr(table)))") do
+    return guarded("update_rows!(w, $(repr(table)))") do
         live(w)
         name = tablename(table)
         s = scratch_table(w, name).shape
@@ -385,7 +390,7 @@ Delete a row set: every row names the key columns and nothing else (ADR-0005).
 Delete on an absent key is the state gate, at `commit!`.
 """
 function delete_rows!(w::WriteBuilder, table, rows)
-    guarded("delete_rows!(w, $(repr(table)))") do
+    return guarded("delete_rows!(w, $(repr(table)))") do
         live(w)
         name = tablename(table)
         s = scratch_table(w, name).shape
