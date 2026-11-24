@@ -542,12 +542,27 @@ const ATT = ChainTables
             @test ATT.heal_entry(path, h; hasher = grow) === :changed
             @test read(path * ".meta", String) == "100 0.0"
             # another file with the same bytes renamed onto the path mid-hash: the sidecar records
-            # the file that was hashed, not the one now at the path — the next read heals that
-            swap = io -> (d = ATT.hash_file(io); write(path * ".other", bytes); ATT.replace_file(path * ".other", path); d)
-            reset!()
-            hashed = ATT.sidecar_text(stat(path))
-            @test ATT.heal_entry(path, h; hasher = swap) === :ok
-            @test read(path * ".meta", String) == hashed != ATT.sidecar_text(stat(path))
+            # the file that was hashed, not the one now at the path — the next read heals that.
+            # Not on Windows, where a file that is open cannot be replaced (rm raises EBUSY), so
+            # the case cannot arise. Linux stamps mtime from a clock that ticks every 1 to 10 ms:
+            # the other file is touched until its mtime is another one than the hashed file's.
+            if !Sys.iswindows()
+                function swap(io)
+                    d = ATT.hash_file(io)
+                    other = path * ".other"
+                    write(other, bytes)
+                    while mtime(other) == mtime(io)
+                        sleep(0.001)
+                        touch(other)
+                    end
+                    ATT.replace_file(other, path)
+                    return d
+                end
+                reset!()
+                hashed = ATT.sidecar_text(stat(path))
+                @test ATT.heal_entry(path, h; hasher = swap) === :ok
+                @test read(path * ".meta", String) == hashed != ATT.sidecar_text(stat(path))
+            end
             # through attachment(copy, hash): raised, nothing fetched
             reset!()
             empty!(store.calls)
