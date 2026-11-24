@@ -834,7 +834,7 @@ function commit!(w::WriteBuilder; comment = nothing)
                 Ops.apply!(copy.content, op, slot)   # the target slot; a lost race never re-applies, the builder is spent
             catch e
                 e isa ModelError || rethrow()
-                throw(WriteBuilderError("commit!(w): op $i ($(Ops.op_name(op)) on $(repr(op.table))): $(e.msg)"))
+                throw(WriteBuilderError("commit!(w): op $i ($(Ops.op_name(op)) on $(repr(op.table))): $(e.detail)"))
             end
         end
         staged = stage!(copy)
@@ -846,7 +846,7 @@ function commit!(w::WriteBuilder; comment = nothing)
             )
         catch e
             e isa ModelError || rethrow()
-            throw(WriteBuilderError("commit!(w): $(e.msg)"))
+            throw(WriteBuilderError("commit!(w): $(e.detail)"))
         end
         bytes = Ops.encode_record(record)
         check_record_cap(store, bytes, "commit!(w)")            # ADR-0028: the store's cap, before the put

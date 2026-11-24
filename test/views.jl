@@ -102,7 +102,7 @@ using ChainTables.Testing: InMemoryObjectStore
             @test isequal(b[UInt8[1]], (k = UInt8[1], v = missing)) && b[UInt8[1, 2]].v == UInt8[9]
             b[UInt8[1, 2]].v[1] = 0xff
             b.columns.v[2][1] = 0xff
-            @test isequal(collect(Model.rows_in_key_order(CT.load_table!(copy, "blobs")))[2], Any[UInt8[1, 2], UInt8[9]])
+            @test isequal(collect(rows_in_key_order(CT.load_table!(copy, "blobs")))[2], Any[UInt8[1, 2], UInt8[9]])
             @test b[UInt8[1, 2]].v == UInt8[9]                               # a bytes cell is copied on each read (ADR-0043)
             @test CT.table(copy, :blobs).columns.v[2] == UInt8[9]
             # the surface errors
@@ -182,7 +182,7 @@ using ChainTables.Testing: InMemoryObjectStore
             mine[1] = "zzz"
             @test v.columns.label == ["a", "b"]
             @test CT.head(copy) == before
-            @test isequal(collect(Model.rows_in_key_order(CT.load_table!(copy, "samples"))), [Any[1, "a", 1.5], Any[2, "b", missing]])
+            @test isequal(collect(rows_in_key_order(CT.load_table!(copy, "samples"))), [Any[1, "a", 1.5], Any[2, "b", missing]])
             w = CT.write_builder(copy)
             CT.insert_rows!(w, :samples, [(id = 3, label = "c", mass = 3.0)])
             r2 = CT.commit!(w)

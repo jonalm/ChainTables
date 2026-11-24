@@ -52,7 +52,7 @@ Base.getproperty(r::BuilderTestRow, n::Symbol) = getfield(r, :fields)[n]
         @test CT.insert_rows!(w, :samples, [(id = 2, label = "b", mass = missing), (id = 1, label = "a", mass = 1.5)]) === nothing
         @test isequal(w.ops, Ops.Op[CreateTable("samples", samples), Insert("samples", [Any[1, "a", 1.5], Any[2, "b", missing]])])
         c = applied(w.ops)
-        @test isequal(Model.getrow(c["samples"], (2,)), Any[2, "b", missing])
+        @test isequal(row_of(c["samples"], (2,)), Any[2, "b", missing])
 
         w2 = WriteBuilder(c)
         @test w2.head === nothing                     # no head: the column ops stamp a placeholder, never a head's slot
@@ -85,7 +85,7 @@ Base.getproperty(r::BuilderTestRow, n::Symbol) = getfield(r, :fields)[n]
         Model.insert_rows!(w3.scratch["samples"], [Any[9, "z", 1.0]], 1)
         @test_throws "scratch table holds 1 rows; it holds a shape and never rows" CT.drop_column!(w3, :samples, :label)
         # the content the builder was taken over is untouched: the state gate is commit!'s
-        @test Model.nrows(c["samples"]) == 2 && c["samples"].shape == samples && collect(keys(c)) == ["samples"]
+        @test Model.n_rows(c["samples"]) == 2 && c["samples"].shape == samples && collect(keys(c)) == ["samples"]
         for op in w2.ops
             Ops.apply!(c, op, 2)                     # the record after seeded()'s slot 1
         end
@@ -95,7 +95,7 @@ Base.getproperty(r::BuilderTestRow, n::Symbol) = getfield(r, :fields)[n]
                 Column("note", "text", true), Column("weight", "float64", false),
             ], ["id"]
         )
-        @test isequal(Model.getrow(c["samples"], (2,)), Any[2, 2.5, missing, 1.0])
+        @test isequal(row_of(c["samples"], (2,)), Any[2, 2.5, missing, 1.0])
         @test !haskey(c, "tags")
 
         # the builder tracks the shape its own ops leave: an insert after add_column
@@ -113,7 +113,7 @@ Base.getproperty(r::BuilderTestRow, n::Symbol) = getfield(r, :fields)[n]
         end
         CT.insert_rows!(w3, :samples, [(id = 1,)])
         @test length(w3.ops) == 5
-        @test isequal(Model.getrow(applied(vcat(w.ops, w2.ops, w3.ops))["samples"], (1,)), Any[1])
+        @test isequal(row_of(applied(vcat(w.ops, w2.ops, w3.ops))["samples"], (1,)), Any[1])
 
         # the ops travel as a record: what the builder produced, a second client applies
         client = Client(nothing, nothing, "L", "J", 1)

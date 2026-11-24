@@ -162,7 +162,7 @@ function check_head(h::Head)
         Model.state_fingerprint(h.tables)    # 32-byte hashes, no duplicate name
     catch e
         e isa ModelError || rethrow()
-        throw(ArgumentError(e.msg))
+        throw(ArgumentError(e.detail))
     end
     fp == h.state_fingerprint || throw(
         ArgumentError(
@@ -254,7 +254,7 @@ function decode_head(bytes::AbstractVector{UInt8})
         CBOR.decode(bytes[(length(sep) + 1):end])
     catch e
         e isa CBOR.DecodeError || rethrow()
-        reject_head(:damaged, "cannot be decoded: $(e.msg) at byte $(length(sep) + e.offset)")
+        reject_head(:damaged, "cannot be decoded: $(e.detail) at byte $(length(sep) + e.offset)")
     end
     w isa AbstractDict || reject_head(:damaged, "is not a map")
     for k in keys(w)
@@ -618,7 +618,7 @@ function load_table!(copy::LocalCopy, name::AbstractString)
         Base.open(Model.read_table, file)
     catch e
         e isa ModelError || e isa CBOR.DecodeError || rethrow()
-        throw(damaged(copy, name, hash, "hashes to its name but is not a canonical table file ($(sprint(showerror, e)))"))
+        throw(damaged(copy, name, hash, "hashes to its name but is not a canonical table file ($(unreadable_text(e)))"))
     end
     # a cheap consistency check (ADR-0032): the hash and the head's fingerprint already
     # held, so only a fabricated or wrongly written head gets a row slot past it here
@@ -785,4 +785,13 @@ function checkpoint!(
     end
     write_head!(copy, chain_id, slot, transaction_hash, staged)
     return nothing
+end
+
+# The text of the two internal errors a table file's read can throw, as load_table!'s
+# message has always carried it.
+# TODO: fold into load_table!'s error when this file is rewritten:
+# https://github.com/jonalm/julia_codestyle/issues/127
+unreadable_text(e::ModelError) = "ModelError: $(e.detail)"
+function unreadable_text(e::CBOR.DecodeError)
+    return "CBOR decode error at byte $(e.offset): $(e.detail)"
 end

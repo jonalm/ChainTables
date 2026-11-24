@@ -103,7 +103,7 @@ function guarded(f, call)
         f()
     catch e
         e isa Model.ModelError || rethrow()
-        throw(WriteBuilderError("$call: $(e.msg)"))
+        throw(WriteBuilderError("$call: $(e.detail)"))
     end
     return nothing
 end
@@ -267,7 +267,7 @@ end
 # The slot a scratch table's column op stamps: a placeholder 0, since a scratch
 # table holds a shape and never rows, so nothing is stamped (ADR-0032).
 function scratch_slot(t::Model.Table)
-    Model.nrows(t) == 0 || error("scratch table holds $(Model.nrows(t)) rows; it holds a shape and never rows")
+    Model.n_rows(t) == 0 || error("scratch table holds $(Model.n_rows(t)) rows; it holds a shape and never rows")
     return 0
 end
 
@@ -373,10 +373,10 @@ function update_rows!(w::WriteBuilder, table, rows)
         for k in s.key
             Symbol(k) in names || fail("row set names no key column $(repr(k)); an update names the full key")
         end
-        keycols = [s.columns[j] for j in s.keyidx]
+        keycols = [s.columns[j] for j in s.key_positions]
         valcols = [c for c in s.columns if Symbol(c.name) in names && !(c.name in s.key)]   # declaration order
         columns = String[c.name for c in valcols]
-        nk = length(s.keyidx)
+        nk = length(s.key_positions)
         vecs = Ops.sort_rows((vcat(cells(keycols, r), cells(valcols, r)) for r in rs), r -> Tuple(r[1:nk]))
         Model.check_update(s, columns, vecs)
         push!(w.ops, Ops.Update(name, columns, vecs))
@@ -402,7 +402,7 @@ function delete_rows!(w::WriteBuilder, table, rows)
         for k in s.key
             Symbol(k) in names || fail("row set names no key column $(repr(k)); a delete names the full key")
         end
-        keycols = [s.columns[j] for j in s.keyidx]
+        keycols = [s.columns[j] for j in s.key_positions]
         vecs = Ops.sort_rows((cells(keycols, r) for r in rs), Tuple)
         Model.check_delete(s, vecs)
         push!(w.ops, Ops.Delete(name, vecs))

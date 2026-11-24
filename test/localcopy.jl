@@ -207,10 +207,10 @@ ChainTables.expected_chain_id(c::LocalCopyTestBoundChain) = c.chain_id
             @test CT.tables(again) == ["t"]
             t = CT.load_table!(again, "t")
             @test t.shape == Shape([Column("id", "int64", false), Column("mass", "float64", true)], ["id"])
-            @test isequal(collect(Model.rows_in_key_order(t)), [Any[1, 1.5], Any[2, missing]])
+            @test isequal(collect(rows_in_key_order(t)), [Any[1, 1.5], Any[2, missing]])
             @test CT.load_table!(again, "t") === t                       # resident until close
             @test again.loaded == Set(["t"])
-            @test_throws "unknown table \"nope\"" CT.load_table!(again, "nope")
+            @test_throws "unknown table" CT.load_table!(again, "nope")
             # load_tables! over a record loads every table its ops name, so apply
             # sees the real state (create_table on a name the head already has fails)
             close(again)
@@ -378,7 +378,7 @@ ChainTables.expected_chain_id(c::LocalCopyTestBoundChain) = c.chain_id
                 "opening the local copy at $path at slot 1 and sweeping heads/000000000002"
             c = @test_logs (:warn, warning) CT.open(LocalCopyTestChain(), path)
             @test CT.head(c).slot == 1 && heads(path) == ["000000000001"]
-            @test collect(Model.rows_in_key_order(CT.load_table!(c, "w"))) == [Any[7, "z"]]
+            @test collect(rows_in_key_order(CT.load_table!(c, "w"))) == [Any[7, "z"]]
             close(c)
             # neither head usable: a hard error naming both
             write(headfile(path, 2), head2)
@@ -486,7 +486,7 @@ ChainTables.expected_chain_id(c::LocalCopyTestBoundChain) = c.chain_id
             @test occursin("repair!(copy)", msg)
             @test (heads(path), tabs(path), CT.head(copy)) == before      # head untouched, orphan swept
             @test isempty(copy.content) && isempty(copy.loaded)            # model dropped
-            @test collect(Model.rows_in_key_order(CT.load_table!(copy, "w"))) == [Any[7, "z"]]
+            @test collect(rows_in_key_order(CT.load_table!(copy, "w"))) == [Any[7, "z"]]
             # a mismatch without a client still names both fingerprints
             CT.load_tables!(copy, ["t", "u", "w"])
             Ops.apply!(copy.content, Insert("w", [Any[8, "y"]]), 2)

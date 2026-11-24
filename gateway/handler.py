@@ -642,7 +642,7 @@ def decode_record(body: bytes):
     `cbor2` is lenient (it takes duplicate keys, trailing bytes, indefinite lengths, tags), so
     the item is checked against the format's domain and then re-encoded canonically, which must
     give back `body` byte for byte. `cbor2`'s canonical encoder matched the Julia encoder on the
-    whole conformance corpus (``test/conformance``)."""
+    whole conformance corpus (``test/data/cbor_conformance``)."""
     try:
         doc = cbor2.loads(body)
     except (cbor2.CBORDecodeError, TypeError, RecursionError) as e:

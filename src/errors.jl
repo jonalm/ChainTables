@@ -29,6 +29,9 @@ is refused.
 """
 abstract type AbstractObjectStore end
 
+# The evidence fields of the error types: a hash given as raw bytes is carried typed.
+maybe_hash(T, x) = x === nothing ? nothing : T(x)
+
 const MaybeTxn = Union{Nothing, TransactionHash}
 const MaybeFp = Union{Nothing, StateFingerprint}
 const MaybeString = Union{Nothing, String}

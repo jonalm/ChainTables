@@ -30,7 +30,7 @@ steps:
 
 Step 2 relies on `cbor2`'s canonical encoder producing the same bytes as the
 Julia encoder. It did on all 96 cases of the conformance corpus
-(`test/conformance`, ADR-0006), with the same pinned `cbor2` version the gateway
+(`test/data/cbor_conformance`, ADR-0006), with the same pinned `cbor2` version the gateway
 runs. A `cbor2` upgrade must re-run that corpus.
 
 This is still not content validation. The gateway does not read `prev_hash`,

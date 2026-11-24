@@ -44,7 +44,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
         CT.column!(t, :mass, Float64; nullable = true)
         CT.primary_key!(t, :id)
     end
-    rows_of(copy, name) = collect(Model.rows_in_key_order(CT.load_table!(copy, name)))
+    rows_of(copy, name) = collect(rows_in_key_order(CT.load_table!(copy, name)))
     heads(copy) = sort(readdir(joinpath(copy.path, "heads")))
     tabs(copy) = sort(readdir(joinpath(copy.path, "tables")))
     puts(store, key) = count(==((:put_object_if_absent, key)), store.calls)

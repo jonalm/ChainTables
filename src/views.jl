@@ -125,7 +125,7 @@ Tables.schema(v::TableView{C}) where {C} = Tables.Schema(fieldnames(C), map(elty
 # one-column key accepts the bare value or a tuple; a row (a NamedTuple) gives its key
 # columns, and may name others.
 function lookup_key(v::TableView, k)
-    nk = length(v.shape.keyidx)
+    nk = length(v.shape.key_positions)
     if k isa NamedTuple
         for c in v.shape.key
             haskey(k, Symbol(c)) || throw(
@@ -167,7 +167,7 @@ function Base.get(v::TableView, k, default)
     return i == 0 ? default : row(v, i)
 end
 function Base.keys(v::TableView)
-    idx = v.shape.keyidx
+    idx = v.shape.key_positions
     length(idx) == 1 && return copy(v.columns[idx[1]])
     return [Tuple(v.columns[j][i] for j in idx) for i in 1:v.nrows]
 end
@@ -207,7 +207,7 @@ function view_table(copy::LocalCopy, call, name, n)
         return load_table!(copy, n)
     catch e
         e isa ModelError || rethrow()
-        throw(ArgumentError("$call(copy, $(repr(name))): $(e.msg)"))
+        throw(ArgumentError("$call(copy, $(repr(name))): $(e.detail)"))
     end
 end
 
