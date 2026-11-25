@@ -77,9 +77,9 @@ function Chain(
     cache = RecordCache(String(cache_dir))
     # Every slot's path is as long as this one (ADR-0034).
     record_path(cache, chain_store, bucket, slot_key(prefix, 0))
-    return Chain(
-        String(bucket), String(prefix), chain_store, cache, Int(read_ahead),
-        assume_first_writer_wins, record_host, record_user, s3_keywords...,
+    return Chain{typeof(chain_store), typeof(s3_keywords.credentials)}(
+        bucket, prefix, chain_store, cache, read_ahead, assume_first_writer_wins,
+        record_host, record_user, s3_keywords...,
     )
 end
 
@@ -173,20 +173,13 @@ end
 # The S3 client's keywords. A store that the caller supplies does not read them, so
 # they are kept as given. Without one, the region and the credentials are resolved now:
 # a missing one fails here, not at the first request.
-function s3_client_keywords(::AbstractObjectStore, given)
-    region, endpoint = optional_text(given.region), optional_text(given.endpoint)
-    return (; given..., region, endpoint)
-end
+s3_client_keywords(::AbstractObjectStore, given) = given
 
 function s3_client_keywords(::Nothing, given)
     region = resolve_region(given.region)
     credentials = resolve_credentials(given.credentials)
-    endpoint = optional_text(given.endpoint)
-    return (; region, credentials, endpoint, given.path_style)
+    return (; given..., region, credentials)
 end
-
-optional_text(::Nothing) = nothing
-optional_text(text) = String(text)
 
 store_for(store::AbstractObjectStore, ::Nothing, bucket, s3_keywords) = store
 store_for(::Nothing, ::Nothing, bucket, s3_keywords) = S3ObjectStore(bucket; s3_keywords...)
