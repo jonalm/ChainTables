@@ -1,3 +1,5 @@
+# A type is never split: a caller that catches it would miss the new type. So a type
+# whose cases differ keeps one summary, and `detail` says which case it is.
 """
     ChainTablesError
 
