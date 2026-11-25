@@ -8,6 +8,7 @@ using ChainTables.Testing: InMemoryObjectStore
 include("fixtures/chain_copies.jl")
 include("fixtures/object_stores.jl")
 include("fixtures/forged_records.jl")
+include("fixtures/forked_chains.jl")
 
 const DEBUG = Base.CoreLogging.Debug
 # The record that `sync!` leaves for each cached file that it replaces.
@@ -208,16 +209,20 @@ end
         write(record_file(chain, 2), b"damaged")
         plant!(chain.store, slot_key(2), b"not a record either")
         with_copy_beside(local_copy, "fresh") do fresh
+            # `replay!` is internal. It is called for its clock: with a checkpoint after
+            # every record, the head says which records were applied.
+            clock = checkpoint_every_record()
+            not_cbor = "not deterministic CBOR"
             err = @test_logs min_level = DEBUG (
-                @test_throws MalformedRecordError "not deterministic CBOR" sync!(
-                    fresh
+                @test_throws MalformedRecordError not_cbor ChainTables.replay!(
+                    fresh, 0, 3; clock
                 )
             )
             @test err.value.slot == 2
-            # The cached file is evidence. Slot 1 came from the cache, and nothing that
-            # the store returned vouched for it.
+            # The cached file is evidence. Slot 1 came from the cache and was applied:
+            # the store was asked for it and agreed.
             @test read(record_file(chain, 2)) == b"damaged"
-            @test head(fresh).slot == 0
+            @test head(fresh).slot == 1
             plant!(chain.store, slot_key(2), good)
             synced = @test_logs REPLACED min_level = DEBUG sync!(fresh)
             @test synced.slot == 3
