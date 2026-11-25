@@ -10,20 +10,6 @@ The evidence is the type's fields; `detail` holds what no field says.
 """
 abstract type ChainTablesError <: Exception end
 
-# TODO: move to store.jl with that file's rewrite:
-# https://github.com/jonalm/julia_codestyle/issues/128
-"""
-    AbstractObjectStore
-
-The interface of an object store: fetch one object, put one object only if its key is
-absent, stat one key, list a prefix.
-
-A store of your own implements the four verbs and `ChainTables.cache_namespace`, the
-record cache's directory for what it reads. A `Chain` over a store without it is
-refused.
-"""
-abstract type AbstractObjectStore end
-
 const ClientVersions = @NamedTuple{lib::String, julia::String}
 
 function print_summary(io::IO, e::ChainTablesError, summary)

@@ -142,7 +142,7 @@ const ATT = ChainTables
                 catch e
                     e
                 end
-                @test e isa ATT.GatewaySessionEndingError && e.key == key && e.gateway == loopback_url(gw) && !GWT.retryable(e)
+                @test e isa ATT.GatewaySessionEndingError && e.key == key && e.gateway == loopback_url(gw) && !GWT.is_retryable(e)
                 @test e.detail == "gateway session ending: the gateway at " *
                     "$(loopback_url(gw)) did not mint the upload of $key — session_ending: this environment's session " *
                     "ends too soon. The Lambda execution environment that answered is too old: its AWS session ends " *

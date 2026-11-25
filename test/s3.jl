@@ -416,7 +416,7 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
             catch e
                 e
             end
-            @test e isa TransportError && e.status == 403 && !S3T.retryable(e)
+            @test e isa TransportError && e.status == 403 && !S3T.is_retryable(e)
             @test occursin("HTTP 403 SignatureDoesNotMatch: expected", sprint(showerror, e))
             @test startswith(sprint(showerror, e), "TransportError: GET http://127.0.0.1:$(server.port)/bkt/p/000000000001: HTTP 403")
             # the bucket in the URL is the store's; a wrong region changes the signature
@@ -426,7 +426,7 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
             catch e
                 e
             end
-            @test e isa TransportError && e.status == 400 && !S3T.retryable(e)
+            @test e isa TransportError && e.status == 400 && !S3T.is_retryable(e)
             @test occursin("HTTP 400 AuthorizationHeaderMalformed: the region 'us-east-1' is wrong", sprint(showerror, e))
             # without a session token, none is sent or signed
             plain = S3TestServer(; bucket = "bkt", credentials = Credentials("AKIATEST", "topsecret"))
@@ -458,7 +458,7 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
             catch e
                 e
             end
-            @test e isa TransportError && e.status == 500 && S3T.retryable(e)
+            @test e isa TransportError && e.status == 500 && S3T.is_retryable(e)
             @test occursin("PUT http://127.0.0.1:$(server.port)/bkt/k: HTTP 500 InternalError: We encountered an internal error", sprint(showerror, e))
             @test !haskey(server.objects, "k")
             server.respond = req -> req.method == "PUT" ? (409, [], s3test_error("ConditionalRequestConflict", "Conditional request cannot succeed due to a conflicting operation against this resource.")) : nothing
@@ -467,7 +467,7 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
             catch e
                 e
             end
-            @test e isa TransportError && e.status == 409 && S3T.retryable(e)     # never a PutOutcome: the commit layer retries it
+            @test e isa TransportError && e.status == 409 && S3T.is_retryable(e)     # never a PutOutcome: the commit layer retries it
             server.respond = req -> (403, [], s3test_error("AccessDenied", "Access Denied"))
             for call in (
                     () -> fetch_object(store, "k"), () -> stat_object(store, "k"), () -> list_objects(store, ""),
@@ -478,7 +478,7 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
                 catch e
                     e
                 end
-                @test e isa TransportError && e.status == 403 && !S3T.retryable(e)
+                @test e isa TransportError && e.status == 403 && !S3T.is_retryable(e)
             end
             @test sprint(
                 showerror, try
@@ -513,7 +513,7 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
         catch e
             e
         end
-        @test e isa TransportError && e.status === nothing && S3T.retryable(e)
+        @test e isa TransportError && e.status === nothing && S3T.is_retryable(e)
         @test startswith(sprint(showerror, e), "TransportError: GET http://127.0.0.1:$port/bkt/k: no response")
     end
 
@@ -560,7 +560,7 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
             catch e
                 e
             end
-            @test e isa TransportError && e.status == 403 && !S3T.retryable(e)
+            @test e isa TransportError && e.status == 403 && !S3T.is_retryable(e)
             @test occursin("GET http://127.0.0.1:$(server.port)/bkt/$key: HTTP 403 AccessDenied: Access Denied", sprint(showerror, e))
             @test !ispath(gone)
             # a redirect is a TransportError with its status, never followed — on the GET and on the PUT
@@ -605,7 +605,7 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
             catch e
                 e
             end
-            @test e isa TransportError && e.status === nothing && S3T.retryable(e)
+            @test e isa TransportError && e.status === nothing && S3T.is_retryable(e)
             @test startswith(sprint(showerror, e), "TransportError: GET http://127.0.0.1:$port/bkt/k: no response")
             @test t < 10
         finally

@@ -44,12 +44,15 @@ end
 
 @testset "RewrittenChainError shows what happened, the evidence and the next move" begin
     e = RewrittenChainError(;
-        chain_id = CHAIN_ID, slot = 3, expected = TransactionHash(ZEROS),
-        found = TransactionHash(ONES)
+        path = COPY_PATH, bucket = "bkt", prefix = "p", chain_id = CHAIN_ID, slot = 3,
+        expected = TransactionHash(ZEROS), found = TransactionHash(ONES),
     )
     @test sprint(showerror, e) ==
         "RewrittenChainError: the bucket contradicts what the local copy has " *
         "applied.\n" *
+        "  path = /lab/copy\n" *
+        "  bucket = bkt\n" *
+        "  prefix = p\n" *
         "  chain_id = AAAAAAAAAAAAAAAAAAAAAAAAAA\n" *
         "  slot = 3\n" *
         "  expected = $ZEROS_HEX\n" *

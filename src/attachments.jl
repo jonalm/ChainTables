@@ -420,11 +420,11 @@ attachment_key(chain::Chain, h::AbstractString) = isempty(chain.prefix) ? "_atta
 # because each call is idempotent — a put whose upload landed finds the key present.
 function with_retries(f)
     for attempt in 1:PUT_ATTEMPTS
-        attempt == 1 || sleep(PUT_BACKOFF_S[attempt - 1])
+        attempt == 1 || sleep(PUT_BACKOFF_SECONDS[attempt - 1])
         try
             return f()
         catch e
-            (retryable(e) && attempt < PUT_ATTEMPTS) || rethrow()
+            (is_retryable(e) && attempt < PUT_ATTEMPTS) || rethrow()
         end
     end
     return

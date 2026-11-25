@@ -35,7 +35,7 @@ function walk_back(f, copy::LocalCopy, chain::Chain, call; fetch = false)
     for s in h.slot:-1:0
         key = slot_key(chain, s)
         path = record_path(chain.cache, chain.store, chain.bucket, key)
-        bytes = cached_record(chain, s)
+        bytes = read_cached_record(chain, s)
         th = bytes === nothing ? nothing : Ops.transaction_hash(bytes)
         if th != expected && !fetch
             throw(
@@ -53,7 +53,7 @@ function walk_back(f, copy::LocalCopy, chain::Chain, call; fetch = false)
         elseif th != expected
             bytes = fetch_object(chain.store, key)
             th = bytes === nothing ? nothing : Ops.transaction_hash(bytes)
-            th == expected && heal_record!(chain.cache, chain.store, chain.bucket, key, bytes)
+            th == expected && write_cached_record(chain, key, bytes)
             th == expected || throw(
                 RewrittenChainError(
                     "rewritten chain: slot $s of chain $(h.chain_id) at " *
@@ -81,7 +81,7 @@ end
 # The record at `slot`, from the cache, rehashed against what the chain walk established.
 function cached_record_at(chain::Chain, chain_id, slot, hashes, call)
     path = record_path(chain.cache, chain.store, chain.bucket, slot_key(chain, slot))
-    bytes = cached_record(chain, slot)
+    bytes = read_cached_record(chain, slot)
     th = bytes === nothing ? nothing : Ops.transaction_hash(bytes)
     th == hashes[slot + 1] || throw(
         RecordCacheError(
@@ -381,7 +381,7 @@ function as_of(chain::Chain, target; path = nothing)
         write_pin(copy)
         if h === nothing || h.slot < slot
             check_slot_exists(chain, slot, call)
-            h === nothing || check_head_slot(copy, chain)
+            h === nothing || fetch_head_slot(copy, chain)
             replay!(copy, h === nothing ? 0 : h.slot + 1, slot)      # the checkpoint at `slot` verifies its record
         else
             check_head_record(
@@ -403,7 +403,7 @@ function target_slot(chain::Chain, target::Integer)
     return Int64(target)
 end
 function target_slot(chain::Chain, target::TransactionHash)
-    top = gallop(chain.store, s -> slot_key(chain, s), -1)
+    top = fetch_top_slot(chain, -1)
     top == -1 && throw(chain_not_found(chain, "as_of"))
     found = nothing
     read_forward(chain, 0, top) do s, record, th
@@ -467,7 +467,7 @@ function slot_at(chain::Chain, time_ms)
                 "of milliseconds since the Unix epoch"
         )
     )
-    top = gallop(chain.store, s -> slot_key(chain, s), -1)
+    top = fetch_top_slot(chain, -1)
     top == -1 && throw(chain_not_found(chain, "slot_at"))
     best = nothing
     genesis_ms = nothing

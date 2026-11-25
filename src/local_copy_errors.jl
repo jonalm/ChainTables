@@ -60,6 +60,8 @@ opened or synced is `opened`.
 """
 Base.@kwdef struct WrongChainError <: ChainTablesError
     path::Union{Nothing, String} = nothing
+    bucket::Union{Nothing, String} = nothing
+    prefix::Union{Nothing, String} = nothing
     bound::Union{Nothing, String} = nothing
     opened::Union{Nothing, String} = nothing
     detail::String = ""

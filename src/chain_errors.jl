@@ -65,8 +65,12 @@ copy does not hold.
 
 `expected` is the hash the copy holds and `found` the hash fetched, `nothing` when the
 slot was absent. For a wrong parent, both are hashes of the parent, not of the slot.
+`path` is the local copy, `nothing` when the chain is read without one.
 """
 Base.@kwdef struct RewrittenChainError <: ChainTablesError
+    path::Union{Nothing, String} = nothing
+    bucket::Union{Nothing, String} = nothing
+    prefix::Union{Nothing, String} = nothing
     chain_id::Union{Nothing, String} = nothing
     slot::Union{Nothing, Int64} = nothing
     expected::Union{Nothing, TransactionHash} = nothing

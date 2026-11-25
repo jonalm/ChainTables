@@ -82,7 +82,7 @@ using ChainTables.Testing: InMemoryObjectStore
             @test err isa StaleHeadError
             @test (err.chain_id, err.slot, err.chain_slot) == (created.chain_id, 1, 2)
             msg = sprint(showerror, err)
-            @test occursin("is at slot 1", msg) && occursin("the chain is at slot 2", msg) && occursin("sync!(copy)", msg)
+            @test occursin("  slot = 1", msg) && occursin("  chain_slot = 2", msg) && occursin("sync!(copy)", msg)
             @test CT.head(copy).slot == 1                # nothing applied, nothing put
             @test length(store.objects) == 3
             @test CT.sync!(copy) == (; applied = 1, slot = 2, transaction_hash = r2.transaction_hash)

@@ -30,7 +30,7 @@ end
 
     include("fixtures/s3_server.jl")     # the loopback S3: s3.jl, gateway.jl
     include("fixtures/gateway.jl")       # gwtest_record: gateway.jl, live/gateway.jl
-    include("fixtures/model_tables.jl")  # row_of, rows_in_key_order: chain.jl
+    include("fixtures/model_tables.jl")  # row_of, rows_in_key_order: recovery.jl
 
     in_own_module("test_hashes.jl")
     in_own_module("test_hashes_examples.jl")
@@ -76,8 +76,20 @@ end
     in_own_module("test_write_builder_examples.jl")
     in_own_module("test_row_ops.jl")
     in_own_module("test_row_ops_examples.jl")
-    include("store.jl")
-    include("chain.jl")
+    in_own_module("test_object_store.jl")
+    in_own_module("test_object_store_examples.jl")
+    in_own_module("test_chain.jl")
+    in_own_module("test_chain_examples.jl")
+    in_own_module("test_create_chain.jl")
+    in_own_module("test_create_chain_examples.jl")
+    in_own_module("test_sync.jl")
+    in_own_module("test_sync_examples.jl")
+    in_own_module("test_commit.jl")
+    in_own_module("test_commit_examples.jl")
+    in_own_module("test_commit_outcomes_workflow.jl")
+    in_own_module("test_record_cache_workflow.jl")
+    in_own_module("test_read_forward_workflow.jl")
+    in_own_module("test_head_discovery_workflow.jl")
     include("recovery.jl")
     include("s3.jl")
     include("gateway.jl")

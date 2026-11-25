@@ -64,3 +64,25 @@ end
         "Nothing was stored. Put the attachment again later, once Lambda has " *
         "replaced the execution environment that answered."
 end
+
+@testset "WriteRefusedError takes the chain and the slot of the write it was for" begin
+    refusal = WriteRefusedError(;
+        caller = "alice@example.com", reason = "not_allowed", detail = "the policy"
+    )
+    e = WriteRefusedError(refusal, CHAIN_ID, 4, SLOT_KEY)
+    @test (e.chain_id, e.slot, e.key) == (CHAIN_ID, 4, SLOT_KEY)
+    @test (e.caller, e.reason) == ("alice@example.com", "not_allowed")
+    @test e.detail == "the policy"
+end
+
+@testset "WriteRefusedError keeps the key that the store refused" begin
+    refusal = WriteRefusedError(; key = ATTACHMENT_KEY)
+    @test WriteRefusedError(refusal, CHAIN_ID, 4, SLOT_KEY).key == ATTACHMENT_KEY
+end
+
+@testset "GatewayMismatchError takes the chain and the slot of the write it was for" begin
+    mismatch = GatewayMismatchError(; bucket = "bkt", gateway = GATEWAY, detail = "200")
+    e = GatewayMismatchError(mismatch, CHAIN_ID, 4, SLOT_KEY)
+    @test (e.chain_id, e.slot, e.key) == (CHAIN_ID, 4, SLOT_KEY)
+    @test (e.bucket, e.gateway, e.detail) == ("bkt", GATEWAY, "200")
+end

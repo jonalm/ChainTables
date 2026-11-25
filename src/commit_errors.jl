@@ -1,26 +1,49 @@
+const REBUILD = "recompute the row set and build again with `write_builder(copy)`. " *
+    "This builder is spent."
+
+const STALE_HEAD_NEXT_MOVES = Dict(
+    :builder_behind_copy => "A `sync!` moved the local copy after this builder was " *
+        "taken. With the copy as it is now, $REBUILD",
+    :copy_behind_chain => "Run `sync!(copy)`, $REBUILD",
+)
+
+const STALE_HEAD_NEXT_MOVE = "Run `sync!(copy)`, $REBUILD"
+
 """
     StaleHeadError
 
 Thrown when `commit!` finds its write builder behind the local copy, or the local copy
 behind the chain.
 
-In the first case `slot` is the builder's head and `chain_slot` the local copy's. In
-the second `slot` is the local copy's head and `chain_slot` the chain's.
+`reason` is `:builder_behind_copy` in the first case: `slot` is the builder's head and
+`chain_slot` the local copy's. It is `:copy_behind_chain` in the second: `slot` is the
+local copy's head and `chain_slot` the chain's. `path` is the local copy.
 """
 Base.@kwdef struct StaleHeadError <: ChainTablesError
+    path::Union{Nothing, String} = nothing
     chain_id::Union{Nothing, String} = nothing
     slot::Union{Nothing, Int64} = nothing
     chain_slot::Union{Nothing, Int64} = nothing
+    reason::Union{Nothing, Symbol} = nothing
     detail::String = ""
 end
 
 function Base.showerror(io::IO, e::StaleHeadError)
     print_summary(io, e, "the write builder's head is behind the chain.")
     print_evidence(io, e)
-    print(io, "Run `sync!(copy)`, recompute the row set and build again with ")
-    print(io, "`write_builder(copy)`. This builder is spent.")
+    print(io, get(STALE_HEAD_NEXT_MOVES, e.reason, STALE_HEAD_NEXT_MOVE))
     return nothing
 end
+
+const LOST_RACE_NEXT_MOVES = Dict(
+    :slot_taken => "The write is never retried. Run `sync!(copy)`, $REBUILD",
+    :chain_exists => "A chain is at this bucket and prefix already, and `create_chain` " *
+        "is never retried. Use that chain with `open(chain, path)` and `sync!(copy)`, " *
+        "or create under another prefix.",
+)
+
+const LOST_RACE_NEXT_MOVE = "The write is never retried. Run `sync!(copy)` to read " *
+    "the chain as it is now; after a commit, recompute the row set and build again."
 
 """
     LostRaceError
@@ -28,20 +51,25 @@ end
 Thrown when `commit!` or `create_chain` finds another client's record in the slot it
 wrote to.
 
-`transaction_hash` is the hash of that record.
+`reason` is `:slot_taken` from `commit!` and `:chain_exists` from `create_chain`.
+`transaction_hash` is the hash of the record in the slot, and `chain_id` the chain's:
+from `create_chain`, the id of the chain that is there, `nothing` when its genesis
+record is malformed.
 """
 Base.@kwdef struct LostRaceError <: ChainTablesError
+    bucket::Union{Nothing, String} = nothing
+    prefix::Union{Nothing, String} = nothing
     chain_id::Union{Nothing, String} = nothing
     slot::Union{Nothing, Int64} = nothing
     transaction_hash::Union{Nothing, TransactionHash} = nothing
+    reason::Union{Nothing, Symbol} = nothing
     detail::String = ""
 end
 
 function Base.showerror(io::IO, e::LostRaceError)
     print_summary(io, e, "another client's record is in this slot.")
     print_evidence(io, e)
-    print(io, "The write is never retried. Run `sync!(copy)` to read the chain as it ")
-    print(io, "is now; after a commit, recompute the row set and build again.")
+    print(io, get(LOST_RACE_NEXT_MOVES, e.reason, LOST_RACE_NEXT_MOVE))
     return nothing
 end
 
@@ -57,6 +85,8 @@ the record is known to be in the chain and only the local copy's head was not wr
 and `nothing` when that is not known. `cause` is the failure.
 """
 Base.@kwdef struct CommitOutcomeUnknownError <: ChainTablesError
+    bucket::Union{Nothing, String} = nothing
+    prefix::Union{Nothing, String} = nothing
     chain_id::Union{Nothing, String} = nothing
     slot::Union{Nothing, Int64} = nothing
     transaction_hash::Union{Nothing, TransactionHash} = nothing
@@ -118,9 +148,11 @@ end
 """
     PinnedCopyError
 
-Thrown when `sync!` or `commit!` is called on a pinned copy.
+Thrown when `sync!`, `write_builder` or `commit!` is called on a pinned
+copy.
 
-`slot` is the slot the copy is pinned at, `nothing` for a copy with no head.
+`slot` is the slot the copy is pinned at, `nothing` for a copy with no head. `detail`
+names the call.
 """
 Base.@kwdef struct PinnedCopyError <: ChainTablesError
     path::Union{Nothing, String} = nothing

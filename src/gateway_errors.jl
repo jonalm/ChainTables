@@ -33,6 +33,15 @@ Base.@kwdef struct WriteRefusedError <: ChainTablesError
     detail::String = ""
 end
 
+# The store's refusal, with the chain and the slot that the write was for. The store
+# knew only the key and the caller.
+function WriteRefusedError(refusal::WriteRefusedError, chain_id, slot, key)
+    return WriteRefusedError(;
+        chain_id, slot, key = something(refusal.key, key), refusal.caller,
+        refusal.reason, refusal.detail,
+    )
+end
+
 function Base.showerror(io::IO, e::WriteRefusedError)
     print_summary(io, e, "the gateway refused the write, and nothing is retried.")
     print_evidence(io, e)
@@ -57,6 +66,13 @@ Base.@kwdef struct GatewayMismatchError <: ChainTablesError
     bucket::Union{Nothing, String} = nothing
     gateway::Union{Nothing, String} = nothing
     detail::String = ""
+end
+
+function GatewayMismatchError(mismatch::GatewayMismatchError, chain_id, slot, key)
+    return GatewayMismatchError(;
+        chain_id, slot, key = something(mismatch.key, key), mismatch.bucket,
+        mismatch.gateway, mismatch.detail,
+    )
 end
 
 function Base.showerror(io::IO, e::GatewayMismatchError)

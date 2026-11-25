@@ -127,7 +127,7 @@ ATTACHMENT_KEY = re.compile(r"(?:(?P<prefix>[^/](?:.*[^/])?)/)?_attachments/(?P<
 DECIMAL = re.compile(r"[0-9]+")
 
 # The Julia client's prefix rules (`check_prefix` in src/chain.jl, `portable_segment_problem`
-# in src/store.jl, ADR-0034), mirrored so the gateway refuses every key a client refuses
+# in src/record_cache.jl, ADR-0034), mirrored so the gateway refuses every key a client refuses
 # (ADR-0035). Change both sides together. The length cap also keeps a key far under S3's
 # 1024 bytes, so S3 never refuses one as too long.
 MAX_PREFIX_LENGTH = 100

@@ -242,7 +242,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             "bkt", "p"; gateway = url,
             store = GWT.Testing.InMemoryObjectStore(), region = "eu-north-1", credentials = creds
         )
-        @test_throws "record_user = false with a gateway: the gateway refuses a record with no author (ADR-0028)" Chain(
+        @test_throws "record_user = false with a gateway: the gateway refuses a record with no author" Chain(
             "bkt", "p";
             gateway = url, region = "eu-north-1", credentials = creds, record_user = false
         )
@@ -336,7 +336,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                 e
             end
             @test e isa WriteRefusedError && e.reason == "not_allowed" && e.key == "p/000000000003" && e.caller === nothing
-            @test !GWT.retryable(e)
+            @test !GWT.is_retryable(e)
             msg = sprint(showerror, e)
             @test startswith(e.detail, "write refused: the gateway at http://127.0.0.1:$(gw.port) refused to fill p/000000000003")
             @test occursin("not_allowed: bob@example.com may not write under p", msg)
@@ -369,7 +369,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             catch e
                 e
             end
-            @test e isa WriteRefusedError && e.reason == "forbidden" && !GWT.retryable(e)
+            @test e isa WriteRefusedError && e.reason == "forbidden" && !GWT.is_retryable(e)
             @test occursin("(HTTP 403 with no gateway code): The security token included in the request is expired.", sprint(showerror, e))
             @test occursin("expired or revoked credentials (refresh them, e.g. aws sso login)", sprint(showerror, e))
             # S3 refusing the gateway's own put is the deployment's fault: refused, never retried
@@ -379,7 +379,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             catch e
                 e
             end
-            @test e isa WriteRefusedError && e.reason == "s3_refused" && !GWT.retryable(e)
+            @test e isa WriteRefusedError && e.reason == "s3_refused" && !GWT.is_retryable(e)
             @test occursin("s3_refused: S3 answered 403 AccessDenied. S3 refused the gateway's own put", sprint(showerror, e))
             @test occursin("report it to the bucket's operator", sprint(showerror, e))
             # a 403 code this client does not know: refused, never retried, and says so
@@ -389,7 +389,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             catch e
                 e
             end
-            @test e isa WriteRefusedError && e.reason == "brand_new" && !GWT.retryable(e)
+            @test e isa WriteRefusedError && e.reason == "brand_new" && !GWT.is_retryable(e)
             @test occursin("brand_new: a newer gateway's reason. This gateway answered with a reason this client does not know", sprint(showerror, e))
             double.respond = _ -> nothing
             @test !haskey(s3.objects, "p/000000000003")
@@ -403,7 +403,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                 catch e
                     e
                 end
-                @test e isa TransportError && e.status == 400 && !GWT.retryable(e)
+                @test e isa TransportError && e.status == 400 && !GWT.is_retryable(e)
                 @test occursin("HTTP 400 $code: ", sprint(showerror, e))
             end
             # the cap: the store's own guard, before any request
@@ -416,7 +416,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             catch e
                 e
             end
-            @test e isa TransportError && e.status == 413 && !GWT.retryable(e) && occursin("HTTP 413 too_large: 4194305 bytes", sprint(showerror, e))
+            @test e isa TransportError && e.status == 413 && !GWT.is_retryable(e) && occursin("HTTP 413 too_large: 4194305 bytes", sprint(showerror, e))
             # 409, 429, 5xx and Lambda's own errors are retried by the commit layer; JSON escapes are read back
             for (status, body) in (
                     (409, gwtest_json(409, "conflict", "S3 409")[3]), (429, Vector{UInt8}("{\"Message\":\"Rate Exceeded.\"}")),
@@ -428,7 +428,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                 catch e
                     e
                 end
-                @test e isa TransportError && e.status == status && GWT.retryable(e)
+                @test e isa TransportError && e.status == status && GWT.is_retryable(e)
                 status == 502 && @test occursin("HTTP 502 s3_error: S3 said \"InternalError\"\n", sprint(showerror, e))
                 status == 503 && @test endswith(sprint(showerror, e), "HTTP 503 (HTTP 503)")
             end
@@ -447,7 +447,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             catch e
                 e
             end
-            @test e isa TransportError && e.status === nothing && GWT.retryable(e)
+            @test e isa TransportError && e.status === nothing && GWT.is_retryable(e)
             @test startswith(sprint(showerror, e), "TransportError: PUT http://127.0.0.1:$port/?key=p%2F000000000001: no response")
         finally
             close(gw); close(s3)
@@ -535,7 +535,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             catch e
                 e
             end
-            @test e isa GWT.AttachmentURLExpiredError && e.key == kf && e.expires == "2026-11-06T12:00:00Z" && !GWT.retryable(e)
+            @test e isa GWT.AttachmentURLExpiredError && e.key == kf && e.expires == "2026-11-06T12:00:00Z" && !GWT.is_retryable(e)
             @test length(s3.requests) == n
             @test e.detail == "attachment URL expired: the URL the gateway at " *
                 "$(loopback_url(gw)) minted for $kf lived 1 s (until 2026-11-06T12:00:00Z), and this process waited 1 s " *
@@ -557,7 +557,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                         e
                     end
                 )
-                @test e isa GWT.AttachmentURLExpiredError && e.key == kf && !GWT.retryable(e) && t < 3.5
+                @test e isa GWT.AttachmentURLExpiredError && e.key == kf && !GWT.is_retryable(e) && t < 3.5
                 @test !haskey(s3.objects, kf)
                 head, tail = "attachment URL expired: the upload of $kf ran ",
                     " s, past the 1 s life of the URL the gateway minted (until 2026-11-06T12:00:00Z), and S3 refuses an " *
@@ -685,7 +685,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             catch e
                 e
             end
-            @test e isa TransportError && e.status == 500 && GWT.retryable(e)
+            @test e isa TransportError && e.status == 500 && GWT.is_retryable(e)
             @test occursin("PUT $(s3test_endpoint(s3))/bkt/$kf: HTTP 500 InternalError", sprint(showerror, e)) && !occursin("Signature", sprint(showerror, e))
             s3.respond = _ -> nothing
             # a reply this client cannot read is refused, never guessed at
@@ -707,7 +707,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                 catch e
                     e
                 end
-                @test e isa TransportError && e.status == 200 && !GWT.retryable(e) && occursin(what, sprint(showerror, e))
+                @test e isa TransportError && e.status == 200 && !GWT.is_retryable(e) && occursin(what, sprint(showerror, e))
             end
             # the mint's refusals: as for a slot, plus a gateway that predates the route
             double.respond = _ -> nothing
@@ -726,7 +726,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             catch e
                 e
             end
-            @test e isa WriteRefusedError && e.reason == "no_mint_route" && !GWT.retryable(e)
+            @test e isa WriteRefusedError && e.reason == "no_mint_route" && !GWT.is_retryable(e)
             @test occursin("the gateway at $(loopback_url(gw)) has no mint route", sprint(showerror, e))
             @test occursin("ask the bucket's operator to redeploy it (gateway/deploy.sh)", sprint(showerror, e))
             double.respond = req -> gwtest_json(502, "s3_refused", "S3 answered 403 AccessDenied to the HEAD")
@@ -749,7 +749,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                 catch e
                     e
                 end
-                @test e isa TransportError && e.status == status && GWT.retryable(e) == retry
+                @test e isa TransportError && e.status == status && GWT.is_retryable(e) == retry
                 @test occursin("HTTP $status $code: the gateway's word", sprint(showerror, e))
             end
             double.respond = _ -> nothing
@@ -860,7 +860,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                     end
                     @test e isa WriteRefusedError && e.reason == "not_allowed" && e.slot == 0 && e.key == "exp/run-1/000000000000"
                     @test e.chain_id isa String
-                    @test startswith(e.detail, "write refused for slot 0 of chain $(e.chain_id) at bkt/exp/run-1: ")
+                    @test startswith(e.detail, "write refused: ")
                 end
             finally
                 close(root)
@@ -943,7 +943,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                     @test (e.chain_id, e.slot, e.key, e.caller) == (created.chain_id, 2, "exp/run-1/000000000002", "alice@example.com")
                     msg = sprint(showerror, e)
                     @test startswith(
-                        e.detail, "write refused for slot 2 of chain $(created.chain_id) at bkt/exp/run-1: " *
+                        e.detail, "write refused: " *
                             "the gateway at http://127.0.0.1:$(gw.port) refused to fill exp/run-1/000000000002 for caller alice@example.com — not_allowed: "
                     )
                     @test occursin("ask the bucket's operator to add the name to the gateway policy", msg)
@@ -1015,7 +1015,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                     end
                     @test e isa WriteRefusedError && e.reason == "not_allowed" && e.slot == 0 && e.key == "other/run-1/000000000000"
                     @test e.chain_id isa String && length(e.chain_id) == 26
-                    @test startswith(e.detail, "write refused for slot 0 of chain $(e.chain_id) at bkt/other/run-1: ")
+                    @test startswith(e.detail, "write refused: ")
                     @test !haskey(s3.objects, "other/run-1/000000000000")
                     # a plain store keeps today's author: the environment, individually suppressible (ADR-0006)
                     plain = GWT.Testing.InMemoryObjectStore()
@@ -1056,11 +1056,11 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                 catch e
                     e
                 end
-                @test e isa GWT.GatewayMismatchError && !GWT.retryable(e)
+                @test e isa GWT.GatewayMismatchError && !GWT.is_retryable(e)
                 @test (e.slot, e.key, e.bucket, e.gateway) == (0, "exp/run-2/000000000000", "bkt", loopback_url(gw))
                 @test e.chain_id isa String
                 msg = sprint(showerror, e)
-                @test occursin("gateway mismatch for slot 0 of chain $(e.chain_id)", msg)
+                @test occursin("gateway mismatch: ", msg)
                 @test occursin("answered 200 created for exp/run-2/000000000000, and bucket bkt does not hold it", msg)
                 @test occursin("one ChainTables.Bucket value holds both (ADR-0029)", msg)
                 @test count(r -> r.method == "PUT", gw.requests) == 2                      # never retried

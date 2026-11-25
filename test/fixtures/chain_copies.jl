@@ -2,22 +2,43 @@ using ChainTables: ChainTables, Chain, column!, commit!, create_chain, create_ta
     insert_rows!, primary_key!, sync!, write_builder
 using ChainTables.Testing: InMemoryObjectStore
 
+# The chain `bkt/<prefix>` over `store`, with its record cache in `dir/<cache>`.
+function chain_in(
+        dir; store = InMemoryObjectStore(), prefix = "p", cache = "cache", keywords...,
+    )
+    return Chain(
+        "bkt", prefix;
+        store, cache_dir = joinpath(dir, cache), record_host = false, record_user = false,
+        keywords...,
+    )
+end
+
+# An open local copy of `chain` at `path`, closed on the way out.
+function with_copy(f, chain, path)
+    local_copy = ChainTables.open(chain, path)
+    try
+        return f(local_copy)
+    finally
+        close(local_copy)
+    end
+end
+
+# Another local copy in a directory beside `local_copy`'s: of the same chain, or of
+# `chain`.
+function with_copy_beside(f, local_copy, name; chain = local_copy.chain)
+    return with_copy(f, chain, joinpath(dirname(local_copy.path), name))
+end
+
 # A chain on an in-memory object store, with its genesis record, and a synced local
 # copy of it. `local_copy.chain` is the chain and `local_copy.chain.store` the store.
-function with_chain_copy(f)
+# The copy is at `dir/copy` and the record cache at `dir/cache`.
+function with_chain_copy(f; keywords...)
     mktempdir() do dir
-        chain = Chain(
-            "bkt", "p";
-            store = InMemoryObjectStore(), cache_dir = joinpath(dir, "cache"),
-            record_host = false, record_user = false,
-        )
+        chain = chain_in(dir; keywords...)
         create_chain(chain)
-        local_copy = ChainTables.open(chain, joinpath(dir, "copy"))
-        try
+        with_copy(chain, joinpath(dir, "copy")) do local_copy
             sync!(local_copy)
             f(local_copy)
-        finally
-            close(local_copy)
         end
     end
     return nothing
@@ -50,12 +71,19 @@ function seed_samples!(w)
 end
 
 # A local copy at slot 1, with the table `samples` and its two rows.
-function with_samples_copy(f)
-    with_chain_copy() do local_copy
+function with_samples_copy(f; keywords...)
+    with_chain_copy(; keywords...) do local_copy
         commit_ops!(seed_samples!, local_copy)
         f(local_copy)
     end
     return nothing
+end
+
+# One more record on the chain: a row of `samples` with the key `id`.
+function commit_sample!(local_copy, id)
+    return commit_ops!(local_copy) do w
+        insert_rows!(w, :samples, [(; id, label = string(id), mass = Float64(id))])
+    end
 end
 
 # A write builder over the local copy of `with_samples_copy`.

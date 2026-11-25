@@ -8,18 +8,21 @@ module ChainTables
 using SHA: SHA
 using Tables: Tables
 
-public AttachmentAbsentError, AttachmentCacheError, AttachmentChangedError,
-    AttachmentDigestError, AttachmentURLExpiredError, CBOR, ChainNotFoundError,
-    ChainTablesError, CommitOutcomeUnknownError, DivergenceError,
-    FingerprintMismatchError, GatewayMismatchError, GatewaySessionEndingError,
-    LayoutVersionError, LocalCopy, LocalCopyInconsistentError, LostRaceError,
-    MalformedRecordError, Model, NotALocalCopyError, Ops, PinnedCopyError,
-    RecordCacheError, RewrittenChainError, StaleHeadError, StateFingerprint,
-    TableDeclaration, TableView, TransactionHash, UnsupportedStoreError, WriteBuilder,
-    WriteBuilderError, WriteRefusedError, WrongChainError, add_column!, chain_id_bytes,
-    chain_id_string, column!, create_table!, delete_rows!, drop_column!, drop_table!,
-    head, insert_rows!, is_pinned, ispinned, open, primary_key!, shape, table,
-    table_with_slots, tables, unpin!, update_rows!
+public AbstractObjectStore, AttachmentAbsentError, AttachmentCacheError,
+    AttachmentChangedError, AttachmentDigestError, AttachmentURLExpiredError, CBOR,
+    Chain, ChainNotFoundError, ChainTablesError, CommitOutcomeUnknownError,
+    DivergenceError, FingerprintMismatchError, GatewayMismatchError,
+    GatewaySessionEndingError, LayoutVersionError, LocalCopy,
+    LocalCopyInconsistentError, LostRaceError, MalformedRecordError, Model,
+    NotALocalCopyError, ObjectMeta, Ops, PinnedCopyError, PutOutcome, RecordCacheError,
+    RewrittenChainError, StaleHeadError, StateFingerprint, TableDeclaration, TableView,
+    TransactionHash, UnsupportedStoreError, WriteBuilder, WriteBuilderError,
+    WriteRefusedError, WrongChainError, add_column!, cache_namespace, chain_id_bytes,
+    chain_id_string, column!, commit!, create_chain, create_table!, delete_rows!,
+    drop_column!, drop_table!, fetch_object, head, insert_rows!, is_pinned, ispinned,
+    list_objects, open, primary_key!, put_object_if_absent, record_author, shape,
+    stat_object, sync!, table, table_with_slots, tables, try_create_chain, unpin!,
+    update_rows!, write_builder
 
 include("hashes.jl")
 include("errors.jl")
@@ -40,8 +43,15 @@ include("views.jl")
 include("row_sets.jl")
 include("write_builder.jl")
 include("row_ops.jl")
-include("store.jl")
+include("object_store.jl")
+include("record_cache.jl")
 include("chain.jl")
+include("chain_records.jl")
+include("put_record.jl")
+include("create_chain.jl")
+include("read_forward.jl")
+include("sync.jl")
+include("commit.jl")
 include("recovery.jl")
 include("s3.jl")
 include("gateway.jl")

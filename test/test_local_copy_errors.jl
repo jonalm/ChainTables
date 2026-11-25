@@ -70,10 +70,14 @@ end
 end
 
 @testset "WrongChainError shows what happened, the evidence and the next move" begin
-    e = WrongChainError(; path = COPY_PATH, bound = CHAIN_ID, opened = "B"^26)
+    e = WrongChainError(;
+        path = COPY_PATH, bucket = "bkt", prefix = "p", bound = CHAIN_ID, opened = "B"^26,
+    )
     @test sprint(showerror, e) ==
         "WrongChainError: the local copy is bound to another chain.\n" *
         "  path = /lab/copy\n" *
+        "  bucket = bkt\n" *
+        "  prefix = p\n" *
         "  bound = AAAAAAAAAAAAAAAAAAAAAAAAAA\n" *
         "  opened = BBBBBBBBBBBBBBBBBBBBBBBBBB\n" *
         "Open a different path for this chain."

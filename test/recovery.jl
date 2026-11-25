@@ -317,8 +317,8 @@ ChainTables.stat_object(s::RecoveryTestNoGenesis, key) = ChainTables.stat_object
             write(cached(2), badbytes)
             damage!(copy, "samples")
             n = length(store.calls)
-            healed = r"record cache: the cached copy of p/000000000002 in bucket bkt is not what the store holds"
-            @test (@test_logs (:warn, healed) CT.repair!(copy)) == (; slot = 3, files_rewritten = 1, attachments_repaired = 0)
+            healed = "the record cache held other bytes than the store"
+            @test (@test_logs (:debug, healed) min_level = Base.CoreLogging.Debug CT.repair!(copy)) == (; slot = 3, files_rewritten = 1, attachments_repaired = 0)
             @test read(cached(2)) == two && store.calls[(n + 1):end] == [(:fetch_object, slotkey(2))]
             # the store's bytes not hashing to what the chain names either: a rewritten chain, nothing written,
             # and the cached file left as it was
@@ -492,7 +492,7 @@ ChainTables.stat_object(s::RecoveryTestNoGenesis, key) = ChainTables.stat_object
             )
             err = caught(() -> CT.as_of(chain, 3; path = p))
             @test err isa FingerprintMismatchError
-            @test occursin("state fingerprint mismatch at slot 3 (chain $cid): the record's state_fingerprint is $("ee"^32), the head of the local copy at $(abspath(p)) holds", err.detail)
+            @test (err.path, err.chain_id, err.slot) == (abspath(p), cid, 3)
             @test occursin("The pinned copy does not match the record it claims to be the result of: delete the directory, or repair!(copy) confirms whether this machine reproduces the chain.", err.detail)
             @test isdir(p)                                                      # a given path is never deleted
             plant!(store, slotkey(3), three)
@@ -543,7 +543,7 @@ ChainTables.stat_object(s::RecoveryTestNoGenesis, key) = ChainTables.stat_object
                 cold = Chain("bkt", "t"; store, cache_dir = joinpath(dir, "cold$i"))
                 err = caught(() -> f(cold))
                 @test err isa CT.RewrittenChainError && (err.slot, err.found) == (3, nothing)
-                @test occursin("slot 3 at bkt/t was there when head discovery probed it and is absent now", err.detail)
+                @test occursin("the slot was there when head discovery probed it and is absent now", err.detail)
             end
             store.fault = (verb, key, phase) -> nothing
         end
@@ -604,7 +604,7 @@ ChainTables.stat_object(s::RecoveryTestNoGenesis, key) = ChainTables.stat_object
             good = read(cached(2))
             rm(cached(3))
             write(cached(2), UInt8[0x00])
-            @test (@test_logs (:warn, r"record cache") CT.commit_log(copy)) == CT.commit_log(copy)
+            @test (@test_logs (:debug, "the record cache held other bytes than the store") min_level = Base.CoreLogging.Debug CT.commit_log(copy)) == CT.commit_log(copy)
             @test isfile(cached(3)) && read(cached(2)) == good
             # bytes the store holds that do not hash to the name the copy holds: rewritten chain
             two = store.objects[slotkey(2)]
