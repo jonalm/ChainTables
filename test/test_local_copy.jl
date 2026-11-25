@@ -32,9 +32,12 @@ end
 
 @testset "open holds the absolute path" begin
     mktempdir() do dir
-        local_copy = cd(() -> ChainTables.open(NoChain(), "relative"), dir)
-        @test local_copy.path == joinpath(realpath(dir), "relative")
-        close(local_copy)
+        cd(dir) do
+            local_copy = ChainTables.open(NoChain(), "relative")
+            @test local_copy.path == joinpath(pwd(), "relative")
+            @test isabspath(local_copy.path)
+            close(local_copy)
+        end
     end
 end
 
