@@ -1,7 +1,3 @@
-# TODO: inline into its three callers in builder.jl, which only sort a row set:
-# https://github.com/jonalm/julia_codestyle/issues/127
-sort_rows(rows, keyof) = sort(collect(rows); by = keyof)
-
 # Apply never computes and never sorts: each op is the model primitive it reduces to,
 # and every check the write builder runs is run there again (ADR-0025).
 """

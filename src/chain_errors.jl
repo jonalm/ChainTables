@@ -8,9 +8,10 @@ slot: at a checkpoint, in the pre-checks of `commit!` and `as_of`, and in `verif
 computes. From `verify(copy)` without `full`, `expected` is the head's fingerprint and
 `computed` the one its table files hash to, `nothing` when a file is missing.
 `record_client` and `this_client` name the library and the Julia that wrote the record
-and that run here, when known.
+and that run here, when known. `path` is the local copy.
 """
 Base.@kwdef struct FingerprintMismatchError <: ChainTablesError
+    path::Union{Nothing, String} = nothing
     chain_id::Union{Nothing, String} = nothing
     slot::Union{Nothing, Int64} = nothing
     expected::Union{Nothing, StateFingerprint} = nothing

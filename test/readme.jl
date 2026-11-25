@@ -92,7 +92,7 @@ using ChainTables.Testing: InMemoryObjectStore
 
             # History is addressed by slot or transaction hash, never by time.
             old = CT.as_of(chain, 1)                  # a pinned temporary copy at slot 1
-            @test CT.head(old).slot == 1 && CT.ispinned(old) && old.temporary
+            @test CT.head(old).slot == 1 && CT.is_pinned(old) && old.temporary
             @test CT.table(old, :samples)[2].mass === missing
             oldpath = old.path
             close(old)

@@ -1,19 +1,32 @@
+const NOT_A_LOCAL_COPY_NEXT_MOVES = Dict(
+    :not_a_directory => "The path is a file. Open a directory path.",
+    :no_layout => "The directory is not empty and has no `heads/` and `tables/`. Open " *
+        "a different path, or empty this directory if it is disposable.",
+    :foreign_head => "ChainTables did not write the head file. Open a different path.",
+)
+
+const NOT_A_LOCAL_COPY_NEXT_MOVE = "Open a different path."
+
 """
     NotALocalCopyError
 
-Thrown when `open` is given a path that is not a local copy: a file, a directory that
-is not empty and has no `heads/` and `tables/`, or a head file that ChainTables did not
-write.
+Thrown when `open` is given a path that is not a local copy.
+
+`reason` is `:not_a_directory` for a file, `:no_layout` for a directory that is not
+empty and has no `heads/` and `tables/`, and `:foreign_head` for a head file that
+ChainTables did not write. `file` is that head file, relative to `path`.
 """
 Base.@kwdef struct NotALocalCopyError <: ChainTablesError
     path::Union{Nothing, String} = nothing
+    file::Union{Nothing, String} = nothing
+    reason::Union{Nothing, Symbol} = nothing
     detail::String = ""
 end
 
 function Base.showerror(io::IO, e::NotALocalCopyError)
     print_summary(io, e, "the path is not a local copy.")
     print_evidence(io, e)
-    print(io, "Open a different path.")
+    print(io, get(NOT_A_LOCAL_COPY_NEXT_MOVES, e.reason, NOT_A_LOCAL_COPY_NEXT_MOVE))
     return nothing
 end
 
@@ -59,27 +72,46 @@ function Base.showerror(io::IO, e::WrongChainError)
     return nothing
 end
 
+const REPAIR_TABLE_FILE = "Run `repair!(copy)`, which rewrites the table file from the " *
+    "record cache."
+
+const DAMAGED_COPY_NEXT_MOVES = Dict(
+    :no_usable_head => "`repair!` needs a head file that can be opened. Delete the " *
+        "directory and sync a fresh local copy.",
+    :table_file_missing => REPAIR_TABLE_FILE,
+    :table_file_hash => REPAIR_TABLE_FILE,
+    :table_file_not_canonical => REPAIR_TABLE_FILE,
+    :row_slot_above_head => REPAIR_TABLE_FILE,
+)
+
+const DAMAGED_COPY_NEXT_MOVE = "Run `repair!(copy)`, which rewrites a table file from " *
+    "the record cache. If no head file can be opened, delete the directory and sync a " *
+    "fresh local copy."
+
 """
     LocalCopyInconsistentError
 
-Thrown when `open` or the load of a table finds a damaged copy: no head file that
-agrees with itself, a table file that is missing, or one whose bytes do not hash to its
-name.
+Thrown when `open` or the load of a table finds a damaged copy.
 
-`file` is the damaged file relative to `path`, when there is one.
+`reason` is `:no_usable_head` when `open` finds no head file that agrees with itself and
+whose table files all exist. For a table file it is `:table_file_missing`,
+`:table_file_hash` (the bytes do not hash to the file's name),
+`:table_file_not_canonical` or `:row_slot_above_head`. `file` is the damaged file
+relative to `path`: the table file, or the highest head file. `chain_id` and `slot` are
+the head's, when a head was opened.
 """
 Base.@kwdef struct LocalCopyInconsistentError <: ChainTablesError
     path::Union{Nothing, String} = nothing
+    chain_id::Union{Nothing, String} = nothing
     slot::Union{Nothing, Int64} = nothing
     file::Union{Nothing, String} = nothing
+    reason::Union{Nothing, Symbol} = nothing
     detail::String = ""
 end
 
 function Base.showerror(io::IO, e::LocalCopyInconsistentError)
     print_summary(io, e, "the local copy is damaged.")
     print_evidence(io, e)
-    print(io, "Run `repair!(copy)`, which rewrites a table file from the record ")
-    print(io, "cache. If no head can be opened, delete the directory and sync a ")
-    print(io, "fresh local copy.")
+    print(io, get(DAMAGED_COPY_NEXT_MOVES, e.reason, DAMAGED_COPY_NEXT_MOVE))
     return nothing
 end

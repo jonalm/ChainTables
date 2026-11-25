@@ -9,7 +9,7 @@ import ChainTables
 # test/live/run.sh (ADR-0030), and are never part of `Pkg.test()`.
 #
 # The suite resolves against the package's own environment. Its dependencies of
-# its own are test-target extras: Tables.jl, because test/views.jl proves a
+# its own are test-target extras: Tables.jl, because test/test_table_view.jl proves a
 # TableView is a Tables.jl table and nothing in the package itself depends on
 # Tables.jl (ADR-0022, ADR-0024); and Aqua.jl, for test/aqua.jl's hygiene checks.
 # ---------------------------------------------------------------------------
@@ -30,7 +30,7 @@ end
 
     include("fixtures/s3_server.jl")     # the loopback S3: s3.jl, gateway.jl
     include("fixtures/gateway.jl")       # gwtest_record: gateway.jl, live/gateway.jl
-    include("fixtures/model_tables.jl")  # row_of, rows_in_key_order: builder.jl, chain.jl, localcopy.jl, views.jl
+    include("fixtures/model_tables.jl")  # row_of, rows_in_key_order: chain.jl
 
     in_own_module("test_hashes.jl")
     in_own_module("test_hashes_examples.jl")
@@ -62,9 +62,20 @@ end
     in_own_module("test_ops_record_bytes_examples.jl")
     in_own_module("test_ops_apply.jl")
     in_own_module("test_ops_apply_examples.jl")
-    include("builder.jl")
-    include("localcopy.jl")
-    include("views.jl")
+    in_own_module("test_chain_id_text.jl")
+    in_own_module("test_chain_id_text_examples.jl")
+    in_own_module("test_local_copy.jl")
+    in_own_module("test_local_copy_examples.jl")
+    in_own_module("test_open_heads_workflow.jl")
+    in_own_module("test_table_files.jl")
+    in_own_module("test_table_view.jl")
+    in_own_module("test_table_view_examples.jl")
+    in_own_module("test_views.jl")
+    in_own_module("test_views_examples.jl")
+    in_own_module("test_write_builder.jl")
+    in_own_module("test_write_builder_examples.jl")
+    in_own_module("test_row_ops.jl")
+    in_own_module("test_row_ops_examples.jl")
     include("store.jl")
     include("chain.jl")
     include("recovery.jl")

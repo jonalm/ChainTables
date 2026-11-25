@@ -120,11 +120,10 @@ function local_client(;
     return Client(record_host ? host : nothing, author, lib, string(VERSION), time_ms)
 end
 
-# Returns the text, so that a caller can check a cell on its way into an op.
 function check_text(what, s)
     isvalid(s) || throw(ModelError("$what is not well-formed UTF-8"))
     '\0' in s && throw(ModelError("$what contains U+0000"))
-    return s
+    return nothing
 end
 
 check_text(what, ::Nothing) = nothing

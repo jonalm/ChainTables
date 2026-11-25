@@ -7,14 +7,15 @@ include("fixtures/evidence.jl")
 
 @testset "FingerprintMismatchError shows what happened, the evidence, the next move" begin
     e = FingerprintMismatchError(;
-        chain_id = CHAIN_ID, slot = 3, expected = StateFingerprint(ZEROS),
-        computed = StateFingerprint(ONES),
+        path = COPY_PATH, chain_id = CHAIN_ID, slot = 3,
+        expected = StateFingerprint(ZEROS), computed = StateFingerprint(ONES),
         record_client = (; lib = "ChainTables 0.3.1", julia = "1.12.0"),
         this_client = (; lib = "ChainTables 0.3.2", julia = "1.13.2")
     )
     @test sprint(showerror, e) ==
         "FingerprintMismatchError: a state fingerprint is not the one this client " *
         "computes.\n" *
+        "  path = /lab/copy\n" *
         "  chain_id = AAAAAAAAAAAAAAAAAAAAAAAAAA\n" *
         "  slot = 3\n" *
         "  expected = $ZEROS_HEX\n" *

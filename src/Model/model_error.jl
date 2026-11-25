@@ -11,7 +11,3 @@ Internal: the write builder throws it as `WriteBuilderError`, apply as
 struct ModelError <: Exception
     detail::String
 end
-
-# TODO: delete with its last callers, in builder.jl, localcopy.jl and recovery.jl:
-# https://github.com/jonalm/julia_codestyle/issues/127
-fail(detail) = throw(ModelError(detail))

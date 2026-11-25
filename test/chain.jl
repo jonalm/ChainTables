@@ -264,7 +264,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             copy = CT.open(chain, joinpath(dir, "one"))
             CT.sync!(copy)
             w = CT.write_builder(copy)
-            @test w.copy === copy && w.head == (; slot = 0, transaction_hash = created.transaction_hash)
+            @test w.copy === copy && w.head.slot == 0 && w.head.transaction_hash == created.transaction_hash
             @test isempty(w.pending)
             declare!(w)
             CT.insert_rows!(w, :samples, [(id = 1, label = "a", mass = 1.5), (id = 2, label = "b", mass = missing)])
@@ -1368,7 +1368,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             w = CT.write_builder(copy)
             CT.delete_rows!(w, :samples, [(id = 1,)])
             touch(joinpath(copy.path, "pin"))
-            @test CT.ispinned(copy)
+            @test CT.is_pinned(copy)
             for (call, f) in (("sync!", () -> CT.sync!(copy)), ("write_builder", () -> CT.write_builder(copy)), ("commit!", () -> CT.commit!(w)))
                 err = caught(f)
                 @test err isa PinnedCopyError

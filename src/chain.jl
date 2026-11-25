@@ -3,7 +3,8 @@
 # `write_builder(copy)` and `commit!`. The lanes converge here: everything runs against
 # the port through `chain.store`; the S3 client behind `store = nothing` is step 9's.
 
-using .Ops: Client
+using .Model: Content, ModelError
+using .Ops: Client, Record
 
 # ---------------------------------------------------------------------------
 # Chain (ADR-0019): location and configuration, no I/O
@@ -224,7 +225,7 @@ chain_of(copy::LocalCopy, call) = copy.chain isa Chain ? copy.chain :
     throw(ArgumentError("$call: the local copy at $(copy.path) was opened over a $(typeof(copy.chain)), not a ChainTables.Chain"))
 
 function refuse_pinned(copy::LocalCopy, call)
-    ispinned(copy) || return nothing
+    is_pinned(copy) || return nothing
     slot = copy.head === nothing ? "no slot" : "slot $(copy.head.slot)"
     throw(
         PinnedCopyError(
@@ -701,7 +702,7 @@ function replay!(copy::LocalCopy, first::Integer, last::Integer; clock = time_ns
             applying_ns += clock() - t0
             if applying_ns > last_checkpoint_ns || s == last
                 t1 = clock()
-                checkpoint!(copy, record.chain_id, s, th, record.state_fingerprint; client = record.client)
+                checkpoint!(copy, record, th)
                 last_checkpoint_ns = clock() - t1
                 applying_ns = 0
                 push!(checkpoints, s)
@@ -737,8 +738,7 @@ function write_builder(copy::LocalCopy)
         )
     )
     refuse_pinned(copy, "write_builder")
-    pending = Set{String}(name for name in keys(copy.tables) if name ∉ copy.loaded)
-    return WriteBuilder(copy.content; copy, head = (; slot = h.slot, transaction_hash = h.transaction_hash), pending)
+    return WriteBuilder(copy, h)
 end
 
 """
@@ -775,12 +775,6 @@ caller's name on a gateway bucket).
 function commit!(w::WriteBuilder; comment = nothing)
     spend!(w)
     copy = w.copy
-    copy === nothing && throw(
-        WriteBuilderError(
-            "commit!(w): this builder was not taken over a local copy; " *
-                "take one with write_builder(copy)"
-        )
-    )
     check_open(copy)
     chain = chain_of(copy, "commit!")
     refuse_pinned(copy, "commit!")
@@ -827,7 +821,7 @@ function commit!(w::WriteBuilder; comment = nothing)
             )
         )
     end
-    th, staged, chain_id = try
+    th, staged = try
         load_tables!(copy, unique(op.table for op in w.ops))
         for (i, op) in enumerate(w.ops)              # the state gate, through apply's own checks (ADR-0025)
             try
@@ -837,7 +831,7 @@ function commit!(w::WriteBuilder; comment = nothing)
                 throw(WriteBuilderError("commit!(w): op $i ($(Ops.op_name(op)) on $(repr(op.table))): $(e.detail)"))
             end
         end
-        staged = stage!(copy)
+        staged = write_staged_tables(copy)
         chain_id = chain_id_bytes(h.chain_id)
         record = try
             Record(
@@ -868,13 +862,13 @@ function commit!(w::WriteBuilder; comment = nothing)
                 )
             )
         end
-        th, staged, chain_id
+        th, staged
     catch
         discard!(copy)      # nothing was committed locally: the old head and its files stand (ADR-0009)
         rethrow()
     end
     try
-        write_head!(copy, chain_id, slot, th, staged)
+        write_head!(copy, next_head(h.chain_id, slot, th, staged))
     catch e
         discard!(copy)      # the record is in the chain, the head is not: the next sync! applies it onto the old head
         throw(outcome_unknown(chain, h.chain_id, slot, th, true, e))

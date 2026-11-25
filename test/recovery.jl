@@ -289,7 +289,7 @@ ChainTables.stat_object(s::RecoveryTestNoGenesis, key) = ChainTables.stat_object
             files = sort(readdir(joinpath(copy.path, "tables")))
             @test CT.repair!(copy) == (; slot = 3, files_rewritten = 1, attachments_repaired = 0)
             @test read(file) == good
-            @test read(headfile(copy, 3)) == headbytes && CT.ispinned(copy)      # head and pin untouched
+            @test read(headfile(copy, 3)) == headbytes && CT.is_pinned(copy)      # head and pin untouched
             @test sort(readdir(joinpath(copy.path, "tables"))) == files          # no temporary left
             @test CT.verify(copy; full = true) === nothing
             @test isequal(CT.table(copy, :samples)[2].mass, 2.5)
@@ -383,7 +383,7 @@ ChainTables.stat_object(s::RecoveryTestNoGenesis, key) = ChainTables.stat_object
             store, chain, copy, rs = seeded(dir)
             cid = copy.head.chain_id
             old = CT.as_of(chain, 1)
-            @test old isa LocalCopy && old.temporary && CT.ispinned(old)
+            @test old isa LocalCopy && old.temporary && CT.is_pinned(old)
             @test CT.head(old) == (; slot = 1, transaction_hash = rs[1].transaction_hash, state_fingerprint = rs[1].state_fingerprint)
             @test CT.table(old, :samples)[2].mass === missing && CT.tables(old) == ["samples"]
             @test startswith(basename(old.path), "chaintables-as_of-")
@@ -400,7 +400,7 @@ ChainTables.stat_object(s::RecoveryTestNoGenesis, key) = ChainTables.stat_object
             old = CT.as_of(chain, rs[2].transaction_hash)
             @test CT.head(old).slot == 2 && CT.tables(old) == ["samples", "tags", "twin"]
             close(old)
-            @test CT.head(copy).slot == 3 && !CT.ispinned(copy)
+            @test CT.head(copy).slot == 3 && !CT.is_pinned(copy)
             # refused targets
             @test_throws "as_of(chain, target): target is a Vector{UInt8}; give a slot (an Integer) or a TransactionHash" CT.as_of(chain, rs[2].transaction_hash.bytes)
             @test_throws "as_of(chain, target): a StateFingerprint is not an address; give a slot (an Integer) or a TransactionHash" CT.as_of(chain, rs[2].state_fingerprint)
@@ -416,7 +416,7 @@ ChainTables.stat_object(s::RecoveryTestNoGenesis, key) = ChainTables.stat_object
             @test_throws "as_of(chain, 9): the chain at bkt/p has no slot 9" CT.as_of(chain, 9; path = q)
             @test !ispath(q)
             a = CT.as_of(chain, 1; path = q)
-            @test CT.head(a).slot == 1 && CT.ispinned(a)
+            @test CT.head(a).slot == 1 && CT.is_pinned(a)
             close(a)
             # so does a replay that fails before its first checkpoint (a cold cache: genesis is fetched)
             cold = Chain(
@@ -429,7 +429,7 @@ ChainTables.stat_object(s::RecoveryTestNoGenesis, key) = ChainTables.stat_object
             # a given path is kept, and opened rather than rebuilt when pinned at the slot
             p = joinpath(dir, "pinned")
             a = CT.as_of(chain, 2; path = p)
-            @test !a.temporary && a.path == abspath(p) && CT.ispinned(a) && CT.head(a).slot == 2
+            @test !a.temporary && a.path == abspath(p) && CT.is_pinned(a) && CT.head(a).slot == 2
             close(a)
             @test isfile(joinpath(p, "pin"))
             hb = read(joinpath(p, "heads", "000000000002"))
@@ -440,16 +440,16 @@ ChainTables.stat_object(s::RecoveryTestNoGenesis, key) = ChainTables.stat_object
             close(a)
             # pinned below the target: replayed forward, still pinned
             a = CT.as_of(chain, 3; path = p)
-            @test CT.head(a).slot == 3 && CT.ispinned(a) && CT.table(a, :samples)[2].mass == 2.5
+            @test CT.head(a).slot == 3 && CT.is_pinned(a) && CT.table(a, :samples)[2].mass == 2.5
             close(a)
             # pinned above the target, or live: refused, untouched
             @test_throws "as_of(chain, 1): the local copy at $(abspath(p)) is pinned at slot 3, above 1; a local copy never moves backwards. Give another path, or delete this one." CT.as_of(chain, 1; path = p)
             @test isfile(joinpath(p, "pin"))
             @test_throws "as_of(chain, 1): the local copy at $(copy.path) is live (slot 3, not pinned); as_of never touches a live local copy. Give another path, or none for a temporary one." CT.as_of(chain, 1; path = copy.path)
-            @test !CT.ispinned(copy) && CT.head(copy).slot == 3
+            @test !CT.is_pinned(copy) && CT.head(copy).slot == 3
             # unpin!: live thereafter, and sync! advances
             a = CT.as_of(chain, 1; path = joinpath(dir, "unpin"))
-            @test CT.unpin!(a) === nothing && !CT.ispinned(a)
+            @test CT.unpin!(a) === nothing && !CT.is_pinned(a)
             @test_throws "unpin!(copy): the local copy at $(a.path) is not pinned; it is live already" CT.unpin!(a)
             @test CT.sync!(a) == (; applied = 2, slot = 3, transaction_hash = rs[3].transaction_hash)
             @test CT.table(a, :samples)[2].mass == 2.5

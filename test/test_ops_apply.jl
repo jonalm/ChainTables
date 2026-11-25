@@ -230,13 +230,6 @@ end
     )
 end
 
-@testset "sort_rows sorts by the typed key order: -0.0 before 0.0, NaN last" begin
-    by_first(row) = (row[1],)
-    rows = [Any[0.0, 1], Any[-0.0, 2], Any[Inf, 3], Any[NaN, 4]]
-    sorted = [Any[-0.0, 2], Any[0.0, 1], Any[Inf, 3], Any[NaN, 4]]
-    @test isequal(Ops.sort_rows(rows, by_first), sorted)
-end
-
 @testset "determinism vector: the ops reach the frozen state_fingerprint" begin
     content = Content()
     Ops.apply!(content, determinism_record())

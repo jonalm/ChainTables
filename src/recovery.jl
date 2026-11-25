@@ -365,7 +365,7 @@ function as_of(chain::Chain, target; path = nothing)
     try
         h = copy.head
         if h !== nothing
-            ispinned(copy) || throw(
+            is_pinned(copy) || throw(
                 ArgumentError(
                     "$call: the local copy at $(copy.path) is live (slot $(h.slot), not " *
                         "pinned); as_of never touches a live local copy. Give another path, or none for a temporary one."
@@ -378,7 +378,7 @@ function as_of(chain::Chain, target; path = nothing)
                 )
             )
         end
-        pin!(copy)
+        write_pin(copy)
         if h === nothing || h.slot < slot
             check_slot_exists(chain, slot, call)
             h === nothing || check_head_slot(copy, chain)
