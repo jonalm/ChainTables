@@ -11,7 +11,7 @@ include("fixtures/records.jl")
 
 const W_NULLABLE = Column("w", "float64", true)
 const COLUMN_NAME_RULE = "([a-z][a-z0-9_]*: a column name starts with a letter)"
-const NEXT_MOVE_AT_APPLY = "the chain is dead beyond this slot; a new chain is the recovery"
+const NEXT_MOVE_AT_APPLY = "dead beyond this slot. A new chain is the recovery."
 
 # Each case is a record at slot 2, applied to the two-row content, and the rule that its
 # first bad op breaks. Every check of the write builder is run again at apply (ADR-0025).
@@ -198,13 +198,12 @@ end
 @testset "apply! names the chain, the slot and the op, and gives the next move" begin
     record = as_read(2, [DropColumn("t", "v"), Insert("t", [Any[3.0]])])
     err = (
-        @test_throws MalformedRecordError "malformed record at slot 2: op 2" Ops.apply!(
+        @test_throws MalformedRecordError "op 2 (insert on \"t\")" Ops.apply!(
             two_row_content(), record
         )
     ).value
     @test (err.chain_id, err.slot, err.op) == ("AAAQEAYEAUDAOCAJBIFQYDIOB4", 2, 2)
-    @test occursin("(chain AAAQEAYEAUDAOCAJBIFQYDIOB4)", err.msg)
-    @test occursin(NEXT_MOVE_AT_APPLY, err.msg)
+    @test endswith(sprint(showerror, err), NEXT_MOVE_AT_APPLY)
 end
 
 @testset "apply! applies the ops before the bad one, and none after it" begin

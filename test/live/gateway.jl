@@ -143,7 +143,7 @@ end
         end
         @test e isa WriteRefusedError && e.reason == "not_allowed" && e.slot == 0 && e.caller == author
         @test e.key == GWT.slot_key(denied, 0) && stat_object(denied.store, e.key) === nothing
-        @test startswith(sprint(showerror, e), "WriteRefusedError: write refused for slot 0 of chain $(e.chain_id) at $bucket/$unlisted/$run_id: ")
+        @test startswith(e.detail, "write refused for slot 0 of chain $(e.chain_id) at $bucket/$unlisted/$run_id: ")
         @test occursin("not_allowed: ", sprint(showerror, e)) && occursin("ask the bucket's operator to add the name to the gateway policy", sprint(showerror, e))
         # the cap: a record over 4 MiB is refused at commit before any put; the copy stands at its head
         # (c's store is the wrapper, and the message names the store it was asked about)

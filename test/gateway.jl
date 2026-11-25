@@ -338,7 +338,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             @test e isa WriteRefusedError && e.reason == "not_allowed" && e.key == "p/000000000003" && e.caller === nothing
             @test !GWT.retryable(e)
             msg = sprint(showerror, e)
-            @test startswith(msg, "WriteRefusedError: write refused: the gateway at http://127.0.0.1:$(gw.port) refused to fill p/000000000003")
+            @test startswith(e.detail, "write refused: the gateway at http://127.0.0.1:$(gw.port) refused to fill p/000000000003")
             @test occursin("not_allowed: bob@example.com may not write under p", msg)
             @test occursin("ask the bucket's operator to add the name to the gateway policy", msg)
             double.caller = "alice@example.com"
@@ -509,7 +509,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                 e
             end
             @test e isa GWT.GatewayMismatchError && e.key == ko && e.bucket == "bkt" && e.gateway == loopback_url(gw)
-            @test sprint(showerror, e) == "GatewayMismatchError: gateway mismatch: S3 refused the upload of $ko to bucket " *
+            @test e.detail == "gateway mismatch: S3 refused the upload of $ko to bucket " *
                 "bkt as already present (412), and the gateway at $(loopback_url(gw)) then found it absent and minted " *
                 "another URL: the gateway checks another bucket than the one its URLs and this chain write. Pair the " *
                 "bucket with its own gateway — one ChainTables.Bucket value holds both (ADR-0029, ADR-0046)."
@@ -522,7 +522,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                 e
             end
             @test e isa GWT.AttachmentChangedError && e.key == bad && !haskey(s3.objects, bad)
-            @test startswith(sprint(showerror, e), "AttachmentChangedError: attachment changed: the upload of $bad to $(s3test_endpoint(s3))/bkt/$bad was refused as BadDigest")
+            @test startswith(e.detail, "attachment changed: the upload of $bad to $(s3test_endpoint(s3))/bkt/$bad was refused as BadDigest")
             # an expired URL, two ways (ADR-0046: S3 refuses an upload still running when its URL expires).
             # The caller waited past the URL's life before uploading: nothing is sent.
             fresh = rand(UInt8, 10); kf = "p/_attachments/" * bytes2hex(sha256(fresh))
@@ -537,7 +537,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             end
             @test e isa GWT.AttachmentURLExpiredError && e.key == kf && e.expires == "2026-11-06T12:00:00Z" && !GWT.retryable(e)
             @test length(s3.requests) == n
-            @test sprint(showerror, e) == "AttachmentURLExpiredError: attachment URL expired: the URL the gateway at " *
+            @test e.detail == "attachment URL expired: the URL the gateway at " *
                 "$(loopback_url(gw)) minted for $kf lived 1 s (until 2026-11-06T12:00:00Z), and this process waited 1 s " *
                 "after the mint before uploading. Nothing was sent. Put the attachment again, which mints a new URL (ADR-0046)."
             # The upload outlasted the URL: still sending at its end, the client stops there rather than
@@ -559,11 +559,11 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                 )
                 @test e isa GWT.AttachmentURLExpiredError && e.key == kf && !GWT.retryable(e) && t < 3.5
                 @test !haskey(s3.objects, kf)
-                head, tail = "AttachmentURLExpiredError: attachment URL expired: the upload of $kf ran ",
+                head, tail = "attachment URL expired: the upload of $kf ran ",
                     " s, past the 1 s life of the URL the gateway minted (until 2026-11-06T12:00:00Z), and S3 refuses an " *
                     "upload still running when its URL expires. Nothing was stored. Its 10 bytes need 1 KiB/s or more. " *
                     "Put the attachment again over a faster link (ADR-0046)." * coda
-                msg = sprint(showerror, e)
+                msg = e.detail
                 @test startswith(msg, head) && endswith(msg, tail) && chopsuffix(chopprefix(msg, head), tail) in ("1", "2")
                 @test !occursin("X-Amz-Signature", sprint(showerror, e)) && !occursin("clock", sprint(showerror, e))
             end
@@ -576,7 +576,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                 e
             end
             @test e isa GWT.AttachmentURLExpiredError && !haskey(s3.objects, kf)
-            @test sprint(showerror, e) == "AttachmentURLExpiredError: attachment URL expired: S3 refused the upload of " *
+            @test e.detail == "attachment URL expired: S3 refused the upload of " *
                 "$kf as expired after 0 s, though the gateway gave its URL 900 s (until 2026-11-06T12:00:00Z): the gateway's " *
                 "clock is off, or S3's. Nothing was stored. Put the attachment again; if this recurs, report it to the " *
                 "bucket's operator (ADR-0046)."
@@ -590,7 +590,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                 e
             end
             @test e isa GWT.GatewayMismatchError && e.key == kf && length(s3.requests) == n
-            @test sprint(showerror, e) == "GatewayMismatchError: gateway mismatch: the gateway at $(loopback_url(gw)) " *
+            @test e.detail == "gateway mismatch: the gateway at $(loopback_url(gw)) " *
                 "minted a URL for $kf without its lifetime (\"seconds\", \"capped\"), which it gives since S3 was found " *
                 "to refuse an upload still running when its URL expires. Nothing was sent. Ask the bucket's operator " *
                 "to redeploy it (gateway/deploy.sh) (ADR-0046)."
@@ -617,7 +617,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                     e
                 end
                 @test e isa GWT.GatewayMismatchError && e.key == kf && e.bucket == "bkt" && e.gateway == loopback_url(gw)
-                @test sprint(showerror, e) == "GatewayMismatchError: gateway mismatch: the gateway at $(loopback_url(gw)) " *
+                @test e.detail == "gateway mismatch: the gateway at $(loopback_url(gw)) " *
                     "minted a URL for $kf with no query, so no signature. Nothing was sent. This gateway's mint is broken: " *
                     "ask the bucket's operator to redeploy it (gateway/deploy.sh) (ADR-0046)."
             end
@@ -662,7 +662,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                     e
                 end
                 @test e isa GWT.GatewayMismatchError && e.key == kf && e.bucket == "bkt" && e.gateway == loopback_url(gw)
-                @test sprint(showerror, e) == "GatewayMismatchError: gateway mismatch: the gateway at $(loopback_url(gw)) " *
+                @test e.detail == "gateway mismatch: the gateway at $(loopback_url(gw)) " *
                     "minted the upload of $kf with content-length twice $values, where once, \"10\". Nothing was sent. A " *
                     "header minted more than once leaves it to S3 which one counts, so it might not bound the upload to the " *
                     "attachment's size: this gateway is not the one ADR-0046 specifies; ask the bucket's operator to " *
@@ -860,7 +860,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                     end
                     @test e isa WriteRefusedError && e.reason == "not_allowed" && e.slot == 0 && e.key == "exp/run-1/000000000000"
                     @test e.chain_id isa String
-                    @test startswith(sprint(showerror, e), "WriteRefusedError: write refused for slot 0 of chain $(e.chain_id) at bkt/exp/run-1: ")
+                    @test startswith(e.detail, "write refused for slot 0 of chain $(e.chain_id) at bkt/exp/run-1: ")
                 end
             finally
                 close(root)
@@ -943,7 +943,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                     @test (e.chain_id, e.slot, e.key, e.caller) == (created.chain_id, 2, "exp/run-1/000000000002", "alice@example.com")
                     msg = sprint(showerror, e)
                     @test startswith(
-                        msg, "WriteRefusedError: write refused for slot 2 of chain $(created.chain_id) at bkt/exp/run-1: " *
+                        e.detail, "write refused for slot 2 of chain $(created.chain_id) at bkt/exp/run-1: " *
                             "the gateway at http://127.0.0.1:$(gw.port) refused to fill exp/run-1/000000000002 for caller alice@example.com — not_allowed: "
                     )
                     @test occursin("ask the bucket's operator to add the name to the gateway policy", msg)
@@ -1004,7 +1004,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                         e
                     end
                     @test e isa WriteBuilderError
-                    @test occursin(r"^WriteBuilderError: commit!\(w\): record is 4194\d{3} bytes; the cap on a GatewayObjectStore is 4194304 bytes \(4 MiB\): split the write into more than one commit$", sprint(showerror, e))
+                    @test occursin(r"^commit!\(w\): record is 4194\d{3} bytes; the cap on a GatewayObjectStore is 4194304 bytes \(4 MiB\): split the write into more than one commit$", e.detail)
                     @test puts() == n && GWT.head(copy).slot == 3 && length(GWT.table(copy, :samples)) == 3
                     close(copy)
                     # create_chain under a prefix the policy does not allow: refused at slot 0 with the minted id
@@ -1015,7 +1015,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                     end
                     @test e isa WriteRefusedError && e.reason == "not_allowed" && e.slot == 0 && e.key == "other/run-1/000000000000"
                     @test e.chain_id isa String && length(e.chain_id) == 26
-                    @test startswith(sprint(showerror, e), "WriteRefusedError: write refused for slot 0 of chain $(e.chain_id) at bkt/other/run-1: ")
+                    @test startswith(e.detail, "write refused for slot 0 of chain $(e.chain_id) at bkt/other/run-1: ")
                     @test !haskey(s3.objects, "other/run-1/000000000000")
                     # a plain store keeps today's author: the environment, individually suppressible (ADR-0006)
                     plain = GWT.Testing.InMemoryObjectStore()

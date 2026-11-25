@@ -187,7 +187,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             n = length(store.calls)
             err = caught(() -> CT.create_chain(chain))
             @test err isa LostRaceError
-            @test sprint(showerror, err) == "LostRaceError: lost race for slot 0 at bkt/p: a chain already exists there " *
+            @test err.detail == "lost race for slot 0 at bkt/p: a chain already exists there " *
                 "(chain $(created.chain_id), transaction hash $(hex(created.transaction_hash))). create_chain writes slot 0 " *
                 "once and is never retried: open(chain, path) and sync!(copy) to use the existing chain, or create under another prefix."
             @test (err.chain_id, err.slot, err.transaction_hash) == (created.chain_id, 0, created.transaction_hash)
@@ -307,7 +307,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             before = (heads(copy), tabs(copy), CT.head(copy), length(store.objects))
             err = caught(() -> CT.commit!(w3))
             @test err isa StaleHeadError
-            @test sprint(showerror, err) == "StaleHeadError: stale head: the local copy at $(copy.path) is at slot 1 of chain " *
+            @test err.detail == "stale head: the local copy at $(copy.path) is at slot 1 of chain " *
                 "$(created.chain_id), the chain is at slot 2. sync!(copy), recompute the row set against the fresh state, and " *
                 "build again with write_builder(copy); this builder is spent and is never re-run (ADR-0002)."
             @test (err.chain_id, err.slot, err.chain_slot) == (created.chain_id, 1, 2)
@@ -329,7 +329,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             n = length(store.calls)
             err = caught(() -> CT.commit!(w5))
             @test err isa StaleHeadError
-            @test sprint(showerror, err) == "StaleHeadError: stale head: this builder was taken at slot 2 of chain " *
+            @test err.detail == "stale head: this builder was taken at slot 2 of chain " *
                 "$(created.chain_id), and the local copy at $(copy2.path) has since moved to slot 3 (a sync!). The row set " *
                 "was computed against a state that has moved: recompute it and build again with write_builder(copy); this " *
                 "builder is spent and is never re-run (ADR-0002)."
@@ -356,7 +356,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             store, chain, copy = seeded(dir)
             before = (heads(copy), tabs(copy), CT.head(copy), length(store.calls), length(store.objects))
             unchanged() = (heads(copy), tabs(copy), CT.head(copy), length(store.objects)) == before[[1, 2, 3, 5]]
-            refused(f) = (e = caught(f); e isa WriteBuilderError ? e.msg : e)
+            refused(f) = (e = caught(f); e isa WriteBuilderError ? e.detail : e)
             # insert on a present key
             w = CT.write_builder(copy)
             CT.insert_rows!(w, :samples, [(id = 2, label = "dup", mass = 0.0)])
@@ -461,7 +461,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             err = caught(() -> CT.commit!(wb))
             @test ra.slot == 2
             @test err isa LostRaceError
-            @test sprint(showerror, err) == "LostRaceError: lost race for slot 2 of chain $(a.head.chain_id) at bkt/p: " *
+            @test err.detail == "lost race for slot 2 of chain $(a.head.chain_id) at bkt/p: " *
                 "another client's record is there (transaction hash $(hex(ra.transaction_hash))). sync!(copy), recompute " *
                 "the row set against the fresh state, and build again with write_builder(copy); this builder is spent and " *
                 "is never re-run (ADR-0002)."
@@ -558,7 +558,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             n = puts(store, "p/000000000004")
             err = caught(() -> CT.commit!(w))
             @test err isa CommitOutcomeUnknownError                  # a 5xx proves nothing (ADR-0045)
-            @test err.cause isa TransportError && occursin("service unavailable (HTTP 503)", err.msg)
+            @test err.cause isa TransportError && occursin("service unavailable (HTTP 503)", err.detail)
             @test puts(store, "p/000000000004") == n + CT.PUT_ATTEMPTS
             @test (heads(copy), tabs(copy), CT.head(copy)) == before
             close(copy)
@@ -581,7 +581,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             @test err isa CommitOutcomeUnknownError
             @test (err.chain_id, err.slot, err.landed) == (copy.head.chain_id, 2, nothing)
             @test err.cause isa ErrorException && err.transaction_hash isa CT.TransactionHash
-            @test sprint(showerror, err) == "CommitOutcomeUnknownError: commit outcome unknown: the record for slot 2 of " *
+            @test err.detail == "commit outcome unknown: the record for slot 2 of " *
                 "chain $(err.chain_id) at bkt/p may or may not be in the chain (response dropped). Our record's transaction " *
                 "hash is $(hex(err.transaction_hash)): sync!(copy), and the commit happened exactly when commit_log(copy) " *
                 "shows it at slot 2. This builder is spent and is never re-run (ADR-0002)."
@@ -620,7 +620,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             phantom = ChainTestPhantom412(store)
             err = caught(() -> CT.put_record!(phantom, cache, "bkt", "p/000000000009", ours))
             @test err isa RewrittenChainError
-            @test occursin("refused as existing (412) and a fetch found nothing there, 4 times over", err.msg)
+            @test occursin("refused as existing (412) and a fetch found nothing there, 4 times over", err.detail)
             # a refusal with any status but 412 breaks the port's promise
             @test_throws "returned created = false with status 200; the port promises false only for a 412" CT.put_record!(ChainTestBadOutcome(), cache, "bkt", "k", ours)
         end
@@ -708,7 +708,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             plant!(store, key1, other)
             err = caught(() -> CT.sync!(copy))
             @test err isa RewrittenChainError
-            @test sprint(showerror, err) == "RewrittenChainError: rewritten chain: slot 1 of chain $cid at bkt/p holds a record " *
+            @test err.detail == "rewritten chain: slot 1 of chain $cid at bkt/p holds a record " *
                 "hashing to $(hex(Ops.transaction_hash(other))); the local copy at $(copy.path) applied $(hex(th1)) there. The " *
                 "bucket was written from outside the protocol and nothing heals it. The local copy stays readable and never " *
                 "commits onto this chain."
@@ -730,7 +730,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             delete!(store.objects, key1)
             err = caught(() -> CT.sync!(copy))
             @test err isa RewrittenChainError
-            @test sprint(showerror, err) == "RewrittenChainError: rewritten chain: slot 1 — the head of the local copy at " *
+            @test err.detail == "rewritten chain: slot 1 — the head of the local copy at " *
                 "$(copy.path), chain $cid — is absent at bkt/p. Either the chain was truncated from outside the protocol, or " *
                 "this is not the chain's bucket and prefix; neither is healed. The local copy stays readable; open it over the " *
                 "chain it was built from, or delete it and sync!(copy) a fresh one."
@@ -745,7 +745,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             plant!(store, "p/000000000002", forged(2, fill(0xaa, 32)))
             err = caught(() -> CT.sync!(copy))
             @test err isa RewrittenChainError
-            @test sprint(showerror, err) == "RewrittenChainError: rewritten chain: slot 2 of chain $cid at bkt/p names parent " *
+            @test err.detail == "rewritten chain: slot 2 of chain $cid at bkt/p names parent " *
                 "$("aa"^32), the local copy at $(copy.path) holds slot 1 as $(hex(th1)). The chain below was rewritten from " *
                 "outside the protocol, or the committer of slot 2 had a bug; nothing heals it. The local copy at $(copy.path) " *
                 "stays at its last checkpoint and readable."
@@ -756,7 +756,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             plant!(store, "p/000000000002", forged(2, th1; chain_id = fill(0x11, 16)))
             err = caught(() -> CT.sync!(copy))
             @test err isa MalformedRecordError
-            @test occursin("malformed record at slot 2: it carries chain id $(CT.chain_id_string(fill(0x11, 16))), the chain is $cid", err.msg)
+            @test occursin("malformed record at slot 2: it carries chain id $(CT.chain_id_string(fill(0x11, 16))), the chain is $cid", err.detail)
             @test (err.chain_id, err.slot) == (cid, 2)
             @test CT.head(copy).slot == 1
             @test !isfile(record_path(chain.cache, chain.store, "bkt", "p/000000000002"))   # the store's failing bytes are not cached
@@ -766,7 +766,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
                 delete!(store.objects, key)
             err = caught(() -> CT.sync!(copy))
             @test err isa RewrittenChainError
-            @test occursin("slot 2 at bkt/p was there when head discovery probed it and is absent now", err.msg)
+            @test occursin("slot 2 at bkt/p was there when head discovery probed it and is absent now", err.detail)
             @test (err.chain_id, err.slot, err.found) == (cid, 2, nothing)
             store.fault = (verb, key, phase) -> nothing
             close(copy)
@@ -785,7 +785,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             wrong = CT.open(cold, copy.path)
             err = caught(() -> CT.sync!(wrong))
             @test err isa WrongChainError
-            @test sprint(showerror, err) == "WrongChainError: wrong chain: the local copy at $(copy.path) is bound to chain $cid, " *
+            @test err.detail == "wrong chain: the local copy at $(copy.path) is bound to chain $cid, " *
                 "the chain at bkt/q is $(createdq.chain_id): open a different path for this chain."
             @test (err.path, err.bound, err.opened) == (copy.path, cid, createdq.chain_id)
             @test CT.head(wrong).slot == 1
@@ -935,7 +935,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             )
             err = caught(() -> CT.slot_at(chain, typemax(Int64)))
             @test err isa RewrittenChainError
-            @test sprint(showerror, err) == "RewrittenChainError: rewritten chain: slot 5 of chain $(copy.head.chain_id) at bkt/p " *
+            @test err.detail == "rewritten chain: slot 5 of chain $(copy.head.chain_id) at bkt/p " *
                 "names parent $("aa"^32), slot 4 hashes to $(hex(copy.head.transaction_hash)). The chain below was rewritten " *
                 "from outside the protocol, or the committer of slot 5 had a bug; nothing heals it."
             @test (err.slot, err.expected, err.found) == (5, copy.head.transaction_hash, fill(0xaa, 32))
@@ -1075,7 +1075,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             err = @test_logs caught(() -> seen(; keep_bytes = 0))
             store.fault = (verb, key, phase) -> nothing
             @test err isa RewrittenChainError
-            @test sprint(showerror, err) == "RewrittenChainError: rewritten chain: slot 2 of chain $cid at bkt/p holds a " *
+            @test err.detail == "rewritten chain: slot 2 of chain $cid at bkt/p holds a " *
                 "record hashing to $(hex(Ops.transaction_hash(b"rewritten"))); the record above it names " *
                 "$(hex(Ops.transaction_hash(two))). The bucket is being written from outside the protocol and nothing heals it."
             @test (err.slot, err.expected, err.found) == (2, Ops.transaction_hash(two), Ops.transaction_hash(b"rewritten"))
@@ -1238,7 +1238,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
                 chmod(hd, 0o755)
             end
             @test err isa CommitOutcomeUnknownError && err.landed === true && err.cause isa SystemError   # ADR-0045
-            @test occursin("is in the chain, but the local copy's head was not written", err.msg)
+            @test occursin("is in the chain, but the local copy's head was not written", err.detail)
             @test haskey(store.objects, slotkey(2)) && CT.head(copy).slot == 1
             # our own record is applied by the next sync! onto the old head, never onto the dropped rows
             @test CT.sync!(copy).slot == 2
@@ -1317,7 +1317,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             put_object_if_absent(store, slotkey(12), bad)
             err = caught(() -> CT.sync!(copy))
             @test err isa MalformedRecordError
-            @test occursin("malformed record at slot 12: op 1 (insert on \"samples\"): column \"id\" is int64, got a value of type Float64", err.msg)
+            @test occursin("op 1 (insert on \"samples\"): column \"id\" is int64, got a value of type Float64", err.detail)
             @test (err.chain_id, err.slot, err.op) == (copy.head.chain_id, 12, 1)
             @test CT.head(copy).slot == 11 && isempty(copy.content)
             @test isequal(rows_of(copy, "samples")[end], Any[12, "12", 12.0])
@@ -1349,9 +1349,9 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             CT.delete_rows!(w, :samples, [(id = 1,)])
             err = caught(() -> CT.commit!(w))
             @test err isa FingerprintMismatchError
-            @test occursin("state fingerprint mismatch at slot 1 (chain $(h.chain_id)): the record's state_fingerprint is $("ee"^32), the head of the local copy at $(copy.path) holds $(hex(h.state_fingerprint))", err.msg)
-            @test occursin("written by L on Julia J; this client is ChainTables", err.msg)
-            @test occursin("repair!(copy)", err.msg)
+            @test occursin("state fingerprint mismatch at slot 1 (chain $(h.chain_id)): the record's state_fingerprint is $("ee"^32), the head of the local copy at $(copy.path) holds $(hex(h.state_fingerprint))", err.detail)
+            @test occursin("written by L on Julia J; this client is ChainTables", err.detail)
+            @test occursin("repair!(copy)", err.detail)
             @test (err.chain_id, err.slot, err.expected, err.computed) == (h.chain_id, 1, fill(0xee, 32), h.state_fingerprint)
             @test err.record_client == (; lib = "L", julia = "J") && err.this_client.julia == string(VERSION)
             @test !haskey(store.objects, "p/000000000002")
@@ -1372,7 +1372,7 @@ ChainTables.put_object_if_absent(::ChainTestBadOutcome, key, bytes) = PutOutcome
             for (call, f) in (("sync!", () -> CT.sync!(copy)), ("write_builder", () -> CT.write_builder(copy)), ("commit!", () -> CT.commit!(w)))
                 err = caught(f)
                 @test err isa PinnedCopyError
-                @test sprint(showerror, err) == "PinnedCopyError: pinned copy: the local copy at $(copy.path) is pinned at slot 1, " *
+                @test err.detail == "pinned copy: the local copy at $(copy.path) is pinned at slot 1, " *
                     "so $call refuses to move it (ADR-0015). unpin!(copy) makes it live, or use a live copy."
                 @test (err.path, err.slot) == (copy.path, 1)
             end

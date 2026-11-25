@@ -229,7 +229,7 @@ ChainTables.stat_object(s::RecoveryTestNoGenesis, key) = ChainTables.stat_object
             write(cached(3), badbytes)
             err = caught(() -> CT.cached_record_at(chain, cid, 3, hashes, "verify(copy; full = true)"))
             @test err isa RecordCacheError
-            @test sprint(showerror, err) == "RecordCacheError: verify(copy; full = true): the record cache's copy of slot 3 " *
+            @test err.detail == "verify(copy; full = true): the record cache's copy of slot 3 " *
                 "($(cached(3))) changed while it was being read: another process is writing the record cache, or the disk " *
                 "damaged the file. Run verify(copy; full = true) again."
             @test (err.chain_id, err.slot, err.path, err.expected, err.found) ==
@@ -250,7 +250,7 @@ ChainTables.stat_object(s::RecoveryTestNoGenesis, key) = ChainTables.stat_object
             @test err isa FingerprintMismatchError
             @test occursin(
                 "state fingerprint mismatch at slot 5 (chain $cidq): replaying the record cache from slot 0, the record's " *
-                    "state_fingerprint is $("05"^32), this client computes $(hex(fpsq[6])) after applying it; slots 0 to 4 reproduce.", err.msg
+                    "state_fingerprint is $("05"^32), this client computes $(hex(fpsq[6])) after applying it; slots 0 to 4 reproduce.", err.detail
             )
             @test err.slot == 5
             close(q)
@@ -261,7 +261,7 @@ ChainTables.stat_object(s::RecoveryTestNoGenesis, key) = ChainTables.stat_object
             @test err isa FingerprintMismatchError
             @test occursin(
                 "state fingerprint mismatch at slot 0 (chain $cidr): replaying the record cache from slot 0, the record's " *
-                    "state_fingerprint is $("00"^32), this client computes $(hex(fpsr[1])) after applying it; it is the first record.", err.msg
+                    "state_fingerprint is $("00"^32), this client computes $(hex(fpsr[1])) after applying it; it is the first record.", err.detail
             )
             @test err.slot == 0
             close(r)
@@ -328,7 +328,7 @@ ChainTables.stat_object(s::RecoveryTestNoGenesis, key) = ChainTables.stat_object
             damaged = read(file)
             err = caught(() -> CT.repair!(copy))
             @test err isa CT.RewrittenChainError
-            @test sprint(showerror, err) == "RewrittenChainError: rewritten chain: slot 2 of chain $cid at bkt/p holds a record " *
+            @test err.detail == "rewritten chain: slot 2 of chain $cid at bkt/p holds a record " *
                 "hashing to $(hex(Ops.transaction_hash(badbytes))); slot 3 names its parent as $(hex(Ops.transaction_hash(two))). " *
                 "The bucket was written from outside the protocol and nothing heals it. Nothing was written; the local copy " *
                 "stays readable and never commits onto this chain."
@@ -356,7 +356,7 @@ ChainTables.stat_object(s::RecoveryTestNoGenesis, key) = ChainTables.stat_object
             err = caught(() -> CT.repair!(copy))
             @test err isa DivergenceError
             replayed = Model.state_fingerprint(h.tables)
-            @test sprint(showerror, err) == "DivergenceError: divergence at slot 3 (chain $cid): a fresh replay of the record cache " *
+            @test err.detail == "divergence at slot 3 (chain $cid): a fresh replay of the record cache " *
                 "from slot 0 to slot 3 yields state fingerprint $(hex(replayed)), the head of the local copy at $(copy.path) carries " *
                 "$(hex(lying.state_fingerprint)); tables that differ: tags (replay $(hex(h.tables[2].second)), head absent), " *
                 "twin (replay $(hex(h.tables[3].second)), head absent). This machine cannot reproduce the chain — whether this " *
@@ -492,8 +492,8 @@ ChainTables.stat_object(s::RecoveryTestNoGenesis, key) = ChainTables.stat_object
             )
             err = caught(() -> CT.as_of(chain, 3; path = p))
             @test err isa FingerprintMismatchError
-            @test occursin("state fingerprint mismatch at slot 3 (chain $cid): the record's state_fingerprint is $("ee"^32), the head of the local copy at $(abspath(p)) holds", err.msg)
-            @test occursin("The pinned copy does not match the record it claims to be the result of: delete the directory, or repair!(copy) confirms whether this machine reproduces the chain.", err.msg)
+            @test occursin("state fingerprint mismatch at slot 3 (chain $cid): the record's state_fingerprint is $("ee"^32), the head of the local copy at $(abspath(p)) holds", err.detail)
+            @test occursin("The pinned copy does not match the record it claims to be the result of: delete the directory, or repair!(copy) confirms whether this machine reproduces the chain.", err.detail)
             @test isdir(p)                                                      # a given path is never deleted
             plant!(store, slotkey(3), three)
             write(cached(3), three)
@@ -543,7 +543,7 @@ ChainTables.stat_object(s::RecoveryTestNoGenesis, key) = ChainTables.stat_object
                 cold = Chain("bkt", "t"; store, cache_dir = joinpath(dir, "cold$i"))
                 err = caught(() -> f(cold))
                 @test err isa CT.RewrittenChainError && (err.slot, err.found) == (3, nothing)
-                @test occursin("slot 3 at bkt/t was there when head discovery probed it and is absent now", err.msg)
+                @test occursin("slot 3 at bkt/t was there when head discovery probed it and is absent now", err.detail)
             end
             store.fault = (verb, key, phase) -> nothing
         end

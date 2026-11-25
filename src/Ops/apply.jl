@@ -57,8 +57,9 @@ function apply_op_at!(c::Content, r::Record, i)
         apply!(c, op, r.slot)
     catch e
         e isa ModelError || rethrow()
-        what = "op $i ($(op_name(op)) on $(repr(op.table))): $(e.detail)"
-        throw(malformed(r.slot, r.chain_id, what; op = i))
+        chain_id = ChainTables.chain_id_string(r.chain_id)
+        detail = "op $i ($(op_name(op)) on $(repr(op.table))): $(e.detail)"
+        throw(MalformedRecordError(; chain_id, r.slot, op = i, detail))
     end
     return nothing
 end

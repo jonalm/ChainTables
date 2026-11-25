@@ -34,7 +34,12 @@ end
 
     in_own_module("test_hashes.jl")
     in_own_module("test_hashes_examples.jl")
-    include("errors.jl")
+    in_own_module("test_errors.jl")
+    in_own_module("test_commit_errors.jl")
+    in_own_module("test_chain_errors.jl")
+    in_own_module("test_local_copy_errors.jl")
+    in_own_module("test_gateway_errors.jl")
+    in_own_module("test_attachment_errors.jl")
     in_own_module("test_cbor_encode.jl")
     in_own_module("test_cbor_encode_examples.jl")
     in_own_module("test_cbor_decode.jl")

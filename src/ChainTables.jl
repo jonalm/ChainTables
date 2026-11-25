@@ -5,10 +5,22 @@ through a hash-chained sequence of immutable records in an S3 bucket. Terms: see
 """
 module ChainTables
 
-public CBOR, Model, Ops, StateFingerprint, TransactionHash
+public AttachmentAbsentError, AttachmentCacheError, AttachmentChangedError,
+    AttachmentDigestError, AttachmentURLExpiredError, CBOR, ChainNotFoundError,
+    ChainTablesError, CommitOutcomeUnknownError, DivergenceError,
+    FingerprintMismatchError, GatewayMismatchError, GatewaySessionEndingError,
+    LayoutVersionError, LocalCopyInconsistentError, LostRaceError, MalformedRecordError,
+    Model, NotALocalCopyError, Ops, PinnedCopyError, RecordCacheError,
+    RewrittenChainError, StaleHeadError, StateFingerprint, TransactionHash,
+    UnsupportedStoreError, WriteBuilderError, WriteRefusedError, WrongChainError
 
 include("hashes.jl")
 include("errors.jl")
+include("commit_errors.jl")
+include("chain_errors.jl")
+include("local_copy_errors.jl")
+include("gateway_errors.jl")
+include("attachment_errors.jl")
 include("CBOR/CBOR.jl")
 include("Model/Model.jl")
 include("Ops/Ops.jl")

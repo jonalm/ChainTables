@@ -102,7 +102,7 @@ const ATT = ChainTables
                 e
             end
             @test e isa ATT.AttachmentAbsentError && e.key == "p/_attachments/$absent"
-            @test sprint(showerror, e) == "AttachmentAbsentError: attachment absent: the store of the chain at bkt/p holds no " *
+            @test e.detail == "attachment absent: the store of the chain at bkt/p holds no " *
                 "attachment p/_attachments/$absent — it was never put, or its retention ended and it was deleted. A row " *
                 "cannot refer to it until it is put again: put_attachment(chain, file) (ADR-0046)."
             # a hash that is not 64 lowercase hex is the caller's bug, refused before any request
@@ -143,7 +143,7 @@ const ATT = ChainTables
                     e
                 end
                 @test e isa ATT.GatewaySessionEndingError && e.key == key && e.gateway == loopback_url(gw) && !GWT.retryable(e)
-                @test sprint(showerror, e) == "GatewaySessionEndingError: gateway session ending: the gateway at " *
+                @test e.detail == "gateway session ending: the gateway at " *
                     "$(loopback_url(gw)) did not mint the upload of $key — session_ending: this environment's session " *
                     "ends too soon. The Lambda execution environment that answered is too old: its AWS session ends " *
                     "within 15 min, too soon to sign a URL. A retry now most likely reaches the same environment, so " *
@@ -168,7 +168,7 @@ const ATT = ChainTables
                     e
                 end
                 @test e isa ATT.AttachmentAbsentError && e.key == "p/_attachments/$absent"
-                @test sprint(showerror, e) == "AttachmentAbsentError: attachment absent: the store of the chain at bkt/p " *
+                @test e.detail == "attachment absent: the store of the chain at bkt/p " *
                     "holds no attachment p/_attachments/$absent — it was never put, or its retention ended and it was " *
                     "deleted. A row cannot refer to it until it is put again: put_attachment(chain, file) (ADR-0046)."
                 @test isempty(gw.requests)
@@ -250,7 +250,7 @@ const ATT = ChainTables
                 e
             end
             @test e isa ATT.AttachmentAbsentError && e.key == "q/_attachments/$h" && e.chain_id == oc.head.chain_id
-            @test sprint(showerror, e) == "AttachmentAbsentError: attachment absent: the store of the chain at bkt/q holds " *
+            @test e.detail == "attachment absent: the store of the chain at bkt/q holds " *
                 "no attachment q/_attachments/$h — it was never put to this chain, or its retention ended and it was " *
                 "deleted — so attachment(copy, hash) has nothing to serve, whatever this machine has cached. Only someone " *
                 "holding the file can bring it back, with put_attachment(chain, file) (ADR-0046)."
@@ -348,7 +348,7 @@ const ATT = ChainTables
             found = bytes2hex(sha256(b"other bytes"))
             @test e isa ATT.AttachmentDigestError && e.key == "p/_attachments/$h" && e.found == found && e.size == 11
             @test e.chain_id == copy.head.chain_id
-            @test sprint(showerror, e) == "AttachmentDigestError: attachment digest: the store of the chain at bkt/p " *
+            @test e.detail == "attachment digest: the store of the chain at bkt/p " *
                 "returned 11 bytes for p/_attachments/$h, which hash to $found, not to the key's hash. Nothing was cached. " *
                 "S3 checked the hash when the attachment was stored, so the bucket was written from outside the protocol: " *
                 "stop and report it (ADR-0046)."
@@ -384,7 +384,7 @@ const ATT = ChainTables
                 e
             end
             @test e isa ATT.AttachmentCacheError && e.path == path && e.chain_id == copy.head.chain_id
-            @test sprint(showerror, e) == "AttachmentCacheError: attachment cache: the cached file $path is $(st.size) " *
+            @test e.detail == "attachment cache: the cached file $path is $(st.size) " *
                 "bytes modified at $(st.mtime) and hashes to $found, not to its name; its sidecar $path.meta records " *
                 "\"$meta\". The file was changed after it was cached. The cache is damaged, not the chain: deleting " *
                 "$path and $path.meta is always safe, and the next read fetches it again (ADR-0046)."
@@ -398,7 +398,7 @@ const ATT = ChainTables
                 e
             end
             @test e isa ATT.AttachmentCacheError && e.path == path && e.chain_id == unconfirmed.head.chain_id
-            @test sprint(showerror, e) == "AttachmentCacheError: attachment cache: the cached file $path is $(st.size) " *
+            @test e.detail == "attachment cache: the cached file $path is $(st.size) " *
                 "bytes modified at $(st.mtime) and hashes to $found, not to its name; its sidecar $path.meta records " *
                 "\"$meta\". The file was changed after it was cached. The cache is damaged, not the chain: deleting " *
                 "$path and $path.meta is always safe, and the next read fetches it again (ADR-0046)."
@@ -440,7 +440,7 @@ const ATT = ChainTables
             end
             @test e isa ATT.AttachmentDigestError && e.key == key && e.size == 120 && e.found === nothing
             @test e.chain_id == two.head.chain_id
-            @test sprint(showerror, e) == "AttachmentDigestError: attachment digest: the store of the chain at bkt/p " *
+            @test e.detail == "attachment digest: the store of the chain at bkt/p " *
                 "holds 120 bytes at $key, but the cached file $path, which hashes to the key's hash, is 100 bytes, so the " *
                 "store's bytes cannot hash to it. Nothing was confirmed, and the cached file was kept. S3 checked the hash " *
                 "when the attachment was stored, so the bucket was written from outside the protocol: stop and report it " *
@@ -460,7 +460,7 @@ const ATT = ChainTables
             end
             found = bytes2hex(sha256(other))
             @test e isa ATT.AttachmentCacheError && e.path == path && e.key == key && e.chain_id == three.head.chain_id
-            @test sprint(showerror, e) == "AttachmentCacheError: attachment cache: the cached file $path is 80 bytes and " *
+            @test e.detail == "attachment cache: the cached file $path is 80 bytes and " *
                 "hashes to $found, not to its name, while the store of the chain at bkt/p holds 100 bytes at $key. The " *
                 "cache is damaged, not the chain: deleting $path and $path.meta is always safe, and the next read fetches " *
                 "it again (ADR-0046)."
@@ -498,7 +498,7 @@ const ATT = ChainTables
             end
             @test e isa ATT.AttachmentCacheError && e.chain_id == copy.head.chain_id
             # an entry that is gone is not damage: deleting one is always safe, and the next read fetches it
-            @test sprint(showerror, e) == "AttachmentCacheError: verify(copy; full = true): the attachment cache is " *
+            @test e.detail == "verify(copy; full = true): the attachment cache is " *
                 "damaged for attachments this copy confirmed: $pa hashes to $found, not its name. The cache is damaged, " *
                 "not the chain: repair!(copy) fetches them again (ADR-0046)."
             # repair!: fetched again from the chain's store
@@ -534,7 +534,7 @@ const ATT = ChainTables
                 e
             end
             @test e isa ATT.AttachmentAbsentError && e.chain_id == copy.head.chain_id && e.key === nothing
-            @test sprint(showerror, e) == "AttachmentAbsentError: attachment absent: repair!(copy) found that the store " *
+            @test e.detail == "attachment absent: repair!(copy) found that the store " *
                 "of the chain at bkt/p no longer holds 2 attachments this copy had confirmed: " *
                 "$(join(("p/_attachments/" * h for h in gone), ", ")). Their retention ended and they were deleted, or " *
                 "the bucket was written from outside the protocol. Their confirmed markers were removed, so a read of one " *
@@ -549,7 +549,7 @@ const ATT = ChainTables
                 e
             end
             @test e isa ATT.AttachmentAbsentError && e.key == "p/_attachments/$ha" && e.chain_id == copy.head.chain_id
-            @test sprint(showerror, e) == "AttachmentAbsentError: attachment absent: the store of the chain at bkt/p holds " *
+            @test e.detail == "attachment absent: the store of the chain at bkt/p holds " *
                 "no attachment p/_attachments/$ha — it was never put to this chain, or its retention ended and it was " *
                 "deleted — so attachment(copy, hash) has nothing to serve, whatever this machine has cached. Only someone " *
                 "holding the file can bring it back, with put_attachment(chain, file) (ADR-0046)."
@@ -592,7 +592,7 @@ const ATT = ChainTables
                 e
             end
             @test e isa ATT.AttachmentDigestError
-            @test sprint(showerror, e) == "AttachmentDigestError: attachment digest: the store of the chain at bkt/p " *
+            @test e.detail == "attachment digest: the store of the chain at bkt/p " *
                 "returned 40 bytes for $kbad, which hash to $found, not to the key's hash. Nothing was cached. S3 checked " *
                 "the hash when the attachment was stored, so the bucket was written from outside the protocol: stop and " *
                 "report it (ADR-0046)."
@@ -659,7 +659,7 @@ const ATT = ChainTables
             end
             @test e isa ATT.AttachmentCacheError && e.path == path && e.key == "p/_attachments/$h"
             @test e.chain_id == copy.head.chain_id
-            @test sprint(showerror, e) == "AttachmentCacheError: attachment cache: the cached file $path changed while it " *
+            @test e.detail == "attachment cache: the cached file $path changed while it " *
                 "was being hashed, so something other than ChainTables writes to this cache, which ChainTables keeps " *
                 "read-only: stop it. The cache is damaged, not the chain: deleting $path and $path.meta is always safe, " *
                 "and the next read fetches it again (ADR-0046)."

@@ -87,6 +87,23 @@ Three parts, in order:
 3. **The next move**, naming the function: `repair!(copy)`, `unpin!(copy)`,
    `sync!(copy)`, or the field to set.
 
+**How the message is built** (amended 2026-11-25, with the adoption of the Julia style
+guide v1.0). `showerror` builds the message from the exception: a summary of what
+happened, fixed per type; `detail`, the text that no field holds, when there is any;
+one line per evidence field that is set; and the next move. Where the next move
+depends on the case, `showerror` looks it up by the type's `reason` field. No type
+holds the message as a field: a caller reads the evidence fields and `detail`, and
+`sprint(showerror, e)` gives the text. Every evidence field is a keyword of the
+type's constructor.
+
+```
+StaleHeadError: the write builder's head is behind the chain.
+  chain_id = AAAQEAYEAUDAOCAJBIFQYDIOB4
+  slot = 1
+  chain_slot = 2
+Run `sync!(copy)`, recompute the row set and build again with `write_builder(copy)`. This builder is spent.
+```
+
 Two messages are deliberately uncertain and must stay that way.
 `ChainNotFoundError` cannot tell a wrong prefix from a truncated chain — ADR-0006
 left "empty chain" and "missing prefix" indistinguishable on purpose — so it

@@ -271,14 +271,14 @@ end
 # as fields; the store knew only the key and the caller).
 function refused_for(e::WriteRefusedError, chain::Chain, chain_id, slot)
     key = something(e.key, slot_key(chain, slot))
-    msg = "write refused for slot $slot of chain $chain_id at $(location(chain)): " * chopprefix(e.msg, "write refused: ")
+    msg = "write refused for slot $slot of chain $chain_id at $(location(chain)): " * chopprefix(e.detail, "write refused: ")
     return WriteRefusedError(msg; chain_id, slot, key, e.caller, e.reason)
 end
 
 # The same for a gateway that fills another bucket than the chain's (ADR-0029).
 function refused_for(e::GatewayMismatchError, chain::Chain, chain_id, slot)
     key = something(e.key, slot_key(chain, slot))
-    msg = "gateway mismatch for slot $slot of chain $chain_id at $(location(chain)): " * chopprefix(e.msg, "gateway mismatch: ")
+    msg = "gateway mismatch for slot $slot of chain $chain_id at $(location(chain)): " * chopprefix(e.detail, "gateway mismatch: ")
     return GatewayMismatchError(msg; chain_id, slot, key, e.bucket, e.gateway)
 end
 

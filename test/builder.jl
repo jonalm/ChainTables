@@ -32,7 +32,7 @@ Base.getproperty(r::BuilderTestRow, n::Symbol) = getfield(r, :fields)[n]
     refused(f) = try
         f(); "no error"
     catch e
-        e isa WriteBuilderError ? e.msg : rethrow()
+        e isa WriteBuilderError ? e.detail : rethrow()
     end
     applied(ops) = (
         c = Content(); for op in ops

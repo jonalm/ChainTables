@@ -56,6 +56,13 @@ ChainTables.fetch_object(s::StoreTestInterrupted, key) =
             @test !ChainTables.retryable(ChainTables.TransportError("refused"; status))
         end
         @test !ChainTables.retryable(ErrorException("not a transport error"))
+        # a refusal, a mismatch, an expired URL and an ending session are never retried
+        for e in (
+                ChainTables.WriteRefusedError(; reason = "not_allowed"), ChainTables.GatewayMismatchError(),
+                ChainTables.AttachmentURLExpiredError(), ChainTables.GatewaySessionEndingError(),
+            )
+            @test !ChainTables.retryable(e)
+        end
     end
 
     @testset "cache directory: CHAINTABLES_CACHE_DIR, else the depot (ADR-0019)" begin

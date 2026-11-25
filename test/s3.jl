@@ -643,7 +643,7 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
             end
             @test e isa S3T.AttachmentChangedError && e.key == other
             @test startswith(
-                sprint(showerror, e), "AttachmentChangedError: attachment changed: the upload of $other to " *
+                e.detail, "attachment changed: the upload of $other to " *
                     "http://127.0.0.1:$(server.port)/bkt/$other was refused as BadDigest"
             )
             @test occursin("Stop whatever writes the file, then put the attachment again", sprint(showerror, e))
@@ -696,7 +696,7 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
                 end
                 @test e isa UnsupportedStoreError && e.endpoint == endpoint
                 msg = sprint(showerror, e)
-                @test startswith(msg, "UnsupportedStoreError: unsupported object store: create_chain(chain) refuses to commit to $endpoint, which is not AWS S3")
+                @test startswith(e.detail, "unsupported object store: create_chain(chain) refuses to commit to $endpoint, which is not AWS S3")
                 @test occursin("If-None-Match: *", msg) && occursin("never overwrites", msg)      # the promise
                 @test occursin("rewritten chain", msg) && occursin("silent data loss", msg)       # the consequence
                 @test occursin("assume_first_writer_wins = true", msg)                            # the field
@@ -720,7 +720,7 @@ const S3TEST_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
                     e
                 end
                 @test e isa UnsupportedStoreError && e.endpoint == endpoint
-                @test startswith(sprint(showerror, e), "UnsupportedStoreError: unsupported object store: commit!(w) refuses to commit to $endpoint")
+                @test startswith(e.detail, "unsupported object store: commit!(w) refuses to commit to $endpoint")
                 @test length(server.requests) == n                       # before anything: no request, no file
                 @test S3T.head(copy).slot == 0 && isempty(S3T.tables(copy)) && readdir(joinpath(dir, "a", "tables")) == []
                 @test_throws "this builder is spent" S3T.commit!(w)

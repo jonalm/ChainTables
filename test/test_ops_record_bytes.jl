@@ -14,7 +14,7 @@ const UNKNOWN_OP = Dict{String, Any}("op" => "nope", "table" => "t")
 const BOOL_INSERT = Dict{String, Any}(
     "op" => "insert", "table" => "t", "rows" => Any[Any[true]]
 )
-const NEXT_MOVE = "the chain is dead beyond this slot; a new chain is the recovery"
+const NEXT_MOVE = "the chain is dead beyond this slot. A new chain is the recovery."
 
 # The wire form of the slot 1 record with fields replaced, added, or (`nothing`) removed.
 function changed(; changes...)
@@ -74,7 +74,7 @@ const ENVELOPE_REFUSALS = [
     (wire = changed(; ops = Any[]), slot = 1, fragment = "record has no ops"),
     (
         wire = changed(; slot = 0, prev_hash = nothing), slot = 0,
-        fragment = "malformed record at slot 0: slot 0 carries 1 op; genesis carries none",
+        fragment = "slot 0 carries 1 op; genesis carries none",
     ),
     (wire = changed(; ops = Any[1]), slot = nothing, fragment = "op 1: op is not a map"),
     (
@@ -102,28 +102,23 @@ const ENVELOPE_REFUSALS = [
         wire = changed(; client = client_with("host" => 1)), slot = nothing,
         fragment = "client.host is not text",
     ),
-    # The slot the bytes were fetched from must be the slot the record names (ADR-0002).
-    (
-        wire = SLOT_1_WIRE, slot = 3,
-        fragment = "malformed record at slot 3: the record names slot 1",
-    ),
     # A column name starting with `_` (ADR-0032), or ending in a newline, is refused
     # when the shape of a create_table is read.
     (
         wire = with_second_column_named("_v"), slot = 2,
-        fragment = "malformed record at slot 2: op 1: " *
+        fragment = "op 1: " *
             "column name \"_v\" is not an identifier",
     ),
     (
         wire = with_second_column_named("v\n"), slot = 2,
-        fragment = "malformed record at slot 2: op 1: " *
+        fragment = "op 1: " *
             "column name \"v\\n\" is not an identifier",
     ),
     # A cell is a typed value or null, whatever its column: a bool is neither.
     (
         wire = changed(; ops = Any[BOOL_INSERT]),
         slot = 1,
-        fragment = "malformed record at slot 1: op 1: \"rows\" of an insert op holds " *
+        fragment = "op 1: \"rows\" of an insert op holds " *
             "a value of type Bool, which is not a typed value",
     ),
 ]
@@ -188,22 +183,33 @@ end
 
 @testset "decode_record names the slot and the chain, and gives the next move" begin
     err = (
-        @test_throws MalformedRecordError "malformed record at slot 1" decoded(
+        @test_throws MalformedRecordError "unknown envelope field \"extra\"" decoded(
             changed(; extra = 1)
         )
     ).value
     @test err.slot == 1
     @test err.chain_id == "AAAQEAYEAUDAOCAJBIFQYDIOB4"
     @test err.op === nothing
-    @test occursin(NEXT_MOVE, err.msg)
+    @test endswith(sprint(showerror, err), NEXT_MOVE)
+end
+
+# The slot the bytes were fetched from must be the slot the record names (ADR-0002).
+@testset "decode_record refuses a record that names another slot than it was read at" begin
+    err = (
+        @test_throws MalformedRecordError "the record names slot 1" decoded(
+            SLOT_1_WIRE; slot = 3
+        )
+    ).value
+    @test err.slot == 3
 end
 
 @testset "decode_record refuses bytes that are not the format's CBOR" begin
-    @test_throws(
-        MalformedRecordError,
-        "malformed record at slot 5: not deterministic CBOR (byte 0: ",
-        Ops.decode_record(UInt8[0xff]; slot = 5)
-    )
+    err = (
+        @test_throws MalformedRecordError "not deterministic CBOR (byte 0: " (
+            Ops.decode_record(UInt8[0xff]; slot = 5)
+        )
+    ).value
+    @test err.slot == 5
 end
 
 @testset "decode_record refuses trailing bytes" begin
@@ -221,7 +227,7 @@ end
 @testset "decode_record refuses bytes over the cap" begin
     @test_throws(
         MalformedRecordError,
-        "malformed record at slot 0: record is 67108865 bytes; the cap is 67108864",
+        "record is 67108865 bytes; the cap is 67108864",
         Ops.decode_record(zeros(UInt8, RECORD_CAP + 1); slot = 0)
     )
 end

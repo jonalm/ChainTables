@@ -13,8 +13,8 @@ Examples: test/test_ops_record_bytes_examples.jl
 function encode_record(r::Record)
     bytes = CBOR.encode(wire(r))
     length(bytes) <= MAX_RECORD_BYTES || throw(
-        WriteBuilderError(
-            "record is $(length(bytes)) bytes; $CAP_TEXT: " *
+        WriteBuilderError(;
+            detail = "record is $(length(bytes)) bytes; $CAP_TEXT: " *
                 "split the write into more than one commit"
         )
     )
@@ -53,18 +53,22 @@ checked at `apply!`, where the shape is known. Throws `MalformedRecordError`.
 Examples: test/test_ops_record_bytes_examples.jl
 """
 function decode_record(bytes::AbstractVector{UInt8}; slot = nothing)
-    length(bytes) <= MAX_RECORD_BYTES ||
-        throw(malformed(slot, nothing, "record is $(length(bytes)) bytes; $CAP_TEXT"))
+    length(bytes) <= MAX_RECORD_BYTES || throw(
+        MalformedRecordError(; slot, detail = "record is $(length(bytes)) bytes; $CAP_TEXT")
+    )
     wire = decoded_item(bytes, slot)
     wire isa AbstractDict || throw(
-        malformed(slot, nothing, "record is not a map, got a value of type $(typeof(wire))")
+        MalformedRecordError(;
+            slot, detail = "record is not a map, got a value of type $(typeof(wire))"
+        )
     )
     named = slot === nothing ? readable_slot(wire) : slot
     record = try
         record_from_wire(wire, named)
     catch e
         e isa ModelError || rethrow()
-        throw(malformed(named, readable_chain_id(wire), e.detail))
+        chain_id = readable_chain_id(wire)
+        throw(MalformedRecordError(; chain_id, slot = named, e.detail))
     end
     return record
 end
@@ -74,29 +78,14 @@ function decoded_item(bytes, slot)
         CBOR.decode(bytes)
     catch e
         e isa CBOR.DecodeError || rethrow()
-        what = "not deterministic CBOR (byte $(e.offset): $(e.detail))"
-        throw(malformed(slot, nothing, what))
+        detail = "not deterministic CBOR (byte $(e.offset): $(e.detail))"
+        throw(MalformedRecordError(; slot, detail))
     end
     return item
 end
 
-# The MalformedRecordError message (ADR-0020): what happened, the evidence in the text,
-# and the one next move ADR-0025 allows.
-function malformed(slot, chain_id, what; op = nothing)
-    where = slot === nothing ? "at an unknown slot" : "at slot $slot"
-    cid = chain_id === nothing ? nothing : ChainTables.chain_id_string(chain_id)
-    evidence = cid === nothing ? "" : " (chain $cid)"
-    return MalformedRecordError(
-        "malformed record $where: $what$evidence. " *
-            "No client can apply it under format_version $FORMAT_VERSION: " *
-            "the committer had a bug, the chain is dead beyond this slot; " *
-            "a new chain is the recovery (ADR-0025).";
-        chain_id = cid, slot, op
-    )
-end
-
-# The slot and the chain id as evidence for the message, when the envelope carries them
-# in readable form.
+# The slot and the chain id as evidence, when the envelope carries them in readable
+# form.
 function readable_slot(wire)
     slot = get(wire, "slot", nothing)
     return slot isa Int64 ? slot : nothing
@@ -105,7 +94,7 @@ end
 function readable_chain_id(wire)
     chain_id = get(wire, "chain_id", nothing)
     chain_id isa AbstractVector{UInt8} && length(chain_id) == 16 || return nothing
-    return chain_id
+    return ChainTables.chain_id_string(chain_id)
 end
 
 function record_from_wire(wire, slot)
