@@ -17,12 +17,13 @@ public AbstractObjectStore, AttachmentAbsentError, AttachmentCacheError,
     NotALocalCopyError, ObjectMeta, Ops, PinnedCopyError, PutOutcome, RecordCacheError,
     RewrittenChainError, StaleHeadError, StateFingerprint, TableDeclaration, TableView,
     TransactionHash, UnsupportedStoreError, WriteBuilder, WriteBuilderError,
-    WriteRefusedError, WrongChainError, add_column!, cache_namespace, chain_id_bytes,
-    chain_id_string, column!, commit!, create_chain, create_table!, delete_rows!,
-    drop_column!, drop_table!, fetch_object, head, insert_rows!, is_pinned, ispinned,
-    list_objects, open, primary_key!, put_object_if_absent, record_author, shape,
-    stat_object, sync!, table, table_with_slots, tables, try_create_chain, unpin!,
-    update_rows!, write_builder
+    WriteRefusedError, WrongChainError, add_column!, as_of, cache_namespace,
+    chain_id_bytes, chain_id_string, column!, commit!, commit_log, create_chain,
+    create_table!, delete_rows!, drop_column!, drop_table!, fetch_object, head,
+    insert_rows!, is_pinned, ispinned, list_objects, open, primary_key!,
+    put_object_if_absent, record_author, repair!, shape, slot_at, stat_object, sync!,
+    table, table_with_slots, tables, try_create_chain, unpin!, update_rows!, verify,
+    write_builder
 
 include("hashes.jl")
 include("errors.jl")
@@ -52,7 +53,12 @@ include("create_chain.jl")
 include("read_forward.jl")
 include("sync.jl")
 include("commit.jl")
-include("recovery.jl")
+include("read_back.jl")
+include("verify.jl")
+include("repair.jl")
+include("as_of.jl")
+include("slot_at.jl")
+include("commit_log.jl")
 include("s3.jl")
 include("gateway.jl")
 include("bucket.jl")

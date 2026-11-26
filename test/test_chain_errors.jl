@@ -28,16 +28,19 @@ end
 
 @testset "DivergenceError shows what happened, the evidence and the next move" begin
     e = DivergenceError(;
-        chain_id = CHAIN_ID, slot = 3, expected = StateFingerprint(ZEROS),
-        computed = StateFingerprint(ONES)
+        path = COPY_PATH, chain_id = CHAIN_ID, slot = 3,
+        expected = StateFingerprint(ZEROS), computed = StateFingerprint(ONES),
+        tables = ["pairs", "samples"],
     )
     @test sprint(showerror, e) ==
         "DivergenceError: a fresh replay of the record cache does not give the " *
         "head's state fingerprint.\n" *
+        "  path = /lab/copy\n" *
         "  chain_id = AAAAAAAAAAAAAAAAAAAAAAAAAA\n" *
         "  slot = 3\n" *
         "  expected = $ZEROS_HEX\n" *
         "  computed = $ONES_HEX\n" *
+        "  tables = [\"pairs\", \"samples\"]\n" *
         "This machine cannot reproduce the chain. Nothing was written; the local " *
         "copy stays readable and never commits onto this chain."
 end

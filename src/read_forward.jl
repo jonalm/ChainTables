@@ -4,6 +4,8 @@ const PENDING_BYTES = 64 * 2^20
 
 const SLOT_VANISHED = "the slot was there when head discovery probed it and is absent now"
 
+const NAMED_BY_SLOT_ABOVE = "the store does not hold the record that the slot above names"
+
 """
     ParentLink
 
@@ -194,14 +196,7 @@ function checked_record(read::ForwardRead, slot, bytes)
     evidence = (; read.path, chain.bucket, chain.prefix, read.chain_id, slot)
     bytes === nothing && throw(RewrittenChainError(; evidence..., detail = SLOT_VANISHED))
     record = Ops.decode_record(bytes; slot)
-    is_of_chain(record, read.chain_id) || throw(
-        MalformedRecordError(;
-            read.chain_id, slot,
-            detail = "the record carries chain id " *
-                "$(chain_id_string(record.chain_id)): a record of another chain was " *
-                "written into this prefix",
-        )
-    )
+    check_of_chain(record, read.chain_id, slot)
     parent = parent_hash(read)
     names_parent(record, parent) || throw(
         RewrittenChainError(;
@@ -212,6 +207,18 @@ function checked_record(read::ForwardRead, slot, bytes)
         )
     )
     return record
+end
+
+function check_of_chain(record::Ops.Record, chain_id, slot)
+    is_of_chain(record, chain_id) || throw(
+        MalformedRecordError(;
+            chain_id, slot,
+            detail = "the record carries chain id " *
+                "$(chain_id_string(record.chain_id)): a record of another chain was " *
+                "written into this prefix",
+        )
+    )
+    return nothing
 end
 
 function is_of_chain(record::Ops.Record, chain_id)
@@ -257,24 +264,33 @@ function pending_record(read::ForwardRead, pending::PendingRecord)
     return record === nothing ? read_vouched_record(read, pending) : record
 end
 
-# A vouched-for record that was not kept: from the cache again. When the file changed
-# meanwhile, it is read from the store, which must hold the bytes that the chain names.
+# A vouched-for record that was not kept: from the cache again.
 function read_vouched_record(read::ForwardRead, pending::PendingRecord)
-    chain = read.chain
-    slot, expected = pending.slot, pending.transaction_hash
+    slot = pending.slot
+    bytes = fetch_named_record(
+        read.chain, slot, pending.transaction_hash;
+        read.path, read.chain_id, detail = NAMED_BY_SLOT_ABOVE,
+    )
+    return Ops.decode_record(bytes; slot)
+end
+
+# Returns the bytes of `slot` that hash to `expected`, the hash the chain names for it:
+# the record cache's, else the store's, which then replace the cached file. When the
+# store does not hold them either, the cached file stays as it was, as evidence
+# (ADR-0040). `path`, `chain_id` and `detail` are for the `RewrittenChainError`.
+function fetch_named_record(chain::Chain, slot, expected; path, chain_id, detail)
     bytes = read_cached_record(chain, slot)
-    hashes_to(bytes, expected) && return Ops.decode_record(bytes; slot)
+    hashes_to(bytes, expected) && return bytes
     key = slot_key(chain, slot)
     bytes = fetch_object(chain.store, key)
     hashes_to(bytes, expected) || throw(
         RewrittenChainError(;
-            read.path, chain.bucket, chain.prefix, read.chain_id, slot,
-            expected = TransactionHash(expected), found = found_hash(bytes),
-            detail = "the store does not hold the record that the slot above names",
+            path, chain.bucket, chain.prefix, chain_id, slot,
+            expected = TransactionHash(expected), found = found_hash(bytes), detail,
         )
     )
     write_cached_record(chain, key, bytes)
-    return Ops.decode_record(bytes; slot)
+    return bytes
 end
 
 hashes_to(bytes, expected) = bytes !== nothing && Ops.transaction_hash(bytes) == expected

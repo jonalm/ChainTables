@@ -198,7 +198,7 @@ end
         mkpath(old_layout)
         foreach(slot -> write(joinpath(old_layout, lpad(slot, 12, '0')), b"old"), 0:5)
         of_fork = TransactionHash(stored_hash(fork.b, 2))
-        not_found = "no record of the chain at bkt/p hashes to it"
+        not_found = "no record of the chain at bkt/p has the transaction hash"
         @test_logs REPLACED REPLACED REPLACED REPLACED min_level = DEBUG (
             @test_throws ArgumentError not_found as_of(
                 chain, of_fork

@@ -58,9 +58,7 @@ function sync!(local_copy::LocalCopy)
     check_live(local_copy, "sync!")
     known = fetch_known_slot(local_copy, chain)
     top = fetch_top_slot(chain, known)
-    top == -1 && throw(
-        ChainNotFoundError(; chain.bucket, chain.prefix, detail = "the call was `sync!`")
-    )
+    top == -1 && throw(ChainNotFoundError(chain, "sync!"))
     applied = top == known ? Int64(0) : replay!(local_copy, known + 1, top).applied
     head_file = local_copy.head
     transaction_hash = TransactionHash(head_file.transaction_hash)

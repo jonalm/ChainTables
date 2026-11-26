@@ -30,7 +30,6 @@ end
 
     include("fixtures/s3_server.jl")     # the loopback S3: s3.jl, gateway.jl
     include("fixtures/gateway.jl")       # gwtest_record: gateway.jl, live/gateway.jl
-    include("fixtures/model_tables.jl")  # row_of, rows_in_key_order: recovery.jl
 
     in_own_module("test_hashes.jl")
     in_own_module("test_hashes_examples.jl")
@@ -90,7 +89,16 @@ end
     in_own_module("test_record_cache_workflow.jl")
     in_own_module("test_read_forward_workflow.jl")
     in_own_module("test_head_discovery_workflow.jl")
-    include("recovery.jl")
+    in_own_module("test_verify.jl")
+    in_own_module("test_verify_examples.jl")
+    in_own_module("test_repair.jl")
+    in_own_module("test_repair_examples.jl")
+    in_own_module("test_as_of.jl")
+    in_own_module("test_as_of_examples.jl")
+    in_own_module("test_slot_at.jl")
+    in_own_module("test_slot_at_examples.jl")
+    in_own_module("test_commit_log.jl")
+    in_own_module("test_commit_log_examples.jl")
     include("s3.jl")
     include("gateway.jl")
     include("bucket.jl")

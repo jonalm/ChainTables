@@ -35,14 +35,17 @@ end
 Thrown when `repair!` replays the record cache to the head's slot and gets another state
 fingerprint than the head holds.
 
-`expected` is the head's fingerprint and `computed` the replay's. The error does not
-say which side is right.
+`expected` is the head's fingerprint and `computed` the replay's. `tables` names the
+tables whose content differs. The error does not say which side is right. `path` is the
+local copy.
 """
 Base.@kwdef struct DivergenceError <: ChainTablesError
+    path::Union{Nothing, String} = nothing
     chain_id::Union{Nothing, String} = nothing
     slot::Union{Nothing, Int64} = nothing
     expected::Union{Nothing, StateFingerprint} = nothing
     computed::Union{Nothing, StateFingerprint} = nothing
+    tables::Union{Nothing, Vector{String}} = nothing
     detail::String = ""
 end
 
@@ -113,13 +116,12 @@ end
 """
     RecordCacheError
 
-Thrown when `verify(copy; full = true)` or `repair!` finds that the record cache lacks
-the record of `slot` or holds bytes of another hash, and when a cache file changes
-between two reads.
+Thrown when `verify(copy; full = true)` finds that the record cache lacks the record of
+`slot` or holds bytes of another hash.
 
 `path` is the cache file, `expected` the hash the chain names and `found` the hash of
-the file's bytes, `nothing` when the file is missing. `sync!`, `as_of` and `slot_at`
-never throw it: they read such a record from the object store.
+the file's bytes, `nothing` when the file is missing. Every other call reads such a
+record from the object store.
 """
 Base.@kwdef struct RecordCacheError <: ChainTablesError
     chain_id::Union{Nothing, String} = nothing

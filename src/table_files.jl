@@ -168,10 +168,9 @@ end
 # A file is written to a `.tmp` in its directory and renamed into place. A table file's
 # name is known only once it is hashed, so its `.tmp` has a random name.
 function write_table_file(local_copy::LocalCopy, t::Model.Table)
-    dir = tables_dir(local_copy)
-    tmp = joinpath(dir, bytes2hex(rand(UInt8, 8)) * ".tmp")
+    tmp = temporary_table_path(local_copy)
     hash = Base.open(io -> Model.write_table(io, t), tmp, "w")
-    target = joinpath(dir, bytes2hex(hash))
+    target = table_path(local_copy, hash)
     # A file that exists is not written again (ADR-0009).
     if isfile(target)
         rm(tmp; force = true)
@@ -179,6 +178,27 @@ function write_table_file(local_copy::LocalCopy, t::Model.Table)
         mv(tmp, target; force = true)
     end
     return hash
+end
+
+function temporary_table_path(local_copy::LocalCopy)
+    return joinpath(tables_dir(local_copy), bytes2hex(rand(UInt8, 8)) * ".tmp")
+end
+
+# The table files that the head names, each with its tables in name order. Two tables
+# with the same content share one file (ADR-0023).
+function table_files_of(head_file::Head)
+    hashes = unique(map(last, head_file.tables))
+    return [hash => tables_in_file(head_file, hash) for hash in hashes]
+end
+
+function tables_in_file(head_file::Head, hash)
+    return [name for (name, table_hash) in head_file.tables if table_hash == hash]
+end
+
+# Returns what the table file named `hash` hashes to, `nothing` when it is missing.
+function hash_table_file(local_copy::LocalCopy, hash)
+    file = table_path(local_copy, hash)
+    return isfile(file) ? hash_file(file) : nothing
 end
 
 function check_advance(local_copy::LocalCopy, chain_id, slot)

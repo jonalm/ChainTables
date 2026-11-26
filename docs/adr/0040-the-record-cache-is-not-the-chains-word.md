@@ -73,9 +73,8 @@ other bytes for raises the new `RecordCacheError`, naming the file and both
 hashes, with `repair!(copy)` as the next move. **`repair!` fetches such a
 record itself** and replaces the file instead of telling the user to delete
 it. The store's bytes not hashing to what the chain names are
-`RewrittenChainError`. A cache file that changes between `verify`'s or
-`repair!`'s two reads of it is `RecordCacheError` too: another process is
-writing the cache, or the disk damaged it.
+`RewrittenChainError`. A cache file that changes between `repair!`'s two reads
+of it is fetched again, like any other hit that fails (amended, below).
 
 **The read-back of a put asks the store, never the cache.** ADR-0010 made the
 read-back the authority, and a cache file is not one.
@@ -155,3 +154,10 @@ read-back the authority, and a cache file is not one.
 **Amended (Guide v1.0 Adoption)**: the replaced file was reported with `@warn`. A
 caller can neither catch nor test a log line, and the package has recovered by itself
 here, so it leaves a `@debug` record instead.
+
+**Amended (Guide v1.0 Adoption 3b)**: a cache file that changed between two reads was
+`RecordCacheError` ("run the call again"). `verify` now reads each record once, so it
+has no second read. `repair!`'s second read takes the path of every other read of a
+record the chain names: a file that no longer hashes to that name is fetched from the
+store, which replaces it, and the store's bytes failing too is `RewrittenChainError`.
+`RecordCacheError` comes only from `verify(copy; full = true)`.

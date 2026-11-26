@@ -201,6 +201,11 @@ function location(chain::Chain)
     return isempty(chain.prefix) ? chain.bucket : "$(chain.bucket)/$(chain.prefix)"
 end
 
+# For a call that finds no slot 0 at the chain's bucket and prefix.
+function ChainNotFoundError(chain::Chain, call)
+    return ChainNotFoundError(; chain.bucket, chain.prefix, detail = "the call was `$call`")
+end
+
 chain_of(local_copy::LocalCopy{<:Chain}, call) = local_copy.chain
 
 function chain_of(local_copy::LocalCopy, call)
