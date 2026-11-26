@@ -48,7 +48,7 @@ function (::Type{T})(message::String; evidence...) where {T <: ChainTablesError}
     return T(; detail = message, NamedTuple{keys(given)}(typed)...)
 end
 
-typed_evidence(::Type, value) = value
+typed_evidence(::Type{T}, value) where {T} = value
 
 function typed_evidence(::Type{Union{Nothing, TransactionHash}}, bytes::Vector{UInt8})
     return TransactionHash(bytes)

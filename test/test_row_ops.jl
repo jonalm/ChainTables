@@ -77,7 +77,7 @@ const ROW_SET_REFUSALS = [
         fragment = "update_rows!(w, :nope): unknown table \"nope\"",
     ),
     (
-        name = "delete from an unknown table",
+        name = "delete rows from an unknown table",
         call = w -> delete_rows!(w, :nope, [(id = 1,)]),
         fragment = "delete_rows!(w, :nope): unknown table \"nope\"",
     ),
@@ -97,7 +97,7 @@ const ROW_SET_REFUSALS = [
         fragment = "update_rows!(w, :samples): unknown column \"colour\"",
     ),
     (
-        name = "delete with an unknown column",
+        name = "delete rows with an unknown column",
         call = w -> delete_rows!(w, :samples, [(id = 1, colour = "red")]),
         fragment = "delete_rows!(w, :samples): unknown column \"colour\"",
     ),
@@ -125,19 +125,19 @@ const ROW_SET_REFUSALS = [
             "update_rows!(w, :samples): column \"mass\" is float64, got a value of type String",
     ),
     (
-        name = "delete with a column that is no key column",
+        name = "delete rows with a column that is no key column",
         call = w -> delete_rows!(w, :samples, [(id = 1, label = "a")]),
         fragment =
-            "delete_rows!(w, :samples): row set names column \"label\"; a delete names the key columns only",
+            "delete_rows!(w, :samples): row set names column \"label\"; a row set to delete names the key columns only",
     ),
     (
-        name = "delete without the key",
+        name = "delete rows without the key",
         call = w -> delete_rows!(w, :samples, [NamedTuple()]),
         fragment =
-            "delete_rows!(w, :samples): row set names no key column \"id\"; a delete names the full key",
+            "delete_rows!(w, :samples): row set names no key column \"id\"; a row set to delete names the full key",
     ),
     (
-        name = "delete a key off its value type",
+        name = "delete rows at a key off its value type",
         call = w -> delete_rows!(w, :samples, [(id = 1.0,)]),
         fragment =
             "delete_rows!(w, :samples): column \"id\" is int64, got a value of type Float64",
@@ -171,7 +171,7 @@ const ROW_SET_REFUSALS = [
         fragment = "update_rows!(w, :samples): duplicate key (1,) inside one op",
     ),
     (
-        name = "delete a key twice",
+        name = "delete rows at one key twice",
         call = w -> delete_rows!(w, :samples, [(id = 1,), (id = 1,)]),
         fragment = "delete_rows!(w, :samples): duplicate key (1,) inside one op",
     ),
@@ -188,7 +188,7 @@ const ROW_SET_REFUSALS = [
             "insert_rows!(w, :samples): the row set is empty; an op carries at least one row",
     ),
     (
-        name = "an empty row set to delete",
+        name = "delete rows with an empty row set",
         call = w -> delete_rows!(w, :samples, ()),
         fragment =
             "delete_rows!(w, :samples): the row set is empty; an op carries at least one row",
@@ -212,7 +212,7 @@ const ROW_SET_REFUSALS = [
             "insert_rows!(w, :samples): column \"id\" is int64, got a value of type Symbol",
     ),
     (
-        name = "keys of two types to delete",
+        name = "delete rows at keys of two types",
         call = w -> delete_rows!(w, :samples, [(id = 1,), (id = "x",)]),
         fragment =
             "delete_rows!(w, :samples): column \"id\" is int64, got a value of type String",

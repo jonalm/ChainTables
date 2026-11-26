@@ -74,7 +74,7 @@ const APPLY_REFUSALS = [
         fragment = "op 1 (delete on \"t\"): " *
             "rows are not in primary-key order: (1,) after (2,)",
     ),
-    # The state gate: insert on a present key, update or delete on an absent one.
+    # The state gate: insert on a present key, update or delete rows on an absent one.
     (
         ops = [Insert("t", [Any[1, "x"]])],
         fragment = "op 1 (insert on \"t\"): insert names a key that is present: (1,)",
@@ -85,7 +85,7 @@ const APPLY_REFUSALS = [
     ),
     (
         ops = [Delete("t", [Any[9]])],
-        fragment = "op 1 (delete on \"t\"): delete names a key that is absent: (9,)",
+        fragment = "op 1 (delete on \"t\"): delete rows names a key that is absent: (9,)",
     ),
     (
         ops = [Update("t", ["id"], [Any[1, 5]])],
@@ -225,24 +225,24 @@ end
     content = two_row_content()
     Ops.apply!(content, Delete("t", [Any[1]]), 2)
     @test_throws(
-        ModelError, "delete names a key that is absent: (1,)",
+        ModelError, "delete rows names a key that is absent: (1,)",
         Ops.apply!(content, Delete("t", [Any[1]]), 2)
     )
 end
 
-@testset "determinism vector: the ops reach the frozen state_fingerprint" begin
+@testset "apply! brings the determinism vector to its frozen state fingerprint" begin
     content = Content()
     Ops.apply!(content, determinism_record())
     @test bytes2hex(Model.state_fingerprint(content)) == VECTOR_STATE_FINGERPRINT
 end
 
-@testset "determinism vector: transaction_hash" begin
+@testset "transaction_hash of the determinism vector's record bytes is frozen" begin
     bytes = Ops.encode_record(determinism_record())
     @test length(bytes) == VECTOR_RECORD_SIZE
     @test bytes2hex(Ops.transaction_hash(bytes)) == VECTOR_TRANSACTION_HASH
 end
 
-@testset "determinism vector: a second client reads what the first wrote" begin
+@testset "decode_record reads back what encode_record wrote of the determinism vector" begin
     vector = determinism_record()
     bytes = Ops.encode_record(vector)
     back = Ops.decode_record(bytes; slot = 2^32)

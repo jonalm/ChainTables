@@ -106,7 +106,7 @@ end
 
 function delete_rows!(t::Table, keys)
     check_delete(t.shape, keys)
-    foreach(key -> check_present(t, Tuple(key), "delete"), keys)
+    foreach(key -> check_present(t, Tuple(key), "delete rows"), keys)
     keep = setdiff(1:n_rows(t), (t.index[Tuple(key)] for key in keys))
     t.columns = map(column -> column[keep], t.columns)
     t.slots = t.slots[keep]

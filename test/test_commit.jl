@@ -27,9 +27,9 @@ const REFUSED_OPS = [
             "is absent: (9,)",
     ),
     (
-        name = "a delete on an absent key",
+        name = "delete rows at an absent key",
         build = w -> delete_rows!(w, :samples, [(id = 9,)]),
-        detail = "commit!(w): op 1 (delete on \"samples\"): delete names a key that " *
+        detail = "commit!(w): op 1 (delete on \"samples\"): delete rows names a key that " *
             "is absent: (9,)",
     ),
 ]
@@ -318,8 +318,8 @@ end
             head_file.written_by,
         )
         w = delete_one(local_copy)
-        drifted = "the local copy drifted from the chain after its head was applied"
-        err = @test_throws FingerprintMismatchError drifted commit!(w)
+        diverged = "the local copy diverged from the chain after its head was applied"
+        err = @test_throws FingerprintMismatchError diverged commit!(w)
         e = err.value
         @test (e.path, e.chain_id, e.slot) == (local_copy.path, head_file.chain_id, 1)
         @test (e.expected, e.computed) == (fill(0xee, 32), held.state_fingerprint)

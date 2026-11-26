@@ -103,14 +103,15 @@ function read_checked_table(local_copy::LocalCopy, name, hash)
     what = "table $(repr(name))"
     isfile(file) || throw(
         LocalCopyInconsistentError(
-            local_copy, hash, :table_file_missing, "$what: the file is missing"
+            local_copy, hash; reason = :table_file_missing,
+            detail = "$what: the file is missing",
         )
     )
     found = hash_file(file)
     found == hash || throw(
         LocalCopyInconsistentError(
-            local_copy, hash, :table_file_hash,
-            "$what: the file hashes to $(bytes2hex(found))",
+            local_copy, hash; reason = :table_file_hash,
+            detail = "$what: the file hashes to $(bytes2hex(found))",
         )
     )
     t = try
@@ -119,7 +120,7 @@ function read_checked_table(local_copy::LocalCopy, name, hash)
         e isa Union{Model.ModelError, CBOR.DecodeError} || rethrow()
         detail = "$what: $(unreadable_detail(e))"
         reason = :table_file_not_canonical
-        throw(LocalCopyInconsistentError(local_copy, hash, reason, detail))
+        throw(LocalCopyInconsistentError(local_copy, hash; reason, detail))
     end
     check_row_slots(local_copy, t, hash, what)
     return t
@@ -132,15 +133,15 @@ function check_row_slots(local_copy::LocalCopy, t::Model.Table, hash, what)
     slot = local_copy.head.slot
     top <= slot || throw(
         LocalCopyInconsistentError(
-            local_copy, hash, :row_slot_above_head,
-            "$what: the file holds a row slot $top, above the head's slot $slot",
+            local_copy, hash; reason = :row_slot_above_head,
+            detail = "$what: the file holds a row slot $top, above the head's slot $slot",
         )
     )
     return nothing
 end
 
 # The setup that the throw sites of a damaged table file share.
-function LocalCopyInconsistentError(local_copy::LocalCopy, hash, reason, detail)
+function LocalCopyInconsistentError(local_copy::LocalCopy, hash; reason, detail)
     head_file = local_copy.head
     file = "tables/$(bytes2hex(hash))"
     return LocalCopyInconsistentError(;

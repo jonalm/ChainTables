@@ -36,7 +36,7 @@ end
 Add the op that deletes a row set from `table`.
 
 Every row names the key columns and nothing else. Throws `WriteBuilderError` for a row
-set that breaks a rule. `commit!` refuses a delete on a key that is absent.
+set that breaks a rule. `commit!` refuses to delete rows at a key that is absent.
 
 Examples: test/test_row_ops_examples.jl
 """
@@ -83,7 +83,7 @@ function delete_op(w::WriteBuilder, table, rows)
     s = scratch_table(w, text).shape
     row_set, names = named_rows(rows)
     foreach(name -> check_is_key_column(s, String(name)), names)
-    check_names_each(names, s.key, "key column", "a delete names the full key")
+    check_names_each(names, s.key, "key column", "a row set to delete names the full key")
     key_columns = s.columns[s.key_positions]
     cells = [canonical_cells(key_columns, row) for row in row_set]
     sort_by_key!(Tuple, cells, key_columns)
@@ -103,7 +103,8 @@ function check_is_key_column(s::Model.Shape, name)
     column = s.columns[Model.column_index(s, name)]
     column.name in s.key || throw(
         Model.ModelError(
-            "row set names column $(repr(name)); a delete names the key columns only"
+            "row set names column $(repr(name)); a row set to delete names the key " *
+                "columns only"
         )
     )
     return nothing

@@ -78,7 +78,7 @@ const UPDATE_REFUSALS = [
 
 const DELETE_REFUSALS = [
     (keys = [(2,), (1,)], fragment = "rows are not in primary-key order: (1,) after (2,)"),
-    (keys = [(9,)], fragment = "delete names a key that is absent: (9,)"),
+    (keys = [(9,)], fragment = "delete rows names a key that is absent: (9,)"),
     (keys = [(1,), (1,)], fragment = "duplicate key (1,) inside one op"),
     (keys = [(1, 2)], fragment = "key (1, 2) has 2 cells; the key has 1"),
 ]
@@ -256,7 +256,7 @@ end
     @test_throws ModelError "unknown column" Model.drop_column!(wide_row(), "zz", 1)
 end
 
-@testset "a float key: NaN finds itself, and -0.0 and 0.0 are two rows" begin
+@testset "Table keys a float key by NaN, and holds -0.0 and 0.0 as two rows" begin
     table = float_keys()
     @test Model.n_rows(table) == 6
     @test haskey(table.index, (NaN,))
@@ -266,29 +266,34 @@ end
     @test row_of(table, (0.0,))[2] == "zero"
 end
 
-@testset "a float key: rows come in typed key order, NaN after +Inf" begin
+@testset "Table orders float keys in typed key order, NaN after +Inf" begin
     labels = [row[2] for row in rows_in_key_order(float_keys())]
     @test labels == ["neginf", "negzero", "zero", "one", "inf", "nan"]
 end
 
-@testset "a float key: a NaN of another bit pattern is the key that is present" begin
+@testset "insert_rows! takes a NaN of another bit pattern for the NaN key present" begin
     @test_throws(
         ModelError, "insert names a key that is present: (NaN,)",
         Model.insert_rows!(float_keys(), [Any[TABLE_SIGNBIT_NAN, "again"]], 1)
     )
 end
 
-@testset "a float key: update finds NaN, and delete tells -0.0 from 0.0" begin
+@testset "update_rows! finds a NaN key" begin
     table = float_keys()
     Model.update_rows!(table, ["l"], [Any[NaN, "still nan"]], 1)
+    @test row_of(table, (NaN,))[2] == "still nan"
+end
+
+@testset "delete_rows! tells a key of -0.0 from one of 0.0" begin
+    table = float_keys()
     Model.delete_rows!(table, [(-0.0,)])
     @test haskey(table.index, (0.0,))
     labels = [row[2] for row in rows_in_key_order(table)]
-    @test labels == ["neginf", "zero", "one", "inf", "still nan"]
+    @test labels == ["neginf", "zero", "one", "inf", "nan"]
 end
 
 # Text compares by UTF-8 bytes, so "z" sorts before "é".
-@testset "a composite key orders rows by the key columns in key declaration order" begin
+@testset "Table orders a composite key by its columns in key declaration order" begin
     rows = [
         Any[UInt8[], 0, "a"], Any[UInt8[], -1, "z"], Any[UInt8[], 2, "z"],
         Any[UInt8[], 1, "é"],
@@ -298,14 +303,14 @@ end
     @test keys == [("a", 0), ("z", -1), ("z", 2), ("é", 1)]
 end
 
-@testset "a bytes key orders rows bytewise" begin
+@testset "Table orders rows of a bytes key bytewise" begin
     rows = [Any[UInt8[]], Any[UInt8[1]], Any[UInt8[1, 2]], Any[UInt8[2]]]
     table = Table(BY_BYTES, rows, 1)
     keys = [only(row) for row in rows_in_key_order(table)]
     @test keys == [UInt8[], UInt8[1], UInt8[1, 2], UInt8[2]]
 end
 
-@testset "a bytes cell is copied in, so a caller's alias cannot change the content" begin
+@testset "Table copies a bytes cell in, so a caller's alias cannot change the content" begin
     bytes = UInt8[1, 2]
     table = Table(BY_BYTES, [Any[bytes]], 1)
     bytes[1] = 0xff

@@ -1,7 +1,7 @@
 const NO_OPS = "commit!(w): the builder has no ops; a record after genesis carries at " *
     "least one, and genesis is create_chain's. Add ops, or do not commit."
 
-const DRIFTED = "the local copy drifted from the chain after its head was applied, so " *
+const DIVERGED = "the local copy diverged from the chain after its head was applied, so " *
     "nothing is committed onto it"
 
 const HEAD_NOT_WRITTEN = "the record is in the chain, and the head of the local copy " *
@@ -61,7 +61,7 @@ function commit!(w::WriteBuilder; comment = nothing)
     # The author is fetched before anything is applied (ADR-0028).
     user = write_author(chain, head_file.chain_id, head_file.slot + 1)
     check_builder(w, head_file, comment)
-    check_head_record(local_copy, chain, DRIFTED)
+    check_head_record(local_copy, chain, DIVERGED)
     check_next_slot_empty(local_copy, chain)
     return with_rollback(() -> put_and_write_head!(w, chain, user, comment), local_copy)
 end
@@ -136,8 +136,8 @@ function put_and_write_head!(w::WriteBuilder, chain::Chain, user, comment)
     return (; slot, transaction_hash, state_fingerprint)
 end
 
-# The state gate (ADR-0025): an insert on a present key, or an update or a delete on an
-# absent one, is refused through the checks that apply runs. The op is stamped with the
+# The state gate (ADR-0025): an insert on a present key, or an update or delete rows on
+# an absent one, is refused through the checks that apply runs. The op is stamped with the
 # slot that the record is put to.
 function apply_op!(local_copy::LocalCopy, ops, index)
     op = ops[index]

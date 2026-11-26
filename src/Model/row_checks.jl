@@ -1,4 +1,4 @@
-const KEY_NEVER_CHANGES = "a key never changes (delete then insert)"
+const KEY_NEVER_CHANGES = "a key never changes (delete rows, then insert them)"
 
 # The builder and apply share these checks, so what makes an op canonical is decided
 # here and nowhere else (ADR-0025): the builder produces that form, and the checks

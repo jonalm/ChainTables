@@ -10,14 +10,24 @@ const BOTH_HASH_TYPES = [
 
 @testset "$(case.name) holds its own copy of 32 bytes" for case in BOTH_HASH_TYPES
     bytes = copy(HASH_BYTES)
-    h = @inferred case.T(bytes)
+    h = case.T(bytes)
     bytes[1] = 0xff
     @test h.bytes == HASH_BYTES
 end
 
 @testset "$(case.name) reads 64 hex characters, in either case" for case in BOTH_HASH_TYPES
-    @test @inferred(case.T(HASH_HEX)) == case.T(HASH_BYTES)
+    @test case.T(HASH_HEX) == case.T(HASH_BYTES)
     @test case.T(uppercase(HASH_HEX)) == case.T(HASH_BYTES)
+end
+
+@testset "TransactionHash infers from bytes and from hex" begin
+    @test @inferred(TransactionHash(HASH_BYTES)) == TransactionHash(HASH_HEX)
+    @test @inferred(TransactionHash(HASH_HEX)) == TransactionHash(HASH_BYTES)
+end
+
+@testset "StateFingerprint infers from bytes and from hex" begin
+    @test @inferred(StateFingerprint(HASH_BYTES)) == StateFingerprint(HASH_HEX)
+    @test @inferred(StateFingerprint(HASH_HEX)) == StateFingerprint(HASH_BYTES)
 end
 
 @testset "$(case.name) of a $(case.name) is that value" for case in BOTH_HASH_TYPES
@@ -66,7 +76,7 @@ end
     )
 end
 
-@testset "a TransactionHash and a StateFingerprint are never equal" begin
+@testset "TransactionHash and StateFingerprint are never equal" begin
     transaction_hash = TransactionHash(HASH_BYTES)
     fingerprint = StateFingerprint(HASH_BYTES)
     @test (transaction_hash == fingerprint) === false
@@ -76,7 +86,7 @@ end
 
 # A type's name in a message is qualified wherever the type is not imported into `Main`,
 # so the fragment stops before it.
-@testset "a TransactionHash and a StateFingerprint never accept each other" begin
+@testset "TransactionHash and StateFingerprint never accept each other" begin
     refused = "is 32 bytes or 64 hex characters, got a value of type"
     fingerprint = StateFingerprint(HASH_BYTES)
     err = (

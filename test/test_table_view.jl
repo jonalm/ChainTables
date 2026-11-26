@@ -256,7 +256,7 @@ end
     end
 end
 
-@testset "table_with_slots leaves the other rows as they were after a delete" begin
+@testset "table_with_slots leaves the other rows as they were after delete_rows!" begin
     with_tables_copy() do local_copy
         commit_ops!(w -> update_rows!(w, :samples, [(id = 2, mass = 0.5)]), local_copy)
         commit_ops!(w -> delete_rows!(w, :samples, [(id = 1,)]), local_copy)
