@@ -172,7 +172,7 @@ can plan around.
 
 ## Errors
 
-**`WriteRefusedError(msg; chain_id, slot, key, caller, reason)`** is the
+**`WriteRefusedError(; chain_id, slot, key, gateway, caller, reason, detail)`** is the
 fifteenth `ChainTablesError`, amending ADR-0020's table. It is raised by
 `commit!` and `create_chain`, never retried, and `caller` is the name the client
 resolved for itself. One type with a `reason` rather than three types, because
