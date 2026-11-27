@@ -1,19 +1,19 @@
 # The live suite (test/live/, ADR-0030) is never loaded by this one, so a change to an internal
 # it calls went unnoticed until a live run: aafd425 gave `upload_minted` a `size` argument and
-# test/live/attachments.jl kept calling it without (#92). This reads every `GWT.f(...)` call in
+# test/live/attachments.jl kept calling it without (#92). This reads every `ChainTables.f(...)` call in
 # test/live/*.jl and checks that `ChainTables.f` exists and has a method that takes that many
 # positional arguments and those keyword names. Argument types are not checked.
 
-# The calls `GWT.f(args...; kws...)` in `ex`, as (name, positional count or nothing when a call
+# The calls `ChainTables.f(args...; kws...)` in `ex`, as (name, positional count or nothing when a call
 # splats, keyword names, line).
 function live_gwt_calls(ex, line = 0, found = Tuple{Symbol, Union{Int, Nothing}, Vector{Symbol}, Int}[]; extra = 0)
     ex isa LineNumberNode && return found
     ex isa Expr || return found
-    if ex.head === :do  # `GWT.f(x) do t … end` is GWT.f(function, x)
+    if ex.head === :do  # `ChainTables.f(x) do t … end` is ChainTables.f(function, x)
         live_gwt_calls(ex.args[1], line, found; extra = 1)
         return live_gwt_calls(ex.args[2], line, found)
     end
-    if ex.head === :call && ex.args[1] isa Expr && ex.args[1].head === :. && ex.args[1].args[1] === :GWT
+    if ex.head === :call && ex.args[1] isa Expr && ex.args[1].head === :. && ex.args[1].args[1] === :ChainTables
         name = ex.args[1].args[2].value
         positional, keywords = fill(1, extra), Symbol[]
         splats = false
@@ -55,11 +55,11 @@ end
     for file in files
         for (name, n, keywords, line) in live_gwt_calls(Meta.parseall(read(file, String); filename = file))
             calls += 1
-            where = "$(basename(file)):$line GWT.$name"
+            where = "$(basename(file)):$line ChainTables.$name"
             @test (where, isdefined(ChainTables, name)) == (where, true)
             isdefined(ChainTables, name) || continue
             f = getfield(ChainTables, name)
-            f isa Function || continue  # a constructor call, e.g. GWT.Ops(...): a type
+            f isa Function || continue  # a constructor call, e.g. ChainTables.Ops(...): a type
             @test (where, n, keywords, accepts(f, n, keywords)) == (where, n, keywords, true)
         end
     end

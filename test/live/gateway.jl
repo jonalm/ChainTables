@@ -17,18 +17,18 @@ using ChainTables: Bucket, Chain, GatewayObjectStore, PutOutcome, TransportError
 # double's fault hook.
 # ---------------------------------------------------------------------------
 
-mutable struct RacingGateway <: GWT.AbstractObjectStore
+mutable struct RacingGateway <: ChainTables.AbstractObjectStore
     const inner::GatewayObjectStore
     before_put::Any               # key -> nothing, run ahead of every put
 end
-GWT.is_aws(s::RacingGateway) = GWT.is_aws(s.inner)
-GWT.record_cap(s::RacingGateway) = GWT.record_cap(s.inner)
-GWT.record_author(s::RacingGateway) = GWT.record_author(s.inner)
-GWT.cache_namespace(s::RacingGateway) = GWT.cache_namespace(s.inner)
-GWT.fetch_object(s::RacingGateway, key::AbstractString) = fetch_object(s.inner, key)
-GWT.stat_object(s::RacingGateway, key::AbstractString) = stat_object(s.inner, key)
-GWT.list_objects(s::RacingGateway, prefix::AbstractString; start_after = nothing) = list_objects(s.inner, prefix; start_after)
-function GWT.put_object_if_absent(s::RacingGateway, key::AbstractString, bytes)
+ChainTables.is_aws(s::RacingGateway) = ChainTables.is_aws(s.inner)
+ChainTables.record_cap(s::RacingGateway) = ChainTables.record_cap(s.inner)
+ChainTables.record_author(s::RacingGateway) = ChainTables.record_author(s.inner)
+ChainTables.cache_namespace(s::RacingGateway) = ChainTables.cache_namespace(s.inner)
+ChainTables.fetch_object(s::RacingGateway, key::AbstractString) = fetch_object(s.inner, key)
+ChainTables.stat_object(s::RacingGateway, key::AbstractString) = stat_object(s.inner, key)
+ChainTables.list_objects(s::RacingGateway, prefix::AbstractString; start_after = nothing) = list_objects(s.inner, prefix; start_after)
+function ChainTables.put_object_if_absent(s::RacingGateway, key::AbstractString, bytes)
     s.before_put(key)
     return put_object_if_absent(s.inner, key, bytes)
 end
@@ -44,28 +44,28 @@ end
     mktempdir() do dir
         cache_dir = joinpath(dir, "cache")
         chain = Chain(gwbucket, prefix; cache_dir)
-        @test chain isa Chain{GatewayObjectStore} && GWT.is_aws(chain.store)
+        @test chain isa Chain{GatewayObjectStore} && ChainTables.is_aws(chain.store)
         store = chain.store
         # the author: the session name of the SSO role from STS, under the session's own key
-        author = GWT.record_author(store)
-        @test author isa String && !isempty(author) && store.author_memo.access_key_id == GWT.current_credentials(store.s3).access_key_id
+        author = ChainTables.record_author(store)
+        @test author isa String && !isempty(author) && store.author_memo.access_key_id == ChainTables.current_credentials(store.s3).access_key_id
         # create_chain through the gateway; the genesis carries the author; reads are direct
-        key0 = GWT.slot_key(chain, 0)
+        key0 = ChainTables.slot_key(chain, 0)
         # under a session, the token is signed and sent — the reads below would be 403 otherwise
-        session = GWT.current_credentials(store.s3).session_token !== nothing
-        req = GWT.request_headers(store.s3, "GET", key0)
+        session = ChainTables.current_credentials(store.s3).session_token !== nothing
+        req = ChainTables.request_headers(store.s3, "GET", key0)
         @test session == any(kv -> kv[1] == "x-amz-security-token", req.headers)
         @test session == occursin("x-amz-security-token", last(req.headers[findfirst(kv -> kv[1] == "authorization", req.headers)]))
         @test fetch_object(store, key0) === nothing && stat_object(store, key0) === nothing && isempty(list_objects(store, prefix * "/"))
-        created = GWT.create_chain(chain)
+        created = ChainTables.create_chain(chain)
         @test created.slot == 0
         genesis = fetch_object(store, key0)
-        @test genesis !== nothing && GWT.Ops.decode_record(genesis; slot = 0).client.user == author
+        @test genesis !== nothing && ChainTables.Ops.decode_record(genesis; slot = 0).client.user == author
         meta = stat_object(store, key0)
         @test meta.key == key0 && meta.size == length(genesis) && abs(meta.modified - time()) < 300
         @test [m.key for m in list_objects(store, prefix * "/")] == [key0]
         # the bucket policy's Deny: a direct put by the writer is refused by S3, only the gateway fills slots
-        key1 = GWT.slot_key(chain, 1)
+        key1 = ChainTables.slot_key(chain, 1)
         e = try
             put_object_if_absent(store.s3, key1, genesis); nothing
         catch e
@@ -77,44 +77,44 @@ end
         @test put_object_if_absent(store, key0, gwtest_record(author)) == PutOutcome(false, 412)
         @test fetch_object(store, key0) == genesis
         # a commit round-trips through two local copies; the record names the author
-        a = GWT.open(chain, joinpath(dir, "a"))
-        @test GWT.sync!(a).slot == 0
-        w = GWT.write_builder(a)
-        GWT.create_table!(w, :samples) do t
-            GWT.column!(t, :id, Int64); GWT.column!(t, :note, String); GWT.primary_key!(t, :id)
+        a = ChainTables.open(chain, joinpath(dir, "a"))
+        @test ChainTables.sync!(a).slot == 0
+        w = ChainTables.write_builder(a)
+        ChainTables.create_table!(w, :samples) do t
+            ChainTables.column!(t, :id, Int64); ChainTables.column!(t, :note, String); ChainTables.primary_key!(t, :id)
         end
-        GWT.insert_rows!(w, :samples, [(id = 1, note = "live"), (id = 2, note = "gateway")])
-        done = GWT.commit!(w; comment = "the live gateway test")
+        ChainTables.insert_rows!(w, :samples, [(id = 1, note = "live"), (id = 2, note = "gateway")])
+        done = ChainTables.commit!(w; comment = "the live gateway test")
         @test done.slot == 1
-        @test GWT.Ops.decode_record(fetch_object(store, key1); slot = 1).client.user == author
-        b = GWT.open(chain, joinpath(dir, "b"))
-        @test GWT.sync!(b) == (; applied = 2, slot = 1, transaction_hash = done.transaction_hash)
-        @test GWT.table(b, :samples)[2].note == "gateway"
-        @test GWT.verify(b; full = true) === nothing
+        @test ChainTables.Ops.decode_record(fetch_object(store, key1); slot = 1).client.user == author
+        b = ChainTables.open(chain, joinpath(dir, "b"))
+        @test ChainTables.sync!(b) == (; applied = 2, slot = 1, transaction_hash = done.transaction_hash)
+        @test ChainTables.table(b, :samples)[2].note == "gateway"
+        @test ChainTables.verify(b; full = true) === nothing
         close(b)
         # the lost race: a's record lands while c's put is in flight (after c's preflight); c
         # gets slot_taken, reads a's record back, and loses; its head and files stand
         racing = RacingGateway(store, _ -> nothing)
-        c = GWT.open(Chain(gwbucket, prefix; store = racing, cache_dir), joinpath(dir, "c"))
-        @test GWT.sync!(c).slot == 1
-        wa = GWT.write_builder(a)
-        GWT.insert_rows!(wa, :samples, [(id = 3, note = "from a")])
-        wc = GWT.write_builder(c)
-        GWT.insert_rows!(wc, :samples, [(id = 4, note = "from c")])
+        c = ChainTables.open(Chain(gwbucket, prefix; store = racing, cache_dir), joinpath(dir, "c"))
+        @test ChainTables.sync!(c).slot == 1
+        wa = ChainTables.write_builder(a)
+        ChainTables.insert_rows!(wa, :samples, [(id = 3, note = "from a")])
+        wc = ChainTables.write_builder(c)
+        ChainTables.insert_rows!(wc, :samples, [(id = 4, note = "from c")])
         ra = Ref{Any}(nothing)
-        racing.before_put = key -> (racing.before_put = _ -> nothing; ra[] = GWT.commit!(wa); nothing)
+        racing.before_put = key -> (racing.before_put = _ -> nothing; ra[] = ChainTables.commit!(wa); nothing)
         e = try
-            GWT.commit!(wc); nothing
+            ChainTables.commit!(wc); nothing
         catch e
             e
         end
         @test ra[] !== nothing && ra[].slot == 2
         @test e isa LostRaceError && (e.chain_id, e.slot, e.transaction_hash) == (created.chain_id, 2, ra[].transaction_hash)
-        @test GWT.head(c).slot == 1 && length(GWT.table(c, :samples)) == 2
-        @test GWT.sync!(c).slot == 2 && [r.note for r in GWT.table(c, :samples)] == ["live", "gateway", "from a"]
-        @test_throws "this builder is spent" GWT.commit!(wc)
+        @test ChainTables.head(c).slot == 1 && length(ChainTables.table(c, :samples)) == 2
+        @test ChainTables.sync!(c).slot == 2 && [r.note for r in ChainTables.table(c, :samples)] == ["live", "gateway", "from a"]
+        @test_throws "this builder is spent" ChainTables.commit!(wc)
         # a record naming another author is refused as author_mismatch; nothing lands
-        key3 = GWT.slot_key(chain, 3)
+        key3 = ChainTables.slot_key(chain, 3)
         e = try
             put_object_if_absent(store, key3, gwtest_record(author * ".impostor")); nothing
         catch e
@@ -137,27 +137,27 @@ end
         # a chain under a prefix the policy does not list the caller under: not_allowed at slot 0
         denied = Chain(gwbucket, "$unlisted/$run_id"; cache_dir)
         e = try
-            GWT.create_chain(denied); nothing
+            ChainTables.create_chain(denied); nothing
         catch e
             e
         end
         @test e isa WriteRefusedError && e.reason == "not_allowed" && e.slot == 0 && e.caller == author
-        @test e.key == GWT.slot_key(denied, 0) && stat_object(denied.store, e.key) === nothing
+        @test e.key == ChainTables.slot_key(denied, 0) && stat_object(denied.store, e.key) === nothing
         @test e.gateway == denied.store.function_url && e.chain_id isa String
         @test occursin("add the caller's name to the gateway policy", sprint(showerror, e))
         # the cap: a record over 4 MiB is refused at commit before any put; the copy stands at its head
         # (c's store is the wrapper, and the message names the store it was asked about)
         puts = Ref(0)
         racing.before_put = _ -> (puts[] += 1; nothing)
-        w = GWT.write_builder(c)
-        GWT.insert_rows!(w, :samples, [(id = 5, note = "x"^(4 * 1024 * 1024 + 100))])
+        w = ChainTables.write_builder(c)
+        ChainTables.insert_rows!(w, :samples, [(id = 5, note = "x"^(4 * 1024 * 1024 + 100))])
         e = try
-            GWT.commit!(w); nothing
+            ChainTables.commit!(w); nothing
         catch e
             e
         end
         @test e isa WriteBuilderError && occursin("the cap on a RacingGateway is 4194304 bytes (4 MiB)", sprint(showerror, e))
-        @test puts[] == 0 && GWT.head(c).slot == 2 && stat_object(store, key3) === nothing
+        @test puts[] == 0 && ChainTables.head(c).slot == 2 && stat_object(store, key3) === nothing
         close(a); close(c)
     end
 end

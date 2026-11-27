@@ -1,7 +1,5 @@
 using Test
-using ChainTables: ChainTables, ChainTablesError, DivergenceError,
-    FingerprintMismatchError, LostRaceError, RewrittenChainError, StaleHeadError,
-    StateFingerprint, TransactionHash, UnsupportedStoreError
+using ChainTables: ChainTables, ChainTablesError, StaleHeadError, UnsupportedStoreError
 
 include("fixtures/evidence.jl")
 
@@ -50,34 +48,4 @@ end
     lines = split(sprint(showerror, e), "\n")
     @test lines[2] == "At commit!."
     @test lines[3] == "  endpoint = https://minio.local"
-end
-
-# The tests below are of the form that the throw sites not yet rewritten use. They go
-# with it: https://github.com/jonalm/julia_codestyle/issues/130
-
-@testset "an error built from a message holds the message as detail" begin
-    e = DivergenceError("divergence at slot 3"; chain_id = CHAIN_ID, slot = 3)
-    @test e.detail == "divergence at slot 3"
-    @test e.chain_id == CHAIN_ID
-    @test e.slot == 3
-    @test e.expected === nothing
-end
-
-@testset "an error built from a message holds a hash given as bytes as its type" begin
-    divergence = DivergenceError("divergence"; expected = ZEROS, computed = ONES)
-    @test divergence.expected isa StateFingerprint
-    @test divergence.computed == StateFingerprint(ONES)
-    rewritten = RewrittenChainError(
-        "rewritten chain"; expected = ZEROS, found = TransactionHash(ONES)
-    )
-    @test rewritten.expected isa TransactionHash
-    @test rewritten.found == TransactionHash(ONES)
-    @test LostRaceError("lost race"; transaction_hash = ZEROS).transaction_hash ==
-        TransactionHash(ZEROS)
-end
-
-@testset "an error built from a message refuses a hash that is not 32 bytes" begin
-    @test_throws ArgumentError "a StateFingerprint is 32 bytes, got 3" (
-        FingerprintMismatchError("mismatch"; expected = UInt8[1, 2, 3])
-    )
 end

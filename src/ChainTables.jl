@@ -5,6 +5,7 @@ through a hash-chained sequence of immutable records in an S3 bucket. Terms: see
 """
 module ChainTables
 
+using Base64: base64encode
 using Downloads: Downloads
 using SHA: SHA, sha256
 using Tables: Tables
@@ -12,19 +13,19 @@ using Tables: Tables
 public AbstractObjectStore, AttachmentAbsentError, AttachmentCacheError,
     AttachmentChangedError, AttachmentDigestError, AttachmentURLExpiredError, Bucket, CBOR,
     Chain, ChainNotFoundError, ChainTablesError, CommitOutcomeUnknownError, Credentials,
-    CredentialsExportError, DivergenceError, FingerprintMismatchError,
-    GatewayMismatchError, GatewaySessionEndingError, LayoutVersionError, LocalCopy,
-    LocalCopyInconsistentError, LoginError, LostRaceError, MalformedRecordError, Model,
-    NotALocalCopyError, ObjectMeta, Ops, PinnedCopyError, ProfileCredentials, PutOutcome,
-    RecordCacheError, RewrittenChainError, SigV4, StaleHeadError, StateFingerprint,
-    TableDeclaration, TableView, TransactionHash, TransportError, UnsupportedStoreError,
-    WriteBuilder, WriteBuilderError, WriteRefusedError, WrongChainError, add_column!,
-    as_of, cache_namespace, chain_id_bytes, chain_id_string, column!, commit!, commit_log,
-    create_chain, create_table!, delete_rows!, drop_column!, drop_table!, fetch_object,
-    head, insert_rows!, is_pinned, ispinned, list_objects, open, primary_key!,
-    put_object_if_absent, record_author, repair!, shape, slot_at, sso_credentials,
-    sso_login, stat_object, sync!, table, table_with_slots, tables, try_create_chain,
-    unpin!, update_rows!, verify, write_builder
+    CredentialsExportError, DivergenceError, FingerprintMismatchError, GatewayMismatchError,
+    GatewaySessionEndingError, LayoutVersionError, LocalCopy, LocalCopyInconsistentError,
+    LoginError, LostRaceError, MalformedRecordError, Model, NotALocalCopyError, ObjectMeta,
+    Ops, PinnedCopyError, ProfileCredentials, PutOutcome, RecordCacheError,
+    RewrittenChainError, SigV4, StaleHeadError, StateFingerprint, TableDeclaration,
+    TableView, Testing, TransactionHash, TransportError, UnsupportedStoreError,
+    WriteBuilder, WriteBuilderError, WriteRefusedError, WrongChainError, add_column!, as_of,
+    attachment, cache_namespace, chain_id_bytes, chain_id_string, column!, commit!,
+    commit_log, create_chain, create_table!, delete_rows!, drop_column!, drop_table!,
+    fetch_object, head, insert_rows!, is_pinned, ispinned, list_objects, open, primary_key!,
+    put_attachment, put_object_if_absent, record_author, repair!, shape, slot_at,
+    sso_credentials, sso_login, stat_object, sync!, table, table_with_slots, tables,
+    touch_attachment, try_create_chain, unpin!, update_rows!, verify, write_builder
 
 include("hashes.jl")
 include("errors.jl")
@@ -75,7 +76,13 @@ include("gateway_object_store.jl")
 include("gateway_author.jl")
 include("bucket.jl")
 include("store_gate.jl")
-include("attachments.jl")
-include("Testing.jl")
+include("attachment_keys.jl")
+include("put_attachment.jl")
+include("gateway_attachment.jl")
+include("touch_attachment.jl")
+include("attachment_cache.jl")
+include("read_attachment.jl")
+include("attachment_repair.jl")
+include("Testing/Testing.jl")
 
 end

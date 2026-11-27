@@ -38,14 +38,6 @@ function TransportError(
     return TransportError(; method, url, status = nothing, detail)
 end
 
-# The form of the gateway and attachment throw sites not yet rewritten: the message
-# names the method and the URL, so the two fields are empty.
-# TODO: delete with the last such site:
-# https://github.com/jonalm/julia_codestyle/issues/130
-function TransportError(message::String; status = nothing)
-    return TransportError(; method = "", url = "", status, detail = message)
-end
-
 function Base.showerror(io::IO, e::TransportError)
     print_summary(io, e, "a request failed.")
     print_evidence(io, e)

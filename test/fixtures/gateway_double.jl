@@ -36,26 +36,16 @@ struct LoopbackServer{H}
 end
 
 function with_loopback(f, handle)
-    server = LoopbackServer(handle)
+    socket = listen(ip"127.0.0.1", 0)
     try
+        port = Int(getsockname(socket)[2])
+        server = LoopbackServer(socket, port, S3TestRequest[], handle)
+        errormonitor(@async loopback_serve(server))
         return f(server)
     finally
-        close(server)
+        close(socket)
     end
 end
-
-# TODO: this form leaves the server open, and only test/attachments.jl still calls it.
-# It moves to `with_loopback` with its ticket:
-# https://github.com/jonalm/julia_codestyle/issues/130
-function LoopbackServer(handle)
-    socket = listen(ip"127.0.0.1", 0)
-    port = Int(getsockname(socket)[2])
-    server = LoopbackServer(socket, port, S3TestRequest[], handle)
-    errormonitor(@async loopback_serve(server))
-    return server
-end
-
-Base.close(s::LoopbackServer) = close(s.server)
 
 loopback_url(s::LoopbackServer) = "http://127.0.0.1:$(s.port)"
 
@@ -302,14 +292,16 @@ end
 # A gateway bucket on loopback: an S3 double, the gateway double that fills it, and an
 # STS double that answers `arn`.
 function with_gateway(f; bucket = "bkt", policy = ["p" => [ALICE]], arn = GWTEST_ARN)
-    s3 = S3TestServer(; bucket, credentials = GWTEST_CREDS)
-    double = GatewayDouble(s3; policy)
-    gateway = LoopbackServer(double)
-    sts = LoopbackServer(StsDouble(GWTEST_CREDS, s3.region, arn))
-    try
-        return f((; s3, double, gateway, sts))
-    finally
-        foreach(close, (sts, gateway, s3))
+    return with_s3_server(; bucket, credentials = GWTEST_CREDS) do s3
+        with_doubles_of(f, s3, GatewayDouble(s3; policy), arn)
+    end
+end
+
+function with_doubles_of(f, s3::S3TestServer, double::GatewayDouble, arn)
+    return with_loopback(double) do gateway
+        with_loopback(StsDouble(GWTEST_CREDS, s3.region, arn)) do sts
+            f((; s3, double, gateway, sts))
+        end
     end
 end
 

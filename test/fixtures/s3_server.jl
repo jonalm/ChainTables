@@ -43,31 +43,23 @@ mutable struct S3TestServer
     page_size::Int
 end
 
-function with_s3_server(f; keywords...)
-    server = S3TestServer(; keywords...)
+function with_s3_server(
+        f; bucket, credentials, region = "eu-north-1", page_size = 1000
+    )
+    socket = listen(ip"127.0.0.1", 0)
     try
+        port = Int(getsockname(socket)[2])
+        server = S3TestServer(
+            socket, port, bucket, region, credentials, Dict{String, Vector{UInt8}}(),
+            Dict{String, Int64}(), S3TestRequest[], Dict{String, PresignedGrant}(),
+            _ -> nothing, page_size,
+        )
+        errormonitor(@async s3test_serve(server))
         return f(server)
     finally
-        close(server)
+        close(socket)
     end
 end
-
-# TODO: this form leaves the server open, and only test/attachments.jl still calls it.
-# It moves to `with_s3_server` with its ticket:
-# https://github.com/jonalm/julia_codestyle/issues/130
-function S3TestServer(; bucket, credentials, region = "eu-north-1", page_size = 1000)
-    socket = listen(ip"127.0.0.1", 0)
-    port = Int(getsockname(socket)[2])
-    server = S3TestServer(
-        socket, port, bucket, region, credentials, Dict{String, Vector{UInt8}}(),
-        Dict{String, Int64}(), S3TestRequest[], Dict{String, PresignedGrant}(),
-        _ -> nothing, page_size,
-    )
-    errormonitor(@async s3test_serve(server))
-    return server
-end
-
-Base.close(s::S3TestServer) = close(s.server)
 
 s3test_endpoint(s::S3TestServer) = "http://127.0.0.1:$(s.port)"
 
@@ -113,6 +105,11 @@ end
 function s3test_handle_connection(s::S3TestServer, socket)
     try
         s3test_handle(s, socket)
+    catch e
+        e isa Base.IOError || rethrow()
+        # A client that stopped at its deadline (an upload past its URL's end) is gone
+        # before the reply.
+        e.code == Base.UV_EPIPE || rethrow()
     finally
         close(socket)
     end

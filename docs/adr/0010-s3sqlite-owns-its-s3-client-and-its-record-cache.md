@@ -30,7 +30,7 @@ to S3 directly; the author a record carries comes through an internal
 `record_author(store)` dispatch, not a fifth verb.
 
 *Amended by ADR-0046*: attachments are put and fetched by internal streaming
-dispatch, `put_attachment(store, key, io)` and a GET to a file, not by new verbs.
+dispatch, `upload_attachment(store, key, io)` and a GET to a file, not by new verbs.
 
 ## The chain decides a commit's outcome, not the HTTP status
 

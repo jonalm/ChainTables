@@ -36,24 +36,3 @@ evidence_text(value) = string(value)
 evidence_text(hash::ChainHash) = bytes2hex(hash)
 evidence_text(cause::Exception) = sprint(showerror, cause)
 evidence_text(client::ClientVersions) = "$(client.lib) on Julia $(client.julia)"
-
-# The form of the throw sites not yet rewritten: the whole message, then the evidence,
-# with a hash as raw bytes. The message becomes `detail`.
-# TODO: delete with the last such site:
-# https://github.com/jonalm/julia_codestyle/issues/130
-function (::Type{T})(message::String; evidence...) where {T <: ChainTablesError}
-    given = values(evidence)
-    field_types = map(name -> fieldtype(T, name), keys(given))
-    typed = map(typed_evidence, field_types, Tuple(given))
-    return T(; detail = message, NamedTuple{keys(given)}(typed)...)
-end
-
-typed_evidence(::Type{T}, value) where {T} = value
-
-function typed_evidence(::Type{Union{Nothing, TransactionHash}}, bytes::Vector{UInt8})
-    return TransactionHash(bytes)
-end
-
-function typed_evidence(::Type{Union{Nothing, StateFingerprint}}, bytes::Vector{UInt8})
-    return StateFingerprint(bytes)
-end

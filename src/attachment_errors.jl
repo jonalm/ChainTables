@@ -4,9 +4,10 @@
 Thrown when `put_attachment` sends bytes that do not hash to the hash in the
 attachment's `key`: the file changed between hashing and upload.
 
-S3 refused the upload, and nothing was stored.
+`bucket` is the bucket that refused the bytes. Nothing was stored.
 """
 Base.@kwdef struct AttachmentChangedError <: ChainTablesError
+    bucket::Union{Nothing, String} = nothing
     key::Union{Nothing, String} = nothing
     detail::String = ""
 end
@@ -20,19 +21,32 @@ function Base.showerror(io::IO, e::AttachmentChangedError)
     return nothing
 end
 
+const URL_EXPIRED_NEXT_MOVES = Dict(
+    :expired_before_upload => "Put the attachment again, which mints a new URL.",
+    :outlasted => "Put the attachment again over a faster link.",
+    :expired_early => "Put the attachment again. If this recurs, report it to the " *
+        "bucket's operator: the gateway's clock or S3's is off.",
+)
+
+const URL_EXPIRED_NEXT_MOVE = "Put the attachment again, which mints a new URL."
+
 """
     AttachmentURLExpiredError
 
-Thrown when `put_attachment` on a gateway bucket has its upload refused because the URL
-that the gateway minted has expired.
+Thrown when `put_attachment` on a gateway bucket cannot finish its upload because the
+URL that the gateway minted has expired.
 
-`expires` is the time the gateway gave, ISO 8601 in UTC. `detail` says how it expired:
-the upload ran past the URL's life, this process waited past it before uploading, or S3
-called the URL expired early. Nothing was stored.
+`gateway` is the gateway's function URL and `expires` the time it gave, ISO 8601 in
+UTC. `reason` is `:expired_before_upload` when this process waited past the URL's life
+before it sent a byte, `:outlasted` when the upload was still running at the URL's end,
+and `:expired_early` when S3 called the URL expired well before then. Nothing was
+stored.
 """
 Base.@kwdef struct AttachmentURLExpiredError <: ChainTablesError
     key::Union{Nothing, String} = nothing
+    gateway::Union{Nothing, String} = nothing
     expires::Union{Nothing, String} = nothing
+    reason::Union{Nothing, Symbol} = nothing
     detail::String = ""
 end
 
@@ -40,7 +54,8 @@ function Base.showerror(io::IO, e::AttachmentURLExpiredError)
     summary = "the URL that the gateway minted expired before the upload was done."
     print_summary(io, e, summary)
     print_evidence(io, e)
-    print(io, "Nothing was stored. Put the attachment again, which mints a new URL.")
+    print(io, "Nothing was stored. ")
+    print(io, get(URL_EXPIRED_NEXT_MOVES, e.reason, URL_EXPIRED_NEXT_MOVE))
     return nothing
 end
 
@@ -56,6 +71,8 @@ holds; `key` is then set only when there is one. `chain_id` is `nothing` from
 `touch_attachment`, which works on a `Chain`.
 """
 Base.@kwdef struct AttachmentAbsentError <: ChainTablesError
+    bucket::Union{Nothing, String} = nothing
+    prefix::Union{Nothing, String} = nothing
     chain_id::Union{Nothing, String} = nothing
     key::Union{Nothing, String} = nothing
     detail::String = ""
@@ -81,6 +98,8 @@ a cached file that hashes to its name; `found` is then `nothing`. It is not retr
 checked the hash when the attachment was stored.
 """
 Base.@kwdef struct AttachmentDigestError <: ChainTablesError
+    bucket::Union{Nothing, String} = nothing
+    prefix::Union{Nothing, String} = nothing
     chain_id::Union{Nothing, String} = nothing
     key::Union{Nothing, String} = nothing
     found::Union{Nothing, String} = nothing
@@ -103,9 +122,12 @@ end
 Thrown when `attachment` or `verify(copy; full = true)` finds a file of the attachment
 cache that does not hash to its name, or that changed while it was hashed.
 
-`path` is the cached file. The attachment cache is damaged, not the chain.
+`path` is the cached file; `verify` names every such file in `detail`. The attachment
+cache is damaged, not the chain.
 """
 Base.@kwdef struct AttachmentCacheError <: ChainTablesError
+    bucket::Union{Nothing, String} = nothing
+    prefix::Union{Nothing, String} = nothing
     chain_id::Union{Nothing, String} = nothing
     key::Union{Nothing, String} = nothing
     path::Union{Nothing, String} = nothing

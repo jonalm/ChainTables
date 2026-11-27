@@ -49,10 +49,3 @@ end
 @testset "TransportError needs the method, the URL and the status" begin
     @test_throws UndefKeywordError "status" TransportError(; method = "GET", url = URL)
 end
-
-@testset "TransportError(message; status) holds the message as detail" begin
-    e = TransportError("PUT https://gw/: HTTP 503 busy"; status = 503)
-    @test e.detail == "PUT https://gw/: HTTP 503 busy"
-    @test e.status == 503
-    @test TransportError("timed out").status === nothing
-end
