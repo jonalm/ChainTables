@@ -81,4 +81,4 @@ themselves on from the environment.
   `gateway/probe/attachment_probe.py`, run by the bucket's operator.
 - Considered and not done: a live `GatewayMismatchError` test. It needs two
   deployments and strands a record in the wrong bucket on every run; the
-  loopback test in `test/gateway.jl` covers the path.
+  loopback test in `test/test_gateway_commit_workflow.jl` covers the path.

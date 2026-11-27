@@ -15,14 +15,17 @@ const NEXT_MOVES = [
 
 @testset "WriteRefusedError shows what happened, the evidence and the next move" begin
     e = WriteRefusedError(;
-        chain_id = CHAIN_ID, slot = 4, key = SLOT_KEY, caller = "alice@example.com",
-        reason = "not_allowed"
+        chain_id = CHAIN_ID, slot = 4, key = SLOT_KEY, gateway = GATEWAY,
+        caller = "alice@example.com", reason = "not_allowed",
+        detail = "alice@example.com may not write under p",
     )
     @test sprint(showerror, e) ==
         "WriteRefusedError: the gateway refused the write, and nothing is retried.\n" *
+        "alice@example.com may not write under p\n" *
         "  chain_id = AAAAAAAAAAAAAAAAAAAAAAAAAA\n" *
         "  slot = 4\n" *
         "  key = p/000000000004\n" *
+        "  gateway = https://gw\n" *
         "  caller = alice@example.com\n" *
         "  reason = not_allowed\n" *
         "Ask the bucket's operator to add the caller's name to the gateway policy " *
@@ -67,11 +70,12 @@ end
 
 @testset "WriteRefusedError takes the chain and the slot of the write it was for" begin
     refusal = WriteRefusedError(;
-        caller = "alice@example.com", reason = "not_allowed", detail = "the policy"
+        gateway = GATEWAY, caller = "alice@example.com", reason = "not_allowed",
+        detail = "the policy",
     )
     e = WriteRefusedError(refusal, CHAIN_ID, 4, SLOT_KEY)
     @test (e.chain_id, e.slot, e.key) == (CHAIN_ID, 4, SLOT_KEY)
-    @test (e.caller, e.reason) == ("alice@example.com", "not_allowed")
+    @test (e.gateway, e.caller, e.reason) == (GATEWAY, "alice@example.com", "not_allowed")
     @test e.detail == "the policy"
 end
 

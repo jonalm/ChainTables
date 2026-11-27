@@ -16,6 +16,7 @@ const CACHE_DIRECTORY_RULE = "it is a record-cache directory, and must be portab
           credentials = nothing, endpoint = nothing, path_style = false,
           assume_first_writer_wins = false, read_ahead = 8, cache_dir, record_host = true,
           record_user = true)
+    Chain(bucket::Bucket, prefix; profile = bucket.profile, login = false, keywords...)
 
 Where a chain lives and how this client talks to it. Constructing one performs no I/O.
 
@@ -36,10 +37,12 @@ name. Throws `ArgumentError` otherwise.
 - `read_ahead`: how many records `sync!` fetches ahead of apply, at least 1.
 - `cache_dir`: the record cache. `CHAINTABLES_CACHE_DIR`, else a directory in the depot.
 - `record_host`, `record_user`: whether a record names its host and its author.
+- `profile`, `login`: with a `Bucket`, `credentials` is `sso_credentials(profile; login)`
+  unless given. The bucket's `region` and `gateway` may not be given.
 
 Examples: test/test_chain_examples.jl
 """
-struct Chain{S <: AbstractObjectStore, C}
+struct Chain{S <: AbstractObjectStore}
     bucket::String
     prefix::String
     store::S
@@ -48,13 +51,6 @@ struct Chain{S <: AbstractObjectStore, C}
     assume_first_writer_wins::Bool
     record_host::Bool
     record_user::Bool
-    # TODO: only the tests of `gateway` and `bucket` read these four. Delete them, or
-    # give them a reader, with those files:
-    # https://github.com/jonalm/julia_codestyle/issues/153
-    region::Union{Nothing, String}
-    credentials::C
-    endpoint::Union{Nothing, String}
-    path_style::Bool
 end
 
 function Chain(
@@ -77,9 +73,9 @@ function Chain(
     cache = RecordCache(String(cache_dir))
     # Every slot's path is as long as this one (ADR-0034).
     record_path(cache, chain_store, bucket, slot_key(prefix, 0))
-    return Chain{typeof(chain_store), typeof(s3_keywords.credentials)}(
+    return Chain{typeof(chain_store)}(
         bucket, prefix, chain_store, cache, read_ahead, assume_first_writer_wins,
-        record_host, record_user, s3_keywords...,
+        record_host, record_user,
     )
 end
 

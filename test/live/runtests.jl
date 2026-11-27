@@ -19,6 +19,11 @@ import ChainTables
 include("config.jl")
 include(joinpath(@__DIR__, "..", "fixtures", "gateway.jl"))
 
+# TODO: the live files still call the package `GWT`, which fixtures/gateway.jl defined
+# until it was rewritten. They move to the qualified name with
+# https://github.com/jonalm/julia_codestyle/issues/130
+const GWT = ChainTables
+
 const LIVE_SELECTION = live_selection(ARGS)
 const LIVE_CONFIG = Dict(test => live_config(test) for test in LIVE_SELECTION)    # all of it, before any test runs
 

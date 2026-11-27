@@ -52,9 +52,8 @@ function with_s3_server(f; keywords...)
     end
 end
 
-# TODO: this form leaves the server open, and only test/gateway.jl and
-# test/attachments.jl still call it. Each moves to `with_s3_server` with its ticket:
-# https://github.com/jonalm/julia_codestyle/issues/153
+# TODO: this form leaves the server open, and only test/attachments.jl still calls it.
+# It moves to `with_s3_server` with its ticket:
 # https://github.com/jonalm/julia_codestyle/issues/130
 function S3TestServer(; bucket, credentials, region = "eu-north-1", page_size = 1000)
     socket = listen(ip"127.0.0.1", 0)
@@ -121,6 +120,18 @@ function s3test_handle_connection(s::S3TestServer, socket)
 end
 
 function s3test_handle(s::S3TestServer, socket)
+    request = s3test_read_request(socket)
+    request === nothing && return nothing
+    push!(s.requests, request)
+    # `respond` may be replaced after the accept task started.
+    scripted = Base.invokelatest(s.respond, request)
+    answer = scripted === nothing ? s3test_default(s, request) : scripted
+    s3test_write_response(socket, request.method, answer...)
+    return nothing
+end
+
+# `nothing` when the client closed the connection before a request line.
+function s3test_read_request(socket)
     line = readline(socket)
     isempty(line) && return nothing
     method, target, _ = split(line, ' ')
@@ -132,14 +143,7 @@ function s3test_handle(s::S3TestServer, socket)
     rawpath, rawquery = occursin('?', target) ? split(target, '?'; limit = 2) : (target, "")
     query = map(s3test_query_pair, split(rawquery, '&'; keepempty = false))
     path = s3test_percent_decode(rawpath)
-    request = S3TestRequest(method, rawpath, path, query, headers, body)
-    push!(s.requests, request)
-    # `respond` may be replaced after the accept task started.
-    scripted = Base.invokelatest(s.respond, request)
-    answer = scripted === nothing ? s3test_default(s, request) : scripted
-    status, response_headers, response_body = answer
-    s3test_write_response(socket, method, status, response_headers, response_body)
-    return nothing
+    return S3TestRequest(method, rawpath, path, query, headers, body)
 end
 
 function s3test_read_headers(socket)

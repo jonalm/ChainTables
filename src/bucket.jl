@@ -1,45 +1,20 @@
-# ADR-0029 — `Bucket`: the facts of one deployment that must agree, as one value, and the
-# `Chain` method that takes it. Plain data: no I/O, no resolved credentials.
-
 """
     Bucket(name; region = nothing, gateway = nothing, profile = nothing)
 
-A bucket and how this client reaches it (ADR-0029): the values that are facts about one
-deployment and must agree, held as one value instead of loose keywords at every
-[`Chain`](@ref) call.
+A bucket and how this client reaches it, as one value: its name, region, gateway and
+profile must agree, so they are not loose keywords at every `Chain` call.
 
-- `name`: the bucket. Empty, or containing a dot (ADR-0010), is refused.
-- `region`: where the bucket — and its gateway — live. `nothing` leaves it to `Chain`'s
-  rule (`AWS_REGION`, else `AWS_DEFAULT_REGION`, never guessed; ADR-0019).
-- `gateway`: the function URL of the gateway of a gateway bucket (ADR-0028),
-  `https://host[:port]`; `nothing` for a plain bucket. A bucket has one gateway and a
-  gateway fills one bucket, which is why they live in one value. A `region` that disagrees
-  with the one in a `*.lambda-url.<region>.on.aws` host is refused.
-- `profile`: the AWS CLI profile whose permission set reaches this bucket and may invoke
-  this gateway — a *name*, local to `~/.aws/config`, never credentials. `nothing` for the
-  `AWS_*` environment or a `credentials` keyword.
+It is plain data: constructing one performs no I/O and resolves nothing, and nothing in
+it is secret. The name is held to `Chain`'s rules. Throws `ArgumentError` when the
+gateway's host names another region than `region`.
 
-Constructing one performs no I/O and resolves nothing, so it is printable — nothing in it
-is secret — and loadable from a TOML file or Preferences. The type is generic; the values
-belong to the deployment and live with the consumer:
+- `region`: `nothing` leaves it to `Chain`, which reads the environment.
+- `gateway`: the function URL of a gateway bucket's gateway, `scheme://host[:port]`;
+  `nothing` for a plain bucket.
+- `profile`: the AWS CLI profile that reaches the bucket, a name and never credentials;
+  `nothing` for the `AWS_*` environment.
 
-```julia
-const BUCKET = ChainTables.Bucket("<bucket>"; region = "<region>",
-                                  gateway = "https://<id>.lambda-url.<region>.on.aws", profile = "<profile>")
-ChainTables.sso_login(BUCKET)                       # aws sso login --profile <profile>
-chain = ChainTables.Chain(BUCKET, "<prefix>")
-```
-
-    Chain(bucket::Bucket, prefix; credentials = nothing, profile = bucket.profile, login = false, kw...)
-
-The chain under `prefix` in `bucket`: `Chain(bucket.name, prefix; region, gateway, credentials, kw...)`
-with the bucket's `region` and `gateway`, and `credentials` defaulting to
-[`sso_credentials(profile; login)`](@ref sso_credentials) when there is a profile, else to
-`nothing` (the environment). A `credentials` keyword wins over the profile; a `profile`
-keyword replaces the bucket's, since profile names are each user's own. Every other `Chain`
-keyword passes through, except `region` and `gateway`, which are the bucket's to say and
-are refused. With a supplied `store` — `Testing.InMemoryObjectStore` — the bucket's
-`gateway` is not forwarded, because `Chain` refuses `gateway` together with `store`.
+Examples: test/test_bucket_examples.jl
 """
 struct Bucket
     name::String
@@ -48,48 +23,70 @@ struct Bucket
     profile::Union{Nothing, String}
     function Bucket(name, region, gateway, profile)
         check_bucket_name(name)
-        gateway === nothing || (gateway = first(gateway_base(gateway, region)))
-        profile === nothing || !isempty(profile) || throw(
+        profile == "" && throw(
             ArgumentError(
-                "Bucket: profile must not be empty; " *
-                    "leave it out for the AWS_* environment"
+                "Bucket: profile is empty; leave it out for the AWS_* environment"
             )
         )
-        return new(name, region, gateway, profile)
+        base = gateway === nothing ? nothing : first(gateway_base(gateway, region))
+        return new(name, region, base, profile)
     end
 end
-Bucket(name; region = nothing, gateway = nothing, profile = nothing) = Bucket(name, region, gateway, profile)
 
-Base.show(io::IO, b::Bucket) = print(
-    io, "Bucket(", repr(b.name), "; region = ", repr(b.region),
-    ", gateway = ", repr(b.gateway), ", profile = ", repr(b.profile), ")"
-)
+function Bucket(name; region = nothing, gateway = nothing, profile = nothing)
+    return Bucket(name, region, gateway, profile)
+end
 
-function Chain(bucket::Bucket, prefix; credentials = nothing, profile = bucket.profile, login = false, store = nothing, kw...)
-    for name in (:region, :gateway)
-        haskey(kw, name) && throw(
-            ArgumentError(
-                "Chain: $name was given together with a Bucket, which already says " *
-                    "it ($(repr(getfield(bucket, name)))); build another Bucket rather than overriding one (ADR-0029)"
-            )
-        )
-    end
-    credentials === nothing && profile !== nothing && (credentials = sso_credentials(profile; login))
+function Base.show(io::IO, bucket::Bucket)
+    print(io, "Bucket(")
+    show(io, bucket.name)
+    show_keyword(io, "; ", "region", bucket.region)
+    show_keyword(io, ", ", "gateway", bucket.gateway)
+    show_keyword(io, ", ", "profile", bucket.profile)
+    print(io, ")")
+    return nothing
+end
+
+# A bucket has one gateway and a gateway fills one bucket, so neither is given apart from
+# the other (ADR-0029). A supplied store gets no gateway, which `Chain` would refuse
+# together with it.
+function Chain(
+        bucket::Bucket, prefix; credentials = nothing, profile = bucket.profile,
+        login = false, store = nothing, keywords...,
+    )
+    check_bucket_keyword(keywords, :region, bucket.region)
+    check_bucket_keyword(keywords, :gateway, bucket.gateway)
+    source = credentials_or_profile(credentials, profile, login)
     gateway = store === nothing ? bucket.gateway : nothing
-    return Chain(bucket.name, prefix; bucket.region, gateway, credentials, store, kw...)
+    return Chain(
+        bucket.name, prefix; bucket.region, gateway, credentials = source, store,
+        keywords...,
+    )
 end
 
-"""
-    sso_login(bucket::Bucket; device_code = false)
-
-[`sso_login`](@ref) for the bucket's profile; an `ArgumentError` when it has none.
-"""
-function sso_login(bucket::Bucket; kw...)
-    bucket.profile === nothing && throw(
+function check_bucket_keyword(keywords, name::Symbol, value)
+    haskey(keywords, name) && throw(
         ArgumentError(
-            "sso_login: $bucket has no profile to log in with; " *
-                "pass one to Bucket, or call sso_login(profile)"
+            "Chain: $name was given together with a Bucket, which already says it " *
+                "($(repr(value))); build another Bucket"
         )
     )
-    return sso_login(bucket.profile; kw...)
+    return nothing
+end
+
+# A `credentials` keyword wins over the profile.
+function credentials_or_profile(credentials, profile, login)
+    credentials === nothing && profile !== nothing &&
+        return sso_credentials(profile; login)
+    return credentials
+end
+
+function sso_login(bucket::Bucket; keywords...)
+    bucket.profile === nothing && throw(
+        ArgumentError(
+            "sso_login: the Bucket has no profile to log in with; pass one to Bucket, " *
+                "or call sso_login(profile)"
+        )
+    )
+    return sso_login(bucket.profile; keywords...)
 end

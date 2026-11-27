@@ -1,10 +1,12 @@
 # `runner` runs the command: a test passes a Fake.
 """
     sso_login(profile; device_code = false)
+    sso_login(bucket::Bucket; device_code = false)
 
-Log in to the AWS CLI profile `profile`: run `aws sso login --profile <profile>` in this
-process's terminal, and return once it succeeds. It opens a browser and waits, so it is
-always asked for: no call of ChainTables runs it by itself.
+Log in to the AWS CLI profile `profile`, or the bucket's: run
+`aws sso login --profile <profile>` in this process's terminal, and return once it
+succeeds. It opens a browser and waits, so it is always asked for: no call of
+ChainTables runs it by itself.
 
 - `device_code`: add `--use-device-code`, for a browser that cannot reach the authorize
   page.

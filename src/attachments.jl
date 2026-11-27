@@ -167,7 +167,7 @@ function mint(store::GatewayObjectStore, key::String, size::Int64)
         method = "POST", path = "/mint", query
     )
     url = store.function_url * "/mint" * query_string(query)
-    response = http_request("POST", url; headers, store.timeout)
+    response = http_request("POST", url; headers, store.s3.timeout)
     status = response.status
     code, message = gateway_reply(response.body)
     if status == 200
@@ -182,7 +182,12 @@ function mint(store::GatewayObjectStore, key::String, size::Int64)
     end
     if status == 403 || code == "s3_refused"
         reason = something(code, "forbidden")
-        throw(WriteRefusedError(refusal_message(store, key, reason, message; mint = true); key, caller = store.author, reason))
+        throw(
+            WriteRefusedError(;
+                key, gateway = store.function_url, caller = memoized_author(store), reason,
+                detail = something(message, ""),
+            )
+        )
     end
     if status == 400 && code == "bad_request" && message !== nothing && occursin("is not the gateway's one route", message)
         throw(
@@ -359,7 +364,7 @@ function upload_minted(store::GatewayObjectStore, key::String, io::IO, size::Int
     output = IOBuffer()
     response = try
         http_stream(
-            "PUT", reply.url; reply.headers, input = io, output, stall = store.timeout,
+            "PUT", reply.url; reply.headers, input = io, output, stall = store.s3.timeout,
             deadline = (deadline - started) / 1.0e9
         )
     catch e

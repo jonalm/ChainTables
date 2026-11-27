@@ -21,13 +21,15 @@ const UNKNOWN_REFUSAL_NEXT_MOVE = "The gateway gave a reason that this client do
 Thrown when the gateway of a gateway bucket refuses a write: a slot from `commit!` or
 `create_chain`, or an attachment.
 
-`key` is the key refused, `caller` the author name that this client resolved for
-itself, and `reason` the gateway's code, which says who must act. Nothing is retried.
+`key` is the key refused, `gateway` the gateway's function URL, `caller` the author
+that this client resolved for itself, and `reason` the gateway's code, which says who
+must act. `detail` is the gateway's own message. Nothing is retried.
 """
 Base.@kwdef struct WriteRefusedError <: ChainTablesError
     chain_id::Union{Nothing, String} = nothing
     slot::Union{Nothing, Int64} = nothing
     key::Union{Nothing, String} = nothing
+    gateway::Union{Nothing, String} = nothing
     caller::Union{Nothing, String} = nothing
     reason::Union{Nothing, String} = nothing
     detail::String = ""
@@ -37,8 +39,8 @@ end
 # knew only the key and the caller.
 function WriteRefusedError(refusal::WriteRefusedError, chain_id, slot, key)
     return WriteRefusedError(;
-        chain_id, slot, key = something(refusal.key, key), refusal.caller,
-        refusal.reason, refusal.detail,
+        chain_id, slot, key = something(refusal.key, key), refusal.gateway,
+        refusal.caller, refusal.reason, refusal.detail,
     )
 end
 

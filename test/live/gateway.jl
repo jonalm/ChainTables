@@ -48,7 +48,7 @@ end
         store = chain.store
         # the author: the session name of the SSO role from STS, under the session's own key
         author = GWT.record_author(store)
-        @test author isa String && !isempty(author) && store.author_key == GWT.current_credentials(store.s3).access_key_id
+        @test author isa String && !isempty(author) && store.author_memo.access_key_id == GWT.current_credentials(store.s3).access_key_id
         # create_chain through the gateway; the genesis carries the author; reads are direct
         key0 = GWT.slot_key(chain, 0)
         # under a session, the token is signed and sent — the reads below would be 403 otherwise
@@ -121,7 +121,7 @@ end
             e
         end
         @test e isa WriteRefusedError && e.reason == "author_mismatch" && e.key == key3 && e.caller == author
-        @test occursin("author_mismatch: the record names '$author.impostor' as client.user but the caller is '$author'", sprint(showerror, e))
+        @test startswith(e.detail, "the record names '$author.impostor' as client.user but the caller is '$author'")
         @test stat_object(store, key3) === nothing
         # the Invoke API, bypassing the URL, with an event whose authorizer names someone else:
         # AWS denies it before the handler runs, so the authorizer is AWS's word (#68, ADR-0036)
@@ -143,8 +143,8 @@ end
         end
         @test e isa WriteRefusedError && e.reason == "not_allowed" && e.slot == 0 && e.caller == author
         @test e.key == GWT.slot_key(denied, 0) && stat_object(denied.store, e.key) === nothing
-        @test startswith(e.detail, "write refused for slot 0 of chain $(e.chain_id) at $bucket/$unlisted/$run_id: ")
-        @test occursin("not_allowed: ", sprint(showerror, e)) && occursin("ask the bucket's operator to add the name to the gateway policy", sprint(showerror, e))
+        @test e.gateway == denied.store.function_url && e.chain_id isa String
+        @test occursin("add the caller's name to the gateway policy", sprint(showerror, e))
         # the cap: a record over 4 MiB is refused at commit before any put; the copy stands at its head
         # (c's store is the wrapper, and the message names the store it was asked about)
         puts = Ref(0)

@@ -1,6 +1,11 @@
 using Test
 import ChainTables
 
+# TODO: attachments.jl and live_calls.jl still call the package `GWT`, which
+# fixtures/gateway.jl defined until it was rewritten. They move to the qualified name with
+# https://github.com/jonalm/julia_codestyle/issues/130
+const GWT = ChainTables
+
 # ---------------------------------------------------------------------------
 # One test file per src file, in the build order of #34 §3. The suite is offline: it
 # runs against the doubles and loopback servers with no credentials, reads no
@@ -28,8 +33,8 @@ end
         @test ChainTables isa Module
     end
 
-    include("fixtures/s3_server.jl")     # the loopback S3: gateway.jl, attachments.jl
-    include("fixtures/gateway.jl")       # gwtest_record: gateway.jl, live/gateway.jl
+    include("fixtures/s3_server.jl")     # the loopback S3: attachments.jl
+    include("fixtures/gateway_double.jl")  # the loopback gateway: attachments.jl
 
     in_own_module("test_hashes.jl")
     in_own_module("test_hashes_examples.jl")
@@ -111,9 +116,12 @@ end
     in_own_module("test_sso_login_examples.jl")
     in_own_module("test_s3_store_workflow.jl")
     in_own_module("test_s3_streaming_workflow.jl")
-    include("gateway.jl")
-    include("bucket.jl")
-    include("attachments.jl")    # after gateway.jl: it uses the gateway double
+    in_own_module("test_gateway_object_store.jl")
+    in_own_module("test_gateway_author.jl")
+    in_own_module("test_gateway_commit_workflow.jl")
+    in_own_module("test_bucket.jl")
+    in_own_module("test_bucket_examples.jl")
+    include("attachments.jl")
     include("Testing.jl")
     include("readme.jl")
     in_own_module("test_commit_faults_workflow.jl")   # commit! against a reference model
