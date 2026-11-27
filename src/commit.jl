@@ -56,7 +56,7 @@ function commit!(w::WriteBuilder; comment = nothing)
     check_open(local_copy)
     chain = chain_of(local_copy, "commit!")
     check_live(local_copy, "commit!")
-    refuse_unsupported_store(chain, "commit!(w)")
+    check_supported_store(chain, "commit!")
     head_file = bound_head(local_copy)
     # The author is fetched before anything is applied (ADR-0028).
     user = write_author(chain, head_file.chain_id, head_file.slot + 1)

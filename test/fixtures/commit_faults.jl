@@ -241,7 +241,8 @@ end
 function inject_put!(injector::Injector, phase::Symbol)
     phase === :before && return inject_before_put!(injector)
     event = get(injector.faults.puts, injector.n_puts, :ok)
-    event === :lost_ack && throw(TransportError("connection reset by peer"))
+    event === :lost_ack &&
+        throw(TransportError(; method = "PUT", url = injector.put_key, status = nothing))
     event === :crash_after && throw(SimulatedCrash())
     return nothing
 end
@@ -251,20 +252,22 @@ function inject_before_put!(injector::Injector)
     injector.n_puts == injector.faults.rival_before_put && injector.land_rival()
     event = get(injector.faults.puts, injector.n_puts, :ok)
     event === :crash_before && throw(SimulatedCrash())
+    url = injector.put_key
     haskey(RETRIED_STATUS, event) &&
-        throw(TransportError("no response"; status = RETRIED_STATUS[event]))
+        throw(TransportError(; method = "PUT", url, status = RETRIED_STATUS[event]))
     haskey(REFUSED_STATUS, event) &&
-        throw(TransportError("refused"; status = REFUSED_STATUS[event]))
+        throw(TransportError(; method = "PUT", url, status = REFUSED_STATUS[event]))
     return nothing
 end
 
 function inject_fetch!(injector::Injector, key::String)
     _is_precheck = key == injector.head_key && injector.faults.precheck_times_out
-    _is_precheck && throw(TransportError("timed out"))
+    _is_precheck && throw(TransportError(; method = "GET", url = key, status = nothing))
     key == injector.put_key || return nothing
     injector.n_readbacks += 1
     event = get(injector.faults.readbacks, injector.n_readbacks, :ok)
-    event === :timeout && throw(TransportError("timed out"))
+    event === :timeout &&
+        throw(TransportError(; method = "GET", url = key, status = nothing))
     return nothing
 end
 
@@ -326,7 +329,8 @@ end
 function (fault::ReadFault)(verb::Symbol, key::String, phase::Symbol)
     (verb === fault.verb && phase === :before) || return nothing
     fault.n_requests += 1
-    fault.n_requests == fault.request && throw(TransportError("timed out"))
+    fault.n_requests == fault.request &&
+        throw(TransportError(; method = "GET", url = key, status = nothing))
     return nothing
 end
 

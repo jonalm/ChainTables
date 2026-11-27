@@ -282,11 +282,14 @@ end
         store = local_copy.chain.store
         foreach(id -> commit_sample!(local_copy, id), 3:6)
         cold = chain_in(dir; store, cache = "cache_cold")
-        time_out = () -> throw(TransportError("timeout"))
+        failure = TransportError(;
+            method = "GET", url = slot_key(4), status = nothing, detail = "timeout"
+        )
+        time_out = () -> throw(failure)
         store.fault = FaultAt(:fetch_object, slot_key(4), :before, time_out)
         path = joinpath(dir, "failed")
         reached = with_copy(cold, path) do failed
-            @test_throws TransportError "TransportError: timeout" sync!(failed)
+            @test_throws TransportError "timeout" sync!(failed)
             head(failed)
         end
         @test 0 <= reached.slot < 4

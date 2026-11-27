@@ -287,7 +287,10 @@ end
 @testset "commit! succeeds when only the acknowledgement of its put is lost" begin
     with_samples_copy() do local_copy
         chain = local_copy.chain
-        reset = TransportError("connection reset by peer")
+        reset = TransportError(;
+            method = "PUT", url = slot_key(2), status = nothing,
+            detail = "connection reset by peer",
+        )
         chain.store.fault =
             FaultAt(:put_object_if_absent, nothing, :after, () -> throw(reset))
         committed = commit_sample!(local_copy, 3)

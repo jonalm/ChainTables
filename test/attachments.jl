@@ -1,8 +1,8 @@
 # ADR-0046 — the client surface for attachments: `put_attachment(chain, path_or_io)`,
 # `touch_attachment(chain, hash)`, against `InMemoryObjectStore` and, for a gateway bucket,
 # the loopback gateway and S3 (`GatewayDouble`, `gwtest_*`, `LoopbackServer`: test/gateway.jl,
-# included ahead of this file). The store layer's own tests are in s3.jl, gateway.jl and
-# Testing.jl.
+# included ahead of this file). The store layer's own tests are in test_s3_store_workflow.jl,
+# gateway.jl and Testing.jl.
 using ChainTables: Chain, TransportError, WriteRefusedError, GatewayObjectStore
 using ChainTables.Testing: InMemoryObjectStore
 using SHA: sha256
@@ -84,6 +84,62 @@ const ATT = ChainTables
                 ) === thrown
                 @test attempts() == 1
             end
+        end
+    end
+
+    @testset "put_attachment on a plain bucket: one streamed PUT, the checksum, If-None-Match (ADR-0046)" begin
+        creds = ChainTables.Credentials("AKIATEST", "topsecret")
+        server = S3TestServer(; bucket = "bkt", credentials = creds)
+        dir = mktempdir()
+        try
+            store = ChainTables.S3ObjectStore("bkt"; region = "eu-north-1", credentials = creds, endpoint = s3test_endpoint(server), path_style = true)
+            bytes = rand(UInt8, 2 * 1024 * 1024)
+            h = bytes2hex(sha256(bytes))
+            key = "p/_attachments/" * h
+            path = joinpath(dir, "a")
+            write(path, bytes)
+            @test open(io -> ATT.put_attachment(store, key, io), path)
+            @test server.objects[key] == bytes
+            put = server.requests[end]
+            @test put.headers["if-none-match"] == "*" && put.headers["content-type"] == "application/octet-stream"
+            @test put.headers["x-amz-checksum-sha256"] == ATT.Base64.base64encode(sha256(bytes))   # base64 of the digest, not hex
+            @test put.headers["x-amz-content-sha256"] == h                    # the signed payload hash is the key's
+            @test occursin("SignedHeaders=content-type;host;if-none-match;x-amz-checksum-sha256;x-amz-content-sha256;x-amz-date,", put.headers["authorization"])
+            @test !open(io -> ATT.put_attachment(store, key, io), path)       # present: 412 is false
+            @test length(server.requests) == 2
+            # bytes that do not hash to the key: S3 refuses the signed payload hash, and nothing is stored
+            other = "p/_attachments/" * "0"^64
+            e = try
+                open(io -> ATT.put_attachment(store, other, io), path); nothing
+            catch e
+                e
+            end
+            @test e isa ATT.AttachmentChangedError && e.key == other
+            @test startswith(
+                e.detail, "attachment changed: the upload of $other to " *
+                    "http://127.0.0.1:$(server.port)/bkt/$other was refused as BadDigest"
+            )
+            @test occursin("Stop whatever writes the file, then put the attachment again", sprint(showerror, e))
+            @test !haskey(server.objects, other)
+            server.respond = req -> (400, [], s3test_error("BadDigest", "The SHA256 you specified did not match the calculated checksum."))
+            @test_throws ATT.AttachmentChangedError open(io -> ATT.put_attachment(store, key, io), path)
+            # any other refusal is S3's own, as for the four verbs
+            server.respond = req -> (403, [], s3test_error("AccessDenied", "Access Denied"))
+            e = try
+                open(io -> ATT.put_attachment(store, key, io), path); nothing
+            catch e
+                e
+            end
+            @test e isa TransportError && e.status == 403 && e.url == "http://127.0.0.1:$(server.port)/bkt/$key" && e.detail == "AccessDenied: Access Denied"
+            server.respond = _ -> nothing
+            # a caller's bugs, before any request
+            n = length(server.requests)
+            @test_throws "is not an attachment key" ATT.put_attachment(store, "p/000000000001", IOBuffer(bytes))
+            @test_throws "is not an attachment key" ATT.put_attachment(store, "p/_attachments/" * uppercase(h), IOBuffer(bytes))
+            @test length(server.requests) == n
+        finally
+            close(server)
+            rm(dir; recursive = true)
         end
     end
 

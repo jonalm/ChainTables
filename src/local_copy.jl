@@ -57,9 +57,6 @@ function open(chain, path::AbstractString)
     head_file = read_highest_usable_head(path, expected_chain_id(chain))
     local_copy = LocalCopy(chain, path, head_file)
     sweep_orphans(local_copy)
-    # TODO: delete with the warning, when s3.jl is rewritten:
-    # https://github.com/jonalm/julia_codestyle/issues/129
-    warn_unsupported_store(chain)
     return local_copy
 end
 

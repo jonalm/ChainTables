@@ -151,12 +151,12 @@ function record_author(store::GatewayObjectStore)
     body = Vector{UInt8}("Action=GetCallerIdentity&Version=2011-06-15")
     host = split(store.sts_endpoint, "://"; limit = 2)[2]
     headers = signed_headers(
-        credentials, store.s3.region, "sts", host, "POST", "/";
+        credentials; store.s3.region, service = "sts", host, method = "POST", path = "/",
         body, headers = ["content-type" => "application/x-www-form-urlencoded; charset=utf-8"]
     )
     url = store.sts_endpoint * "/"
-    response = http_request(url, "POST", headers, body, store.timeout)
-    response.status == 200 || throw(failure("POST", url, response))
+    response = http_request("POST", url; headers, body, store.timeout)
+    response.status == 200 || throw(TransportError("POST", url, response))
     author = author_from_sts_response(response.body)
     store.author_key, store.author = credentials.access_key_id, author
     return author
@@ -197,11 +197,11 @@ function put_object_if_absent(store::GatewayObjectStore, key::AbstractString, by
     )
     query = Pair{String, String}["key" => String(key)]
     headers = signed_headers(
-        current_credentials(store.s3), store.s3.region, "lambda", store.host, "PUT", "/";
-        query, body, headers = ["content-type" => "application/cbor"]
+        current_credentials(store.s3); store.s3.region, service = "lambda", store.host,
+        method = "PUT", path = "/", query, body, headers = ["content-type" => "application/cbor"]
     )
     url = store.function_url * "/" * query_string(query)
-    response = http_request(url, "PUT", headers, body, store.timeout)
+    response = http_request("PUT", url; headers, body, store.timeout)
     status = response.status
     status == 200 && return created_in_our_bucket(store, String(key), body)
     status == 412 && return PutOutcome(false, 412)

@@ -78,7 +78,7 @@ using ChainTables.Testing: InMemoryObjectStore
         store = InMemoryObjectStore()
         # with a store nothing resolves, so the callable is there to look at; calling it names its profile
         chain = Chain(b, "p"; store, cache_dir = "/c")
-        @test chain.credentials isa Function
+        @test chain.credentials isa ChainTables.ProfileCredentials
         @test_throws "aws sso login --profile chaintables-test-no-such-profile" chain.credentials()
         @test_throws "aws sso login --profile chaintables-test-mine" Chain(
             b, "p"; store, cache_dir = "/c",

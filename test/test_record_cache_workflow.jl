@@ -84,10 +84,13 @@ end
     with_four_slots() do local_copy
         store = local_copy.chain.store
         cold = chain_in(dirname(local_copy.path); store, cache = "cache_cold")
-        down = () -> throw(TransportError("down"))
+        failure = TransportError(;
+            method = "GET", url = slot_key(1), status = nothing, detail = "down"
+        )
+        down = () -> throw(failure)
         store.fault = FaultAt(:fetch_object, slot_key(1), :before, down)
         with_copy_beside(local_copy, "fresh"; chain = cold) do fresh
-            @test_throws TransportError "TransportError: down" sync!(fresh)
+            @test_throws TransportError "down" sync!(fresh)
         end
         @test !isfile(record_file(cold, 1))
     end

@@ -43,7 +43,7 @@ retain_until(store, key) = iso_second(live_head(store, key)["x-amz-object-lock-r
 # A streamed PUT of `body` to a minted URL with `headers`: S3's status and its error document.
 function raw_put(url, headers, body)
     output = IOBuffer()
-    r = GWT.http_stream(url, "PUT", headers; input = IOBuffer(body), output, stall = 60)
+    r = GWT.http_stream("PUT", url; headers, input = IOBuffer(body), output, stall = 60)
     return (; r.status, text = String(take!(output)))
 end
 

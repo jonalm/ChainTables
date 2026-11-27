@@ -76,13 +76,13 @@ function put_attachment(store::S3ObjectStore, key::AbstractString, io::IO)
         ]
     )
     output = IOBuffer()
-    response = http_stream(req.url, "PUT", req.headers; input = io, output, stall = store.timeout)
+    response = http_stream("PUT", req.url; req.headers, input = io, output, stall = store.timeout)
     response.status == 200 && return true
     response.status == 412 && return false
     body = take!(output)
-    url = store.base * object_path(store, key)
+    url = object_url(store, key)
     bad_digest(response.status, body) && throw(changed(key, url))
-    throw(failure("PUT", url, (; response.status, body)))
+    throw(TransportError("PUT", url, (; response.status, body)))
 end
 
 # S3's two words for bytes that do not hash as signed: `BadDigest` for the checksum header,
@@ -162,9 +162,12 @@ end
 # when `present`; a refusal raises.
 function mint(store::GatewayObjectStore, key::String, size::Int64)
     query = Pair{String, String}["key" => key, "size" => string(size)]
-    headers = signed_headers(current_credentials(store.s3), store.s3.region, "lambda", store.host, "POST", "/mint"; query)
+    headers = signed_headers(
+        current_credentials(store.s3); store.s3.region, service = "lambda", store.host,
+        method = "POST", path = "/mint", query
+    )
     url = store.function_url * "/mint" * query_string(query)
-    response = http_request(url, "POST", headers, UInt8[], store.timeout)
+    response = http_request("POST", url; headers, store.timeout)
     status = response.status
     code, message = gateway_reply(response.body)
     if status == 200
@@ -254,11 +257,10 @@ end
 function expected_attachment_url(store::GatewayObjectStore, key::AbstractString)
     s3 = store.s3
     is_aws(s3) || return s3.base * object_path(s3, key)
-    return "https://$(s3.bucket).s3.$(s3.region).amazonaws.com/" * uri_encode(key; keep_slash = true)
+    return "https://$(s3.bucket).s3.$(s3.region).amazonaws.com/" * SigV4.uri_encode(key; keep_slash = true)
 end
 
 # The URL with its query — the signature, a bearer credential until it expires — left out.
-bare_url(url::AbstractString) = first(split(url, '?'; limit = 2))
 
 # The minted headers that make S3 check the bytes against the hash, refuse to overwrite the
 # key and bound the body (ADR-0046), each exactly once: a gateway that mints them otherwise — a bug, or one
@@ -357,7 +359,7 @@ function upload_minted(store::GatewayObjectStore, key::String, io::IO, size::Int
     output = IOBuffer()
     response = try
         http_stream(
-            reply.url, "PUT", reply.headers; input = io, output, stall = store.timeout,
+            "PUT", reply.url; reply.headers, input = io, output, stall = store.timeout,
             deadline = (deadline - started) / 1.0e9
         )
     catch e
@@ -380,7 +382,7 @@ function upload_minted(store::GatewayObjectStore, key::String, io::IO, size::Int
             )
         )
     end
-    throw(failure("PUT", where, (; response.status, body)))
+    throw(TransportError("PUT", where, (; response.status, body)))
 end
 
 # A gateway's word is believed only once the bucket this chain reads holds the key, at

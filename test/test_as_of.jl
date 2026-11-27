@@ -135,7 +135,11 @@ end
         store = local_copy.chain.store
         dir = dirname(local_copy.path)
         cold = chain_in(dir; store, cache = "cold")
-        reset = () -> throw(TransportError("connection reset by peer"))
+        failure = TransportError(;
+            method = "GET", url = slot_key(0), status = nothing,
+            detail = "connection reset by peer",
+        )
+        reset = () -> throw(failure)
         store.fault = FaultAt(:fetch_object, slot_key(0), :before, reset)
         path = beside(local_copy, "cut")
         @test_throws TransportError "connection reset by peer" as_of(cold, 1; path)

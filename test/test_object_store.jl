@@ -1,6 +1,6 @@
 using Test
 using ChainTables: ChainTables, Chain, Credentials, GatewayObjectStore, ObjectMeta,
-    PutOutcome, S3ObjectStore, TransportError, cache_namespace, fetch_object,
+    PutOutcome, S3ObjectStore, cache_namespace, fetch_object,
     list_objects, put_object_if_absent, record_author, stat_object
 using ChainTables.Testing: InMemoryObjectStore
 
@@ -117,10 +117,4 @@ end
         @test record_author(store) === nothing
     end
     @test Base.infer_return_type(record_author, (typeof(store),)) == Union{Nothing, String}
-end
-
-@testset "TransportError shows its message and its status" begin
-    @test sprint(showerror, TransportError("down"; status = 503)) ==
-        "TransportError: down (HTTP 503)"
-    @test sprint(showerror, TransportError("timeout")) == "TransportError: timeout"
 end

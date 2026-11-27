@@ -145,37 +145,3 @@ function startswith_bytes(key::AbstractString, prefix::AbstractString)
     length(prefix_bytes) <= length(key_bytes) || return false
     return view(key_bytes, eachindex(prefix_bytes)) == prefix_bytes
 end
-
-# TODO: the form of this type waits for a ruling (it holds `msg`, and it is outside
-# `ChainTablesError`): https://github.com/jonalm/julia_codestyle/issues/150
-"""
-    TransportError(msg; status = nothing) <: Exception
-
-Thrown by a verb of an object store when a request failed: `status` is the HTTP status
-when there was a response, `nothing` for a connect failure or a timeout.
-
-It is the transport's word, and the commit layer decides what it means. A test's
-`InMemoryObjectStore` `fault` throws one to simulate a failed request.
-"""
-struct TransportError <: Exception
-    msg::String
-    status::Union{Nothing, Int}
-end
-TransportError(msg; status = nothing) = TransportError(msg, status)
-function Base.showerror(io::IO, e::TransportError)
-    print(io, "TransportError: ", e.msg)
-    e.status === nothing || print(io, " (HTTP ", e.status, ")")
-    return nothing
-end
-
-# A connect failure or a timeout, a `5xx`, a `409` and a `429` are retried (ADR-0010,
-# ADR-0028). Every other status is not, an authorisation `4xx` above all. A `412`
-# never gets here: the store returns it as a `PutOutcome`.
-function is_retryable(e::TransportError)
-    status = e.status
-    status === nothing && return true
-    return 500 <= status < 600 || status == 409 || status == 429
-end
-
-# Only the transport's own word is retried.
-is_retryable(e) = false

@@ -217,3 +217,11 @@ Two properties are load-bearing and are recorded as such:
   compactor. `start_after` is ours to provide. The one finding that survives
   intact is the sharpest one, and it is now our own rule: a never-re-validated
   cache is safe only for objects whose bytes cannot change.
+
+**Amended (Guide v1.0 Adoption 4a, 2026-11-27)**: a failed request throws
+`TransportError`, a `ChainTablesError` like every other error the package throws
+(ADR-0020). It has the fields `method`, `url` (the signature of a presigned URL left
+out), `status` (`nothing` when no response came: a connect failure, a timeout) and
+`detail`, the code and message the server sent. It stays one type: the transport says
+only whether the request succeeded, `status` decides whether the commit layer retries,
+and the commit layer decides what the failure means.

@@ -91,7 +91,10 @@ function gwtest_check_signature(credentials::Credentials, region, service, req)
     if credentials.session_token !== nothing
         get(req.headers, "x-amz-security-token", "") == credentials.session_token || return (403, [], Vector{UInt8}("{\"Message\":\"Forbidden\"}"))
     end
-    expected = GWT.sign_request(credentials, sregion, req.method, req.rawpath, req.query, headers, payload_hash, amzdate; service)
+    expected = GWT.SigV4.sign_request(
+        credentials; req.method, path = req.rawpath, req.query, headers, payload_hash,
+        at = s3test_unix_seconds(amzdate), region = sregion, service
+    )
     expected.signature == signature || return (403, [], Vector{UInt8}("{\"Message\":\"Forbidden\"}"))
     return nothing
 end
@@ -182,7 +185,7 @@ function gwtest_minted(
         ]
     )
     s3.presigned[signature] = (; key, headers = Dict(headers), expires = time() + seconds)
-    url = something(url, s3test_endpoint(s3) * "/$(s3.bucket)/" * GWT.uri_encode(key; keep_slash = true)) *
+    url = something(url, s3test_endpoint(s3) * "/$(s3.bucket)/" * GWT.SigV4.uri_encode(key; keep_slash = true)) *
         (query ? "?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Expires=$seconds&X-Amz-SignedHeaders=host&X-Amz-Signature=$signature" : "")
     object = join(("\"$k\": \"$v\"" for (k, v) in headers), ", ")
     body = "{\"code\": \"minted\", \"message\": \"PUT the attachment's $size bytes\", \"url\": \"$url\", " *
@@ -279,11 +282,11 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
             chain = Chain("bkt", "p"; gateway = url, endpoint = "http://127.0.0.1:9000", path_style = true, cache_dir = "/c")
             @test chain.store.s3.credentials == Credentials("AKIAX", "s3cret") && chain.region == "eu-north-1"
             @test chain.store.s3.base == "http://127.0.0.1:9000" && chain.store.s3.path_style && !GWT.is_aws(chain.store)
-            @test GWT.unsupported_store(chain)                        # ADR-0016's gate is the S3 half's
-            @test_throws "create_chain(chain) refuses to commit to http://127.0.0.1:9000, which is not AWS S3" GWT.create_chain(chain)
+            @test GWT.is_unsupported_store(chain.store)               # ADR-0016's gate is the S3 half's
+            @test_throws "the call was `create_chain`\n  endpoint = http://127.0.0.1:9000" GWT.create_chain(chain)
         end
         withenv("AWS_REGION" => nothing, "AWS_DEFAULT_REGION" => nothing) do
-            @test_throws "region is required by the S3 client" Chain("bkt", "p"; gateway = url, credentials = creds)
+            @test_throws "the S3 store needs a region" Chain("bkt", "p"; gateway = url, credentials = creds)
         end
         # the store type stays for dispatch and tests: buildable, with the same rules
         s = GatewayObjectStore("bkt", url; region = "eu-north-1", credentials = creds)
@@ -430,7 +433,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                 end
                 @test e isa TransportError && e.status == status && GWT.is_retryable(e)
                 status == 502 && @test occursin("HTTP 502 s3_error: S3 said \"InternalError\"\n", sprint(showerror, e))
-                status == 503 && @test endswith(sprint(showerror, e), "HTTP 503 (HTTP 503)")
+                status == 503 && @test endswith(e.detail, "HTTP 503")
             end
             double.respond = _ -> nothing
             # nothing listening: no status, retryable
@@ -448,7 +451,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                 e
             end
             @test e isa TransportError && e.status === nothing && GWT.is_retryable(e)
-            @test startswith(sprint(showerror, e), "TransportError: PUT http://127.0.0.1:$port/?key=p%2F000000000001: no response")
+            @test e.url == "http://127.0.0.1:$port/?key=p%2F000000000001" && startswith(e.detail, "no response")
         finally
             close(gw); close(s3)
         end
@@ -686,7 +689,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                 e
             end
             @test e isa TransportError && e.status == 500 && GWT.is_retryable(e)
-            @test occursin("PUT $(s3test_endpoint(s3))/bkt/$kf: HTTP 500 InternalError", sprint(showerror, e)) && !occursin("Signature", sprint(showerror, e))
+            @test e.url == "$(s3test_endpoint(s3))/bkt/$kf" && startswith(e.detail, "InternalError") && !occursin("Signature", sprint(showerror, e))
             s3.respond = _ -> nothing
             # a reply this client cannot read is refused, never guessed at
             for (body, what) in (
@@ -828,7 +831,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                     e
                 end
                 @test e isa TransportError && e.status == 403 && store2.author === nothing
-                @test startswith(sprint(showerror, e), "TransportError: POST http://127.0.0.1:$(other.port)/: HTTP 403")
+                @test e.method == "POST" && e.url == "http://127.0.0.1:$(other.port)/"
                 @test GWT.record_author(store2) == "erin"                             # an IAM user with a path: the name
                 @test store2.author_key == "AKIAOTHER" && length(other.requests) == 2
                 @test GWT.record_author(store2) == "erin" && length(other.requests) == 2
@@ -900,7 +903,7 @@ const GWTEST_ARN = "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_chaint
                 # a supplied gateway store is held to the same rule as the keyword
                 @test_throws "record_user = false with a gateway" Chain("bkt", "exp/run-1"; store, cache_dir, record_user = false)
                 chain = Chain("bkt", "exp/run-1"; store, cache_dir, assume_first_writer_wins = true)
-                @test chain isa Chain{GatewayObjectStore} && GWT.unsupported_store(chain)
+                @test chain isa Chain{GatewayObjectStore} && GWT.is_unsupported_store(chain.store)
                 puts() = count(r -> r.method == "PUT", gw.requests)
                 withenv("USER" => "carol") do
                     # create_chain: the author is fetched first, the genesis goes through the gateway, ENV is ignored

@@ -28,7 +28,7 @@ end
         @test ChainTables isa Module
     end
 
-    include("fixtures/s3_server.jl")     # the loopback S3: s3.jl, gateway.jl
+    include("fixtures/s3_server.jl")     # the loopback S3: gateway.jl, attachments.jl
     include("fixtures/gateway.jl")       # gwtest_record: gateway.jl, live/gateway.jl
 
     in_own_module("test_hashes.jl")
@@ -99,7 +99,18 @@ end
     in_own_module("test_slot_at_examples.jl")
     in_own_module("test_commit_log.jl")
     in_own_module("test_commit_log_examples.jl")
-    include("s3.jl")
+    in_own_module("test_transport_errors.jl")
+    in_own_module("test_credential_errors.jl")
+    in_own_module("test_sigv4_signature.jl")
+    in_own_module("test_sigv4_signature_examples.jl")
+    in_own_module("test_credentials.jl")
+    in_own_module("test_credentials_examples.jl")
+    in_own_module("test_sso_credentials.jl")
+    in_own_module("test_sso_credentials_examples.jl")
+    in_own_module("test_sso_login.jl")
+    in_own_module("test_sso_login_examples.jl")
+    in_own_module("test_s3_store_workflow.jl")
+    in_own_module("test_s3_streaming_workflow.jl")
     include("gateway.jl")
     include("bucket.jl")
     include("attachments.jl")    # after gateway.jl: it uses the gateway double

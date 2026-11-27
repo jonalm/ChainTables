@@ -72,7 +72,7 @@ themselves on from the environment.
 - **Amended: no live plain-bucket test.** The live S3 test (issue #6) checked a
   plain bucket's direct conditional put. No deployment uses a plain bucket, so it
   was dropped; its session-token and `stat_object` checks moved into the gateway
-  test, and the direct put stays covered offline by `test/s3.jl` only.
+  test, and the direct put stays covered offline by `test/test_s3_store_workflow.jl` only.
 - **Amended: a live attachments test** (`run.sh attachments`, issue #90) proves
   ADR-0046's list on a locked gateway bucket, configured apart from the gateway
   test because it needs a locked bucket whose gateway has the mint route and a

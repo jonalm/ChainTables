@@ -33,6 +33,9 @@ function to call, where there is one.
 | `AttachmentAbsentError` | touch_attachment, attachment, repair! | the chain's store holds no such attachment — never put, or deleted after its retention ended: whoever holds the file puts it again; a reader without it cannot. `repair!` raises it once after its pass, naming every confirmed hash gone, whose markers it removed (ADR-0046) |
 | `AttachmentDigestError` | attachment, repair! | the store returned bytes that do not hash to the attachment's key, and nothing was cached; or, on a cache hit, the store's size differs from a cached file that hashes right, which is kept: stop, the bucket was written from outside the protocol (ADR-0046) |
 | `AttachmentCacheError` | attachment, verify (full) | the attachment cache's file does not hash to its name (a file that does, beside a sidecar that disagrees, has the sidecar rewritten), or changed while it was being hashed, because something other than ChainTables writes the cache: stop that; delete the file and its `.meta`, always safe, and the next read fetches it again; from `verify`, `repair!(copy)` does that for the confirmed hashes (ADR-0046) |
+| `TransportError` | a request of any object store | `status` decides: no response, a `5xx`, a `409` or a `429` may pass, and `commit!` has retried it already, so run the call again later; any other status will not, so check the credentials, the bucket and its region (ADR-0010) |
+| `CredentialsExportError` | a credentials callable from `sso_credentials` | `reason` says which: log in (`aws sso login`); have an Identity Center admin assign the profile's role; or update the AWS CLI, whose output this client cannot read |
+| `LoginError` | sso_login | run the command in a terminal to see what the AWS CLI says |
 | `GatewaySessionEndingError` | put_attachment | the gateway's execution environment is too old to sign a URL (`503 session_ending`); not retried, since a retry now most likely meets the same environment: put again later, once Lambda has replaced it; nothing was stored (ADR-0046, #94) |
 
 ADR-0023 and ADR-0014 both close by saying each failure must be
@@ -52,7 +55,10 @@ chain's absence nor a damaged copy; `AttachmentDigestError` and
 the store are not a rewritten chain, the second because `RecordCacheError`'s
 evidence, a slot and a transaction hash, does not fit an attachment;
 `GatewaySessionEndingError` added by #94, because its next move is to wait,
-which a retryable `TransportError` cannot say).
+which a retryable `TransportError` cannot say; `TransportError`,
+`CredentialsExportError` and `LoginError` added with the adoption of the Julia style
+guide v1.0, the first because it was outside this list, the other two because the
+credentials of a profile were an `ErrorException`).
 
 ## Why types at all, when the message is the target
 

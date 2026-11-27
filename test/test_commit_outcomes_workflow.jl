@@ -9,6 +9,10 @@ include("fixtures/forged_records.jl")
 
 const RETRIED_STATUSES = [nothing, 500, 502, 503, 504, 409, 429]
 const REFUSED_STATUSES = [400, 403, 404, 412, 413]
+const UNAVAILABLE = TransportError(;
+    method = "PUT", url = "p/000000000002", status = 503,
+    detail = "ServiceUnavailable: Service Unavailable",
+)
 const THREE_SAMPLES = [(1, "a", 1.5), (2, "b", missing), (3, "3", 3.0)]
 
 head_files(local_copy) = sort(readdir(joinpath(local_copy.path, "heads")))
@@ -26,7 +30,8 @@ end
     @testset "status $(repr(status))" for status in RETRIED_STATUSES
         with_samples_copy() do local_copy
             store = local_copy.chain.store
-            store.fault = LostPuts(1, TransportError("no response"; status))
+            failure = TransportError(; method = "PUT", url = slot_key(2), status)
+            store.fault = LostPuts(1, failure)
             @test commit_sample!(local_copy, 3).slot == 2
             @test n_puts(store, 2) == 2
         end
@@ -37,10 +42,11 @@ end
     @testset "status $status" for status in REFUSED_STATUSES
         with_samples_copy() do local_copy
             store = local_copy.chain.store
-            store.fault = LostPuts(4, TransportError("refused"; status))
+            failure = TransportError(; method = "PUT", url = slot_key(2), status)
+            store.fault = LostPuts(4, failure)
             before = on_disk(local_copy)
             w = sample_builder(local_copy, 3)
-            @test_throws TransportError "refused (HTTP $status)" commit!(w)
+            @test_throws TransportError "status = $status" commit!(w)
             @test n_puts(store, 2) == 1
             @test !haskey(store.objects, slot_key(2))
             @test on_disk(local_copy) == before
@@ -52,7 +58,7 @@ end
 @testset "a put that fails twice and then lands is one commit" begin
     with_samples_copy() do local_copy
         store = local_copy.chain.store
-        store.fault = LostPuts(2, TransportError("service unavailable"; status = 503))
+        store.fault = LostPuts(2, UNAVAILABLE)
         @test commit_sample!(local_copy, 3).slot == 2
         @test n_puts(store, 2) == 3
         @test isequal(sample_rows(local_copy), THREE_SAMPLES)
@@ -62,10 +68,10 @@ end
 @testset "a put that fails at every attempt leaves the outcome unknown" begin
     with_samples_copy() do local_copy
         store = local_copy.chain.store
-        store.fault = LostPuts(4, TransportError("service unavailable"; status = 503))
+        store.fault = LostPuts(4, UNAVAILABLE)
         before = on_disk(local_copy)
         w = sample_builder(local_copy, 3)
-        cause = "service unavailable (HTTP 503)"
+        cause = "Service Unavailable"
         err = @test_throws CommitOutcomeUnknownError cause commit!(w)
         @test err.value.cause isa TransportError
         @test err.value.landed === nothing

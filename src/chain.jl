@@ -48,9 +48,9 @@ struct Chain{S <: AbstractObjectStore, C}
     assume_first_writer_wins::Bool
     record_host::Bool
     record_user::Bool
-    # TODO: only the tests of `s3`, `gateway` and `bucket` read these four. Delete them,
-    # or give them a reader, with those files:
-    # https://github.com/jonalm/julia_codestyle/issues/129
+    # TODO: only the tests of `gateway` and `bucket` read these four. Delete them, or
+    # give them a reader, with those files:
+    # https://github.com/jonalm/julia_codestyle/issues/153
     region::Union{Nothing, String}
     credentials::C
     endpoint::Union{Nothing, String}

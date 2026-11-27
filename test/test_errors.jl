@@ -9,18 +9,21 @@ const ERROR_TYPES = [
     ChainTables.AttachmentAbsentError, ChainTables.AttachmentCacheError,
     ChainTables.AttachmentChangedError, ChainTables.AttachmentDigestError,
     ChainTables.AttachmentURLExpiredError, ChainTables.ChainNotFoundError,
-    ChainTables.CommitOutcomeUnknownError, ChainTables.DivergenceError,
+    ChainTables.CommitOutcomeUnknownError, ChainTables.CredentialsExportError,
+    ChainTables.DivergenceError,
     ChainTables.FingerprintMismatchError, ChainTables.GatewayMismatchError,
     ChainTables.GatewaySessionEndingError, ChainTables.LayoutVersionError,
-    ChainTables.LocalCopyInconsistentError, ChainTables.LostRaceError,
+    ChainTables.LocalCopyInconsistentError, ChainTables.LoginError,
+    ChainTables.LostRaceError,
     ChainTables.MalformedRecordError, ChainTables.NotALocalCopyError,
     ChainTables.PinnedCopyError, ChainTables.RecordCacheError,
     ChainTables.RewrittenChainError, ChainTables.StaleHeadError,
-    ChainTables.UnsupportedStoreError, ChainTables.WriteBuilderError,
+    ChainTables.TransportError, ChainTables.UnsupportedStoreError,
+    ChainTables.WriteBuilderError,
     ChainTables.WriteRefusedError, ChainTables.WrongChainError,
 ]
 
-@testset "ChainTables makes its 24 error types and their supertype public" begin
+@testset "ChainTables makes its 27 error types and their supertype public" begin
     public_errors = filter(name -> endswith(string(name), "Error"), names(ChainTables))
     @test sort(public_errors) == sort([nameof.(ERROR_TYPES); :ChainTablesError])
 end

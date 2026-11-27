@@ -15,7 +15,7 @@ Throws `LostRaceError` when a chain is there already; the put is never retried. 
 Examples: test/test_create_chain_examples.jl
 """
 function create_chain(chain::Chain)
-    refuse_unsupported_store(chain, "create_chain(chain)")
+    check_supported_store(chain, "create_chain")
     chain_id = rand(UInt8, 16)
     chain_id_text = chain_id_string(chain_id)
     user = write_author(chain, chain_id_text, 0)
