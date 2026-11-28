@@ -11,3 +11,9 @@ Default canonical labels, unchanged. See `docs/agents/triage-labels.md`.
 ### Domain docs
 
 Single-context: `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+Julia style: before you write or edit Julia, read
+~/.cache/julia-style/v1.0/JULIA_STYLE.md, then the sub-files it names for your task.
+If that folder does not exist, run once:
+gh repo clone jonalm/julia_codestyle ~/.cache/julia-style/v1.0 -- --depth 1 --branch v1.0
+If the clone fails, stop and tell the user. Never write Julia from memory of the Guide.

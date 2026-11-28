@@ -212,7 +212,7 @@ an absent key HEADs 404, is on the bucket.
 A plain bucket, one with no gateway, takes the PUT directly, with the checksum
 and `If-None-Match: *`; `412` is success. There is no retention to extend.
 
-The difference is internal dispatch, `put_attachment(store, key, io)`, as for
+The difference is internal dispatch, `upload_attachment(store, key, io)`, as for
 `record_author(store)`, together with a streaming GET to a file.
 `Testing.InMemoryObjectStore` gets both. The transport gains a streaming PUT
 from a file and a streaming GET to a file. Neither holds the body in memory or

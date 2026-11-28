@@ -149,11 +149,11 @@ nothing else: any fixture helper added there becomes a second API to keep stable
 - **`open` creates the directory when it is absent**, unbound and fresh —
   ADR-0023 names that a legitimate open state, and binding happens at the
   first `sync!`.
-- **The open-time warning** (ADR-0016's non-AWS store; this ADR first had a
-  second, for a foreign database library, which left with ADR-0022) is `@warn`
-  with `maxlog = 1` per process per condition, and `as_of` warns through the
-  same path. The refusal at `commit!` never has `maxlog`: a suppressed warning
-  must not become a suppressed refusal.
+- **There is no open-time warning** (amended with the adoption of the Julia style
+  guide v1.0). ADR-0016's non-AWS store was a `@warn` with `maxlog = 1` per
+  process, and `as_of` warned through the same path; this ADR first had a second,
+  for a foreign database library, which left with ADR-0022. The refusal at
+  `commit!` stands, and was never suppressed.
 - **Credentials resolve at `Chain` construction and error if absent**, and the
   field also accepts a callable, because ADR-0010's signer sends
   `x-amz-security-token` and a long-lived reader outlives an aws-vault session.

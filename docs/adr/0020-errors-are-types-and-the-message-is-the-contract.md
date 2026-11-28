@@ -27,12 +27,15 @@ function to call, where there is one.
 | `MalformedRecordError` | apply | none under this format version: the committer had a bug, the chain is dead beyond that slot (ADR-0025) |
 | `WriteRefusedError` | commit, create_chain, put_attachment, touch_attachment | stop and have a person act: the bucket's operator adds the name to the gateway policy, grants the writer permission set or redeploys a gateway with no mint route (`"no_mint_route"`), or a mismatch is reported as a bug — `reason` says which (ADR-0028, ADR-0046) |
 | `GatewayMismatchError` | commit, create_chain, put_attachment, touch_attachment | the gateway fills another bucket than the one this chain reads, minted a URL outside it, or mints again after S3 refused an upload as present (412) instead of answering `present`: pair the bucket with its own gateway, as one `Bucket` (ADR-0029, ADR-0046); or it minted the headers S3 checks missing, wrong or more than once, or a URL with no signature: the bucket's operator redeploys it (`gateway/deploy.sh`, ADR-0046) |
-| `RecordCacheError` | verify (full); repair! | the record cache, not the chain, lacks or has damaged a record: `repair!(copy)` fetches it again; or a cache file changed between two reads, because another process writes the cache or the disk damaged it: run the call again (ADR-0040) |
+| `RecordCacheError` | verify (full) | the record cache, not the chain, lacks or has damaged a record: `repair!(copy)` fetches it again (ADR-0040, amended) |
 | `AttachmentChangedError` | put_attachment | the bytes sent do not hash to the attachment's key (S3's `BadDigest`): the file changed between hashing and upload; stop whatever writes it, and put it again (ADR-0046) |
 | `AttachmentURLExpiredError` | put_attachment | the URL the gateway minted expired, and the message says why: the upload outlasted it (put again over a faster link; a `capped` URL may come longer from another put), the process waited past its life before uploading, or S3 called it expired early (a clock off at the gateway or S3); nothing was stored (ADR-0046) |
 | `AttachmentAbsentError` | touch_attachment, attachment, repair! | the chain's store holds no such attachment — never put, or deleted after its retention ended: whoever holds the file puts it again; a reader without it cannot. `repair!` raises it once after its pass, naming every confirmed hash gone, whose markers it removed (ADR-0046) |
 | `AttachmentDigestError` | attachment, repair! | the store returned bytes that do not hash to the attachment's key, and nothing was cached; or, on a cache hit, the store's size differs from a cached file that hashes right, which is kept: stop, the bucket was written from outside the protocol (ADR-0046) |
 | `AttachmentCacheError` | attachment, verify (full) | the attachment cache's file does not hash to its name (a file that does, beside a sidecar that disagrees, has the sidecar rewritten), or changed while it was being hashed, because something other than ChainTables writes the cache: stop that; delete the file and its `.meta`, always safe, and the next read fetches it again; from `verify`, `repair!(copy)` does that for the confirmed hashes (ADR-0046) |
+| `TransportError` | a request of any object store | `status` decides: no response, a `5xx`, a `409` or a `429` may pass, and `commit!` has retried it already, so run the call again later; any other status will not, so check the credentials, the bucket and its region (ADR-0010) |
+| `CredentialsExportError` | a credentials callable from `sso_credentials` | `reason` says which: log in (`aws sso login`); have an Identity Center admin assign the profile's role; or update the AWS CLI, whose output this client cannot read |
+| `LoginError` | sso_login | run the command in a terminal to see what the AWS CLI says |
 | `GatewaySessionEndingError` | put_attachment | the gateway's execution environment is too old to sign a URL (`503 session_ending`); not retried, since a retry now most likely meets the same environment: put again later, once Lambda has replaced it; nothing was stored (ADR-0046, #94) |
 
 ADR-0023 and ADR-0014 both close by saying each failure must be
@@ -52,7 +55,10 @@ chain's absence nor a damaged copy; `AttachmentDigestError` and
 the store are not a rewritten chain, the second because `RecordCacheError`'s
 evidence, a slot and a transaction hash, does not fit an attachment;
 `GatewaySessionEndingError` added by #94, because its next move is to wait,
-which a retryable `TransportError` cannot say).
+which a retryable `TransportError` cannot say; `TransportError`,
+`CredentialsExportError` and `LoginError` added with the adoption of the Julia style
+guide v1.0, the first because it was outside this list, the other two because the
+credentials of a profile were an `ErrorException`).
 
 ## Why types at all, when the message is the target
 
@@ -86,6 +92,23 @@ Three parts, in order:
    ADR-0022's named forensics, which are useless if only the type carries them.
 3. **The next move**, naming the function: `repair!(copy)`, `unpin!(copy)`,
    `sync!(copy)`, or the field to set.
+
+**How the message is built** (amended 2026-11-25, with the adoption of the Julia style
+guide v1.0). `showerror` builds the message from the exception: a summary of what
+happened, fixed per type; `detail`, the text that no field holds, when there is any;
+one line per evidence field that is set; and the next move. Where the next move
+depends on the case, `showerror` looks it up by the type's `reason` field. No type
+holds the message as a field: a caller reads the evidence fields and `detail`, and
+`sprint(showerror, e)` gives the text. Every evidence field is a keyword of the
+type's constructor.
+
+```
+StaleHeadError: the write builder's head is behind the chain.
+  chain_id = AAAQEAYEAUDAOCAJBIFQYDIOB4
+  slot = 1
+  chain_slot = 2
+Run `sync!(copy)`, recompute the row set and build again with `write_builder(copy)`. This builder is spent.
+```
 
 Two messages are deliberately uncertain and must stay that way.
 `ChainNotFoundError` cannot tell a wrong prefix from a truncated chain — ADR-0006

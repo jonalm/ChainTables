@@ -1,7 +1,10 @@
-# Shared by test/gateway.jl (offline) and test/live/gateway.jl. Included once, by
-# test/runtests.jl and by test/live/runtests.jl.
-import ChainTables
-const GWT = ChainTables
+# What a test writes through a gateway. test/live/gateway.jl includes it too, so it needs
+# no other fixture.
+using ChainTables: CBOR
 
 # A CBOR map that passes the gateway's checks: a record-shaped map naming `user`.
-gwtest_record(user) = GWT.CBOR.encode(Dict{String,Any}("format_version" => 1, "client" => Dict{String,Any}("user" => user), "ops" => Any[]))
+function gwtest_record(user)
+    client = Dict{String, Any}("user" => user)
+    map = Dict{String, Any}("format_version" => 1, "client" => client, "ops" => Any[])
+    return CBOR.encode(map)
+end

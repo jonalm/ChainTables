@@ -118,7 +118,7 @@ One way to build a chain: the method computes keywords and delegates.
 
 After a `200` from the gateway, `GatewayObjectStore` stats the key on its S3
 half. Found: `PutOutcome(true, 200)` as before. Absent:
-**`GatewayMismatchError(msg; chain_id, slot, key, bucket, gateway)`**, the
+**`GatewayMismatchError(; chain_id, slot, key, bucket, gateway, detail)`**, the
 sixteenth `ChainTablesError`, raised by `commit!` and `create_chain`, never
 retried, before the record is cached or applied. S3 is read-after-write
 consistent, so absence is a verdict and not a race; a stat that itself fails is

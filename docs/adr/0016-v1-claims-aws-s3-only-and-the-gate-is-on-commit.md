@@ -5,8 +5,8 @@ status: accepted
 # v1 claims AWS S3 only, and the gate is on commit
 
 ChainTables v1 supports **AWS S3 general purpose buckets** and nothing else. A
-client configured against any other object store warns at `open`, syncs and reads
-normally, and **raises on commit** — unless the user has set
+client configured against any other object store syncs and reads normally, and
+**raises on commit** — unless the user has set
 `assume_first_writer_wins = true`.
 
 ## Why the claim is this narrow
@@ -47,7 +47,7 @@ the config is the user's own, and a user who wants past it has the override.
 
 ## The gate is on commit
 
-`open` warns; it does not refuse. A fetch and a stat need no promise, so a client
+`open` does not refuse. A fetch and a stat need no promise, so a client
 that only reads is untouched by this question, and gating at open would force a
 read-only mode into existence solely to escape a check that never applied to it —
 a decision that belongs to the public API surface, not here. The refusal
@@ -108,3 +108,8 @@ fake makes `put_object_if_absent` a single-threaded dictionary insert, which is 
 stronger and more deterministic guarantee than any real store — and standing up
 MinIO locally would teach the behaviour of the one implementation whose failure
 modes this ADR exists to exclude.
+
+**Amended (Guide v1.0 Adoption 4a, 2026-11-27)**: `open` warned, once per process, that
+commits would refuse. The Guide bars `@warn` in the package: a caller can neither catch
+nor test a log line. Nothing fails at `open`, and the refusal at `commit!` and
+`create_chain` names the endpoint and the field that lifts it, so `open` is silent.

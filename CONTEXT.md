@@ -218,6 +218,12 @@ checkpoint's state fingerprint is checked against its record.
 _Avoid_: flush, save, snapshot, commit (that is adding a record to the chain)
 _See_: [ADR-0013](docs/adr/0013-apply-is-per-record-in-memory-and-checkpoints-are-amortized.md)
 
+**Local commit point**:
+The rename of a new head file into place, after which the local copy is at the new
+head. It follows a commit and ends a checkpoint; before it, the copy is still at its
+old head. It is not itself a commit: the chain does not see it.
+_See_: [ADR-0023](docs/adr/0023-the-local-copy-is-hash-named-table-files-and-a-slot-named-head.md), [ADR-0009](docs/adr/0009-the-head-file-is-written-after-the-conditional-put.md)
+
 **Damaged copy**:
 A local copy holding a table file whose bytes do not hash to its name, or a head
 file that does not agree with itself. It is found by hashing, never by replay, and

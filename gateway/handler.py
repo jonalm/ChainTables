@@ -127,7 +127,7 @@ ATTACHMENT_KEY = re.compile(r"(?:(?P<prefix>[^/](?:.*[^/])?)/)?_attachments/(?P<
 DECIMAL = re.compile(r"[0-9]+")
 
 # The Julia client's prefix rules (`check_prefix` in src/chain.jl, `portable_segment_problem`
-# in src/store.jl, ADR-0034), mirrored so the gateway refuses every key a client refuses
+# in src/record_cache.jl, ADR-0034), mirrored so the gateway refuses every key a client refuses
 # (ADR-0035). Change both sides together. The length cap also keeps a key far under S3's
 # 1024 bytes, so S3 never refuses one as too long.
 MAX_PREFIX_LENGTH = 100
@@ -642,7 +642,7 @@ def decode_record(body: bytes):
     `cbor2` is lenient (it takes duplicate keys, trailing bytes, indefinite lengths, tags), so
     the item is checked against the format's domain and then re-encoded canonically, which must
     give back `body` byte for byte. `cbor2`'s canonical encoder matched the Julia encoder on the
-    whole conformance corpus (``test/conformance``)."""
+    whole conformance corpus (``test/data/cbor_conformance``)."""
     try:
         doc = cbor2.loads(body)
     except (cbor2.CBORDecodeError, TypeError, RecursionError) as e:

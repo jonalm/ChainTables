@@ -1,0 +1,9 @@
+const CHAIN_ID = "AAAAAAAAAAAAAAAAAAAAAAAAAA"
+const SLOT_KEY = "p/000000000004"
+const ATTACHMENT_KEY = "p/_attachments/" * "0"^64
+const GATEWAY = "https://gw"
+const COPY_PATH = "/lab/copy"
+const ZEROS = zeros(UInt8, 32)
+const ONES = ones(UInt8, 32)
+const ZEROS_HEX = "0"^64
+const ONES_HEX = "01"^32

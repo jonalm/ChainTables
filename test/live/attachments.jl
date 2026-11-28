@@ -31,7 +31,7 @@ using ChainTables: Bucket, Chain, GatewayObjectStore, TransportError, WriteRefus
 
 # The headers of a HEAD of `key` in the chain's bucket, by the caller's own credentials.
 function live_head(store::GatewayObjectStore, key)
-    r = GWT.s3_request(store.s3, "HEAD", key; headers = ["x-amz-checksum-mode" => "ENABLED"])
+    r = ChainTables.s3_request(store.s3, "HEAD", key; headers = ["x-amz-checksum-mode" => "ENABLED"])
     r.status == 200 || error("HEAD $key: HTTP $(r.status)")
     return Dict(lowercase(k) => v for (k, v) in r.headers)
 end
@@ -43,7 +43,7 @@ retain_until(store, key) = iso_second(live_head(store, key)["x-amz-object-lock-r
 # A streamed PUT of `body` to a minted URL with `headers`: S3's status and its error document.
 function raw_put(url, headers, body)
     output = IOBuffer()
-    r = GWT.http_stream(url, "PUT", headers; input = IOBuffer(body), output, stall = 60)
+    r = ChainTables.http_stream("PUT", url; headers, input = IOBuffer(body), output, stall = 60)
     return (; r.status, text = String(take!(output)))
 end
 
@@ -62,65 +62,83 @@ random_hash() = bytes2hex(rand(UInt8, 32))
         cache_dir = joinpath(dir, "cache")
         chain = Chain(gwbucket, prefix; cache_dir)
         store = chain.store
-        @test store isa GatewayObjectStore && GWT.is_aws(store)
-        author = GWT.record_author(store)
+        @test store isa GatewayObjectStore && ChainTables.is_aws(store)
+        author = ChainTables.record_author(store)
 
         @testset "the policy is checked against the attachment's chain" begin
             # <base>/_attachments/<h> belongs to chain <base>, which the policy does not list
             key = "$base/_attachments/$(random_hash())"
-            e = try GWT.mint(store, key, Int64(1)); nothing catch e; e end
+            e = try
+                ChainTables.mint(store, key, Int64(1)); nothing
+            catch e
+                e
+            end
             @test e isa WriteRefusedError && e.reason == "not_allowed" && e.key == key && e.caller == author
             @test occursin("may not write under prefix '$base'", sprint(showerror, e))
             # the root _attachments/<h> belongs to the root chain, which it does
-            @test GWT.mint(store, "_attachments/$(random_hash())", Int64(1)).code == "minted"
+            @test ChainTables.mint(store, "_attachments/$(random_hash())", Int64(1)) isa ChainTables.MintedURL
             # this run's chain: listed under <base>/*
-            @test GWT.mint(store, GWT.attachment_key(chain, random_hash()), Int64(1)).code == "minted"
+            @test ChainTables.mint(store, ChainTables.attachment_key(chain, random_hash()), Int64(1)) isa ChainTables.MintedURL
             # a slot key is not minted for
-            e = try GWT.mint(store, "$prefix/000000000000", Int64(1)); nothing catch e; e end
+            e = try
+                ChainTables.mint(store, "$prefix/000000000000", Int64(1)); nothing
+            catch e
+                e
+            end
             @test e isa TransportError && e.status == 400 && occursin("not_a_slot", sprint(showerror, e))
         end
 
         @testset "S3 enforces what the minted URL signs" begin
             body = rand(UInt8, 4096)
-            h = bytes2hex(GWT.sha256(body))
-            key = GWT.attachment_key(chain, h)
-            reply = GWT.mint(store, key, Int64(length(body)))
-            @test reply.code == "minted"
+            h = bytes2hex(ChainTables.sha256(body))
+            key = ChainTables.attachment_key(chain, h)
+            reply = ChainTables.mint(store, key, Int64(length(body)))
+            @test reply isa ChainTables.MintedURL
             @test startswith(reply.url, "https://$(config.bucket).s3.$(config.region).amazonaws.com/$key?")
             # the deployed gateway's lifetime: 15 min plus the size at 256 KiB/s (an upload must end before its URL
             # expires, ADR-0046), as the reply says and the URL signs; a fresh environment is not capped at this size
-            @test (reply.seconds, reply.capped) == (900 + cld(length(body), 256 * 1024), false)
-            @test occursin("X-Amz-Expires=$(reply.seconds)&", reply.url * "&")
+            @test reply.lifetime == (seconds = 900 + cld(length(body), 256 * 1024), capped = false)
+            @test occursin("X-Amz-Expires=$(reply.lifetime.seconds)&", reply.url * "&")
             names = Set(first.(reply.headers))
-            @test names == Set(["content-type", "content-length", "if-none-match", "x-amz-checksum-sha256", "x-amz-tagging",
-                                "x-amz-server-side-encryption", "x-amz-server-side-encryption-aws-kms-key-id",
-                                "x-amz-server-side-encryption-bucket-key-enabled", "x-amz-object-lock-mode",
-                                "x-amz-object-lock-retain-until-date"])
-            @test signed(reply.headers, "x-amz-checksum-sha256") == GWT.checksum_sha256(h)
+            @test names == Set(
+                [
+                    "content-type", "content-length", "if-none-match", "x-amz-checksum-sha256", "x-amz-tagging",
+                    "x-amz-server-side-encryption", "x-amz-server-side-encryption-aws-kms-key-id",
+                    "x-amz-server-side-encryption-bucket-key-enabled", "x-amz-object-lock-mode",
+                    "x-amz-object-lock-retain-until-date",
+                ]
+            )
+            @test signed(reply.headers, "x-amz-checksum-sha256") == ChainTables.checksum_sha256(h)
             @test signed(reply.headers, "content-length") == string(length(body))
             # a body of the signed length that does not hash to the key: BadDigest, nothing stored
             wrong = copy(body); wrong[1] ⊻= 0x01
-            e = try GWT.upload_minted(store, key, IOBuffer(wrong), Int64(length(wrong)), reply); nothing catch e; e end
+            e = try
+                ChainTables.upload_minted(store, ChainTables.AttachmentUpload(key, IOBuffer(wrong)), reply); nothing
+            catch e
+                e
+            end
             @test e isa AttachmentChangedError && e.key == key
             r = raw_put(reply.url, reply.headers, wrong)
             @test r.status == 400 && occursin("<Code>BadDigest</Code>", r.text)
             # a signed header omitted or altered: the signature fails
-            for name in ("if-none-match", "x-amz-checksum-sha256", "x-amz-tagging", "x-amz-object-lock-retain-until-date",
-                         "x-amz-server-side-encryption-aws-kms-key-id")
+            for name in (
+                    "if-none-match", "x-amz-checksum-sha256", "x-amz-tagging", "x-amz-object-lock-retain-until-date",
+                    "x-amz-server-side-encryption-aws-kms-key-id",
+                )
                 r = raw_put(reply.url, without(reply.headers, name), body)
                 @test (name, r.status, occursin("<Code>SignatureDoesNotMatch</Code>", r.text)) == (name, 403, true)
             end
             later = "2099-01-01T00:00:00Z"
             r = raw_put(reply.url, replacing(reply.headers, "x-amz-object-lock-retain-until-date", later), body)
             @test r.status == 403 && occursin("<Code>SignatureDoesNotMatch</Code>", r.text)
-            r = raw_put(reply.url, replacing(reply.headers, "content-length", string(length(body) - 1)), body[1:end-1])
+            r = raw_put(reply.url, replacing(reply.headers, "content-length", string(length(body) - 1)), body[1:(end - 1)])
             @test r.status == 403 && occursin("<Code>SignatureDoesNotMatch</Code>", r.text)
             # an x-amz-* header the URL does not sign
             r = raw_put(reply.url, [reply.headers; "x-amz-meta-note" => "unsigned"], body)
             @test r.status == 403 && occursin("<Code>AccessDenied</Code>", r.text)
             @test stat_object(store, key) === nothing
             # the right body: stored, locked, encrypted under the signed key, checksummed, tagged
-            @test GWT.upload_minted(store, key, IOBuffer(body), Int64(length(body)), reply) === true
+            @test ChainTables.upload_minted(store, ChainTables.AttachmentUpload(key, IOBuffer(body)), reply) === true
             head = live_head(store, key)
             @test parse(Int, head["content-length"]) == length(body)
             @test head["x-amz-object-lock-mode"] == "COMPLIANCE"
@@ -128,36 +146,36 @@ random_hash() = bytes2hex(rand(UInt8, 32))
             @test head["x-amz-server-side-encryption"] == "aws:kms"
             @test head["x-amz-server-side-encryption-aws-kms-key-id"] == signed(reply.headers, "x-amz-server-side-encryption-aws-kms-key-id")
             @test head["x-amz-server-side-encryption-bucket-key-enabled"] == "true"
-            @test head["x-amz-checksum-sha256"] == GWT.checksum_sha256(h)
-            tagging = GWT.s3_request(store.s3, "GET", key; query = ["tagging" => ""])
+            @test head["x-amz-checksum-sha256"] == ChainTables.checksum_sha256(h)
+            tagging = ChainTables.s3_request(store.s3, "GET", key; query = ["tagging" => ""])
             @test tagging.status == 200 &&
-                  occursin(r"<Tag><Key>chaintables</Key><Value>attachment</Value></Tag>", String(tagging.body))
+                occursin(r"<Tag><Key>chaintables</Key><Value>attachment</Value></Tag>", String(tagging.body))
             @test signed(reply.headers, "x-amz-tagging") == "chaintables=attachment"
             # the same URL again: If-None-Match refuses it, and there is still one version
-            @test GWT.upload_minted(store, key, IOBuffer(body), Int64(length(body)), reply) === false
+            @test ChainTables.upload_minted(store, ChainTables.AttachmentUpload(key, IOBuffer(body)), reply) === false
             r = raw_put(reply.url, reply.headers, body)
             @test r.status == 412
-            versions = GWT.s3_request(store.s3, "GET", ""; query = ["prefix" => key, "versions" => ""])
+            versions = ChainTables.s3_request(store.s3, "GET", ""; query = ["prefix" => key, "versions" => ""])
             @test versions.status == 200 && length(collect(eachmatch(r"<Version>", String(versions.body)))) == 1
             # a mint of the present key mints no URL and moves its retain-until later (dates
             # are whole seconds: wait for the next one)
             before = retain_until(store, key)
             sleep(2)
-            again = GWT.mint(store, key, Int64(length(body)))
-            @test again.code == "present" && again.url === nothing
+            again = ChainTables.mint(store, key, Int64(length(body)))
+            @test again isa ChainTables.MintPresent
             @test retain_until(store, key) > before
             @test live_head(store, key)["x-amz-object-lock-mode"] == "COMPLIANCE"
         end
 
         @testset "put_attachment, touch_attachment and attachment" begin
-            GWT.create_chain(chain)
+            ChainTables.create_chain(chain)
             # over the function URL's 6 MB: the bytes cannot have gone through the gateway
             bytes = rand(UInt8, 7 * 1024 * 1024)
             file = joinpath(dir, "upload.bin")
             write(file, bytes)
             h = put_attachment(chain, file)
-            @test h == bytes2hex(GWT.sha256(bytes))
-            key = GWT.attachment_key(chain, h)
+            @test h == bytes2hex(ChainTables.sha256(bytes))
+            key = ChainTables.attachment_key(chain, h)
             @test stat_object(store, key).size == length(bytes)
             @test live_head(store, key)["x-amz-object-lock-mode"] == "COMPLIANCE"
             # putting it again finds it present and uploads nothing
@@ -170,17 +188,17 @@ random_hash() = bytes2hex(rand(UInt8, 32))
             absent = random_hash()
             @test_throws AttachmentAbsentError touch_attachment(chain, absent)
             # a reader's copy: a miss fetches it, a hit is the same file with no request
-            a = GWT.open(chain, joinpath(dir, "a"))
-            @test GWT.sync!(a).slot == 0
+            a = ChainTables.open(chain, joinpath(dir, "a"))
+            @test ChainTables.sync!(a).slot == 0
             path = attachment(a, h)
             @test read(path) == bytes && (filemode(path) & 0o222) == 0
             @test attachment(a, h) == path
             @test isfile(joinpath(a.path, "confirmed", h))
-            @test GWT.verify(a; full = true) === nothing
+            @test ChainTables.verify(a; full = true) === nothing
             @test_throws AttachmentAbsentError attachment(a, absent)
             # a second copy on the same cache: a hit, confirmed by one HEAD in the chain's store
-            b = GWT.open(chain, joinpath(dir, "b"))
-            GWT.sync!(b)
+            b = ChainTables.open(chain, joinpath(dir, "b"))
+            ChainTables.sync!(b)
             @test !isfile(joinpath(b.path, "confirmed", h))
             @test attachment(b, h) == path && isfile(joinpath(b.path, "confirmed", h))
             close(a); close(b)

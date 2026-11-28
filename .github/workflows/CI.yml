@@ -1,7 +1,7 @@
-# The determinism vector's cells (ADR-0022, #34 §4): Julia compat floor and latest,
-# on every runner GitHub offers. test/model.jl asserts one literal state_fingerprint
-# and test/ops.jl one literal transaction_hash
-# in every cell; a red cell here is a chain break, not a flake.
+# The determinism vector's cells (ADR-0022, #34 §4): the Julia compat floor, on every
+# runner GitHub offers. test/test_model_fingerprint.jl asserts one literal
+# state_fingerprint and test/test_ops_apply.jl one literal transaction_hash in every
+# cell; a red cell here is a chain break, not a flake.
 name: CI
 on:
   push:
@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        version: ['1.10', '1']          # compat floor (Project.toml) and latest release
+        version: ['1.13']               # compat floor (Project.toml)
         os:
           - ubuntu-latest               # x86-64
           - ubuntu-24.04-arm            # aarch64

@@ -59,7 +59,8 @@ its own.** Only bytes the store returned vouch for a record:
   `MalformedRecordError`, and what the store vouched for below the failing
   slot is yielded first.
 - **The store's bytes replace a cache file only once they pass**
-  (`heal_record!`), with a warning naming the file when it held other bytes.
+  (`write_cached_record`), with a `@debug` record naming the file when it held
+  other bytes.
   When the store's bytes fail too, the cached file stays as it was, as
   evidence. A miss is cached as the store returned it: it fills a file, it
   replaces none.
@@ -72,9 +73,8 @@ other bytes for raises the new `RecordCacheError`, naming the file and both
 hashes, with `repair!(copy)` as the next move. **`repair!` fetches such a
 record itself** and replaces the file instead of telling the user to delete
 it. The store's bytes not hashing to what the chain names are
-`RewrittenChainError`. A cache file that changes between `verify`'s or
-`repair!`'s two reads of it is `RecordCacheError` too: another process is
-writing the cache, or the disk damaged it.
+`RewrittenChainError`. A cache file that changes between `repair!`'s two reads
+of it is fetched again, like any other hit that fails (amended, below).
 
 **The read-back of a put asks the store, never the cache.** ADR-0010 made the
 read-back the authority, and a cache file is not one.
@@ -84,8 +84,8 @@ read-back the authority, and a cache file is not one.
 - **Keep the key at bucket and key, and rely on the checks.** The first
   draft of this ADR. A stale file is replaced the first time a check fails,
   so the key needs no change. But two stores sharing a bucket name rewrite
-  each other's files on every read: one synchronous GET and one warning per
-  slot, with no read-ahead. And a reader over AWS cannot tell another store's
+  each other's files on every read: one synchronous GET and one debug record
+  per slot, with no read-ahead. And a reader over AWS cannot tell another store's
   run of the same chain from a rewritten bucket. Rejected.
 - **One shared namespace, `other`, for every store ChainTables does not
   know.** Two such stores under one bucket name would rewrite each other's
@@ -102,8 +102,8 @@ read-back the authority, and a cache file is not one.
   then be caught, but another store's object hashes correctly. Only the chain
   knows which bytes belong at a slot. Rejected.
 - **Raise on a damaged cache instead of replacing the file.** The cache is
-  disposable (ADR-0010), and replacing a file loses nothing. The warning keeps
-  the event visible. Only `verify`, which is local by contract, raises, and
+  disposable (ADR-0010), and replacing a file loses nothing. The debug record
+  keeps the event findable (`JULIA_DEBUG=ChainTables`). Only `verify`, which is local by contract, raises, and
   `verify` and `repair!` when a file changes between their two reads of it.
   The chain's readers never do: they hold the hash the chain names, so the
   store's bytes can stand in.
@@ -137,7 +137,7 @@ read-back the authority, and a cache file is not one.
   GET of the slot above it is left for its own issue.
 - A cached run whose records carry another chain id (a bucket emptied and
   refilled with another chain) fails slot by slot: one synchronous GET and one
-  warning per slot, with no read-ahead, once.
+  debug record per slot, with no read-ahead, once.
 - Files cached before this change, at `cache_dir/<bucket>/<key>`, are never
   read or swept. Delete `cache_dir` once to reclaim the space. Where an old
   bucket was named like a namespace (`aws`, `aws-cn`, `aws-us-gov`, `ep-…`,
@@ -150,3 +150,14 @@ read-back the authority, and a cache file is not one.
   and refilled, or an old file at a new path (above), can cause it. Not
   addressed here.
 - Adds `RecordCacheError`, the seventeenth type (ADR-0020).
+
+**Amended (Guide v1.0 Adoption)**: the replaced file was reported with `@warn`. A
+caller can neither catch nor test a log line, and the package has recovered by itself
+here, so it leaves a `@debug` record instead.
+
+**Amended (Guide v1.0 Adoption 3b)**: a cache file that changed between two reads was
+`RecordCacheError` ("run the call again"). `verify` now reads each record once, so it
+has no second read. `repair!`'s second read takes the path of every other read of a
+record the chain names: a file that no longer hashes to that name is fetched from the
+store, which replaces it, and the store's bytes failing too is `RewrittenChainError`.
+`RecordCacheError` comes only from `verify(copy; full = true)`.

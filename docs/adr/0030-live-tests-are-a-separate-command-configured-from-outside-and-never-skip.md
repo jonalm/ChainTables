@@ -54,7 +54,7 @@ themselves on from the environment.
 - **No new dependency and no second environment** (ADR-0027): the live suite
   resolves against the package's own project; `Test` and `Sockets` are standard
   libraries. What the two suites share is `test/fixtures/`.
-- **A tripwire in the offline suite** (`test/tracked_values.jl`) scans the
+- **A tripwire in the offline suite** (`test/test_tracked_values.jl`) scans the
   tracked tree for an account id, a function URL's host id, an Identity Center
   start URL and an e-mail address that are not the documented placeholders. It
   knows a few shapes — a bucket or profile name has none — so it is a tripwire,
@@ -72,7 +72,7 @@ themselves on from the environment.
 - **Amended: no live plain-bucket test.** The live S3 test (issue #6) checked a
   plain bucket's direct conditional put. No deployment uses a plain bucket, so it
   was dropped; its session-token and `stat_object` checks moved into the gateway
-  test, and the direct put stays covered offline by `test/s3.jl` only.
+  test, and the direct put stays covered offline by `test/test_s3_store_workflow.jl` only.
 - **Amended: a live attachments test** (`run.sh attachments`, issue #90) proves
   ADR-0046's list on a locked gateway bucket, configured apart from the gateway
   test because it needs a locked bucket whose gateway has the mint route and a
@@ -81,4 +81,4 @@ themselves on from the environment.
   `gateway/probe/attachment_probe.py`, run by the bucket's operator.
 - Considered and not done: a live `GatewayMismatchError` test. It needs two
   deployments and strands a record in the wrong bucket on every run; the
-  loopback test in `test/gateway.jl` covers the path.
+  loopback test in `test/test_gateway_commit_workflow.jl` covers the path.
