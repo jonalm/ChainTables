@@ -17,6 +17,3 @@ Julia style: before you write or edit Julia, read
 If that folder does not exist, run once:
 gh repo clone jonalm/julia_codestyle ~/.cache/julia-style/v1.0 -- --depth 1 --branch v1.0
 If the clone fails, stop and tell the user. Never write Julia from memory of the Guide.
-
-test layout: legacy runner kept until https://github.com/jonalm/julia_codestyle/issues/149
-(the last ticket of the Adoption switches `test/runtests.jl` to the Guide's template).

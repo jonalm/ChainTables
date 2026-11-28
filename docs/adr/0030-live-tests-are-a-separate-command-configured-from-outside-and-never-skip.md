@@ -54,7 +54,7 @@ themselves on from the environment.
 - **No new dependency and no second environment** (ADR-0027): the live suite
   resolves against the package's own project; `Test` and `Sockets` are standard
   libraries. What the two suites share is `test/fixtures/`.
-- **A tripwire in the offline suite** (`test/tracked_values.jl`) scans the
+- **A tripwire in the offline suite** (`test/test_tracked_values.jl`) scans the
   tracked tree for an account id, a function URL's host id, an Identity Center
   start URL and an e-mail address that are not the documented placeholders. It
   knows a few shapes — a bucket or profile name has none — so it is a tripwire,

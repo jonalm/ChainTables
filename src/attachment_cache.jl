@@ -67,6 +67,7 @@ end
 # The file at `path`, hashed with the stat that it had before and after: `nothing` when
 # it is gone. A file renamed onto the path meanwhile leaves the stat of the file that
 # was hashed, since all three come from one open file.
+# style: non-public Base has no public errno constant; a file gone mid-open is ENOENT
 function hash_entry(path::AbstractString; hasher)
     try
         return Base.open(io -> hashed_entry(io, hasher), path)

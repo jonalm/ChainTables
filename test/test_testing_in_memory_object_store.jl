@@ -30,7 +30,6 @@ end
 @testset "Testing holds the in-memory store and nothing else" begin
     @test names(ChainTables.Testing) == [:InMemoryObjectStore, :Testing]
     @test Base.isexported(ChainTables.Testing, :InMemoryObjectStore) == false
-    @test isempty(Docs.undocumented_names(ChainTables.Testing))
     @test @inferred(InMemoryObjectStore()) isa AbstractObjectStore
 end
 

@@ -22,9 +22,9 @@ decisions; the design map is issue #1 and the build map is issue #34.
 
 ## The worked example
 
-This narrative is the front door and an acceptance test: `test/readme.jl` runs
+This narrative is the front door and an acceptance test: `test/test_readme_workflow.jl` runs
 the same sequence against `ChainTables.Testing.InMemoryObjectStore`, asserting
-every commented value, and drift between the two is a bug.
+every commented value; a change to one is a change to the other.
 
 ```julia
 import ChainTables
